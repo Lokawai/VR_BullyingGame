@@ -51,5 +51,5 @@
         "temp/": true,
         "Temp/": true
     },
-    "dotnet.defaultSolution": "VR_3D_Bullying.sln"
+    "dotnet.defaultSolution": "VR_3D_Bullying.slnx"
 }
