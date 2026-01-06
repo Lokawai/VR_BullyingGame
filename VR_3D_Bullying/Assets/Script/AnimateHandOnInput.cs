@@ -25,6 +25,7 @@ public class AnimateHandOnInput : MonoBehaviour
 
         handAnimator.SetFloat("Trigger", trigger);
         handAnimator.SetFloat("Grip", grip);
+       
         
     }
 }
