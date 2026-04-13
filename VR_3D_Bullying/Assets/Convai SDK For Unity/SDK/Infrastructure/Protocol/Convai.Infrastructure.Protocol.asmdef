@@ -1,0 +1,16 @@
+{
+    "name": "Convai.Infrastructure.Protocol",
+    "rootNamespace": "Convai.Infrastructure.Protocol",
+    "references": [
+        "Newtonsoft.Json"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": true
+}

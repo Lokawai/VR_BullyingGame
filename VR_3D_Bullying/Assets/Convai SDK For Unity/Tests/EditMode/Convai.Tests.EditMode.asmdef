@@ -1,0 +1,36 @@
+{
+    "name": "Convai.Tests.EditMode",
+    "rootNamespace": "Convai.Tests.EditMode",
+    "references": [
+        "Convai.Application",
+        "Convai.Domain",
+        "Convai.Shared",
+        "Convai.Infrastructure.Protocol",
+        "Convai.Infrastructure.Networking",
+        "Convai.Infrastructure.Networking.Abstractions",
+        "Convai.Infrastructure",
+        "Convai.Runtime",
+        "Convai.Runtime.Behaviors",
+        "Convai.Editor",
+        "Convai.RestAPI",
+        "Convai.Infrastructure.Networking.WebGL",
+        "Convai.Modules.Vision",
+        "Convai.Modules.LipSync",
+        "Convai.Modules.LipSync.Editor",
+        "LiveKit",
+        "LiveKitBridge"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

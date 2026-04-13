@@ -1,0 +1,20 @@
+{
+    "name": "Convai.Modules.Vision",
+    "rootNamespace": "Convai.Modules.Vision",
+    "references": [
+        "Convai.Application",
+        "Convai.Domain",
+        "Convai.Shared",
+        "Convai.Infrastructure.Networking.Abstractions",
+        "Convai.Runtime"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

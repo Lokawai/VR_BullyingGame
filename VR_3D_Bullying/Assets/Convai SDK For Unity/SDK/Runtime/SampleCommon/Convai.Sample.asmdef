@@ -1,0 +1,19 @@
+{
+    "name": "Convai.Sample",
+    "rootNamespace": "Convai.Sample",
+    "references": [
+        "Convai.Runtime.Behaviors",
+        "Convai.Runtime",
+        "Convai.Domain",
+        "Convai.Shared"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

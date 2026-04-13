@@ -1,0 +1,18 @@
+{
+    "name": "Convai.Application",
+    "rootNamespace": "Convai.Application",
+    "references": [
+        "Convai.Domain",
+        "Convai.Shared",
+        "Newtonsoft.Json"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": true
+}

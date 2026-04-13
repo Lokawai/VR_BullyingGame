@@ -1,0 +1,24 @@
+{
+    "name": "Convai.Infrastructure.Networking",
+    "rootNamespace": "Convai.Infrastructure.Networking",
+    "references": [
+        "LiveKit",
+        "Convai.Infrastructure.Protocol",
+        "Convai.Infrastructure.Networking.Abstractions",
+        "Convai.Domain",
+        "Convai.RestAPI",
+        "Convai.Shared",
+        "Newtonsoft.Json"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [
+        "WebGL"
+    ],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

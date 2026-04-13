@@ -1,0 +1,20 @@
+{
+    "name": "Convai.Infrastructure.Networking.Abstractions",
+    "rootNamespace": "Convai.Infrastructure.Networking.Abstractions",
+    "references": [
+        "Convai.Domain",
+        "Convai.Shared",
+        "Convai.Infrastructure.Protocol",
+        "Convai.RestAPI",
+        "Newtonsoft.Json"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

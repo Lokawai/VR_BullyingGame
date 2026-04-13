@@ -1,0 +1,52 @@
+<linker>
+    <!--
+      IL2CPP Code Preservation Rules for Convai SDK
+
+      REFLECTION-FREE ARCHITECTURE (after WEBRTC-223 refactor):
+      - ConvaiRoomSession: Uses typed IConvaiSettingsProvider and IEventHub interfaces
+      - ConvaiServiceBootstrap: Uses direct instantiation for UnityLoggerAdapter
+      - ConvaiRoomManager: Implements IConvaiRoomConnectionService and IConvaiRoomAudioService directly
+      - ConvaiSceneMetadataCollector: Uses typed FindObjectsOfType<T>() for component discovery
+      - ConvaiCompositionRoot: Uses typed interface discovery via Convai.Shared interfaces
+        - IInjectableVideoPublisher, IInjectableTranscriptUI, IInjectableTranscriptHandler
+        - IInjectableSettingPanel, IInjectableSettingsHandler, IInjectableMicrophoneController
+        - IInjectableNotificationHandler, IConvaiNotificationService
+
+      REMAINING REFLECTION:
+      - Narrative module adapter resolution in ConvaiCompositionRoot.
+      - Runtime settings and presentation services are registered with typed factories.
+
+      MODULE ASSEMBLIES:
+      - Module assemblies are preserved to prevent IL2CPP stripping of service types
+      - MonoBehaviour types are safe (typed interface discovery)
+      - Service types still need protection (reflection-based instantiation)
+      - See: https://docs.unity3d.com/Manual/ManagedCodeStripping.html
+    -->
+
+    <!-- Convai.Modules.Narrative assembly - Narrative design and section triggers -->
+    <assembly fullname="Convai.Modules.Narrative" preserve="all"/>
+
+    <!-- WebGL networking assembly - runtime bootstrap + room controller factory -->
+    <assembly fullname="Convai.Infrastructure.Networking.WebGL" preserve="all"/>
+
+    <!-- Native networking assembly - runtime bootstrap + room controller factory for Quest/mobile/desktop -->
+    <assembly fullname="Convai.Infrastructure.Networking.Native" preserve="all"/>
+
+    <!-- LiveKit WebGL bridge - C#-to-JS interop for LiveKit WebRTC in browser.
+         Only referenced by Convai.Infrastructure.Networking.WebGL, which itself
+         has no inbound compile-time references, so both need explicit preservation. -->
+    <assembly fullname="LiveKitBridge" preserve="all"/>
+
+    <!--
+      Phase 4: legacy ConvaiUISystem settings bus has been removed.
+      Settings now use IConvaiSettingsPanelController + IConvaiRuntimeSettingsService.
+      ConvaiNotificationService and default UI handlers live in Convai.Runtime.
+    -->
+
+    <!--
+      Convai.Modules.Vision assembly - Vision module
+      NOTE: MonoBehaviour discovery is now reflection-free (uses IInjectableVideoPublisher).
+      Keeping preserve="all" for safety and future extensibility.
+    -->
+    <assembly fullname="Convai.Modules.Vision" preserve="all"/>
+</linker>

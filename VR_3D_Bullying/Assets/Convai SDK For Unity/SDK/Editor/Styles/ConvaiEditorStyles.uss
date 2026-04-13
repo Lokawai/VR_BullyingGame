@@ -1,0 +1,606 @@
+/* Convai Editor Styles - USS for Unity Editor UI Toolkit */
+
+/* Root container */
+.convai-inspector-root {
+    padding: 4px 0;
+}
+
+/* Header section with logo and status */
+.convai-header {
+    flex-direction: row;
+    align-items: center;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    background-color: rgba(45, 45, 45, 0.6);
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: rgba(255, 255, 255, 0.05);
+}
+
+.convai-header-logo {
+    width: 24px;
+    height: 24px;
+    flex-shrink: 0;
+    -unity-background-scale-mode: scale-to-fit;
+}
+
+.convai-header-title {
+    font-size: 14px;
+    -unity-font-style: bold;
+    margin-left: 8px;
+    color: #E0E0E0;
+}
+
+.convai-header-spacer {
+    flex-grow: 1;
+}
+
+/* Status indicator (now in header) */
+.convai-status-indicator {
+    width: 10px;
+    height: 10px;
+    border-radius: 5px;
+    margin-right: 6px;
+    flex-shrink: 0;
+}
+
+.convai-status-indicator--idle {
+    background-color: #6B6B6B;
+}
+
+.convai-status-indicator--connected {
+    background-color: #4CAF50;
+}
+
+.convai-status-indicator--active {
+    background-color: #52B788;
+}
+
+.convai-status-indicator--error {
+    background-color: #EF5350;
+}
+
+.convai-status-indicator--ending {
+    background-color: #FFA726;
+}
+
+.convai-status-text {
+    font-size: 11px;
+    color: #A0A0A0;
+}
+
+/* Configuration sections */
+.convai-config-section {
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    background-color: rgba(50, 50, 50, 0.25);
+    border-radius: 4px;
+    border-width: 0;
+    border-color: rgba(255, 255, 255, 0);
+}
+
+.convai-section-header {
+    font-size: 11px;
+    -unity-font-style: bold;
+    color: #52B788;
+    margin-bottom: 8px;
+    padding-bottom: 4px;
+    border-bottom-width: 1px;
+    border-bottom-color: rgba(82, 183, 136, 0.3);
+    /* Note: text-transform not supported in Unity USS - use ToUpper() in code if needed */
+    letter-spacing: 1px;
+}
+
+.convai-field-row {
+    flex-direction: row;
+    align-items: center;
+    margin: 6px 0;
+    min-height: 20px;
+}
+
+.convai-section-foldout {
+    margin-bottom: 8px;
+}
+
+.convai-section-foldout > Toggle {
+    min-height: 22px;
+    padding: 2px 0;
+    color: #52B788;
+    -unity-font-style: bold;
+    font-size: 11px;
+}
+
+.convai-section-foldout > Toggle > .unity-toggle__label {
+    color: #52B788;
+    letter-spacing: 1px;
+}
+
+.convai-section-foldout > Toggle > .unity-toggle__input {
+    margin-right: 2px;
+}
+
+.convai-section-body {
+    padding: 10px 14px 12px 14px;
+    margin-top: 4px;
+    background-color: rgba(50, 50, 50, 0.25);
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: rgba(82, 183, 136, 0.2);
+}
+
+.convai-section-body--actions {
+    padding-top: 8px;
+}
+
+.convai-field-row--spacious {
+    margin-top: 12px;
+}
+
+.convai-field-label {
+    width: 110px;
+    color: #B0B0B0;
+    font-size: 12px;
+    -unity-text-align: middle-left;
+}
+
+.convai-field-value {
+    flex-grow: 1;
+}
+
+.convai-settings-stack {
+    margin-top: 2px;
+}
+
+.convai-setting-card {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    padding: 10px 12px;
+    background-color: rgba(82, 183, 136, 0.15);
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: rgba(82, 183, 136, 0.2);
+}
+
+.convai-setting-card--last {
+    margin-bottom: 0;
+}
+
+.convai-setting-copy {
+    flex-grow: 1;
+    flex-shrink: 1;
+    margin-right: 12px;
+}
+
+.convai-setting-title {
+    color: #E0E0E0;
+    font-size: 12px;
+    -unity-font-style: bold;
+    margin-bottom: 2px;
+}
+
+.convai-setting-description {
+    color: #A0A0A0;
+    font-size: 10px;
+}
+
+.convai-setting-toggle {
+    flex-shrink: 0;
+    margin-left: 10px;
+}
+
+.convai-setting-toggle > .unity-base-field__label {
+    display: none;
+}
+
+.convai-setting-toggle > .unity-base-field__input {
+    margin-left: 0;
+}
+
+.convai-copy-button {
+    width: 50px;
+    margin-left: 4px;
+    font-size: 11px;
+    padding: 2px 6px;
+}
+
+/* Quick actions section */
+.convai-actions-section {
+    padding: 10px 12px;
+    margin-bottom: 6px;
+    background-color: rgba(50, 50, 50, 0.25);
+    border-radius: 4px;
+    border-width: 0;
+    border-color: rgba(255, 255, 255, 0);
+}
+
+.convai-actions-row {
+    flex-direction: row;
+    justify-content: flex-start;
+    margin-top: 6px;
+    flex-wrap: wrap;
+}
+
+.convai-action-button {
+    margin: 2px;
+    padding: 5px 10px;
+    font-size: 11px;
+    border-radius: 3px;
+    background-color: rgba(255, 255, 255, 0.08);
+    border-width: 1px;
+    border-color: rgba(255, 255, 255, 0.1);
+    color: #B0B0B0;
+}
+
+.convai-action-button--primary {
+    background-color: #52B788;
+    color: #1A1A1A;
+    -unity-font-style: bold;
+}
+
+.convai-action-button--primary:hover {
+    background-color: #6FCF97;
+}
+
+/* Warning/info boxes */
+.convai-warning-box {
+    padding: 10px 12px;
+    margin: 6px 0;
+    background-color: rgba(255, 152, 0, 0.15);
+    border-left-width: 3px;
+    border-left-color: #FFA726;
+    border-radius: 3px;
+}
+
+.convai-warning-box Label {
+    font-size: 12px;
+    color: #FFB74D;
+}
+
+.convai-info-box {
+    padding: 10px 12px;
+    margin: 6px 0;
+    background-color: rgba(82, 183, 136, 0.15);
+    border-left-width: 3px;
+    border-left-color: #52B788;
+    border-radius: 3px;
+}
+
+.convai-info-box Label {
+    font-size: 12px;
+    color: #81C995;
+}
+
+/* Error box (for critical issues like missing scene components) */
+.convai-error-box {
+    padding: 10px 12px;
+    margin: 6px 0;
+    background-color: rgba(239, 83, 80, 0.15);
+    border-left-width: 3px;
+    border-left-color: #EF5350;
+    border-radius: 3px;
+}
+
+.convai-error-box Label {
+    font-size: 12px;
+    color: #EF9A9A;
+}
+
+.convai-error-box .convai-error-title {
+    font-size: 12px;
+    -unity-font-style: bold;
+    color: #EF5350;
+    margin-bottom: 6px;
+}
+
+.convai-error-box .convai-error-list {
+    margin-left: 8px;
+    margin-bottom: 8px;
+}
+
+.convai-error-box .convai-error-item {
+    font-size: 11px;
+    color: #EF9A9A;
+    margin: 2px 0;
+}
+
+.convai-fix-button {
+    background-color: #EF5350;
+    color: #FFFFFF;
+    -unity-font-style: bold;
+    padding: 6px 12px;
+    border-radius: 3px;
+    margin-top: 4px;
+    align-self: flex-start;
+}
+
+.convai-fix-button:hover {
+    background-color: #F44336;
+}
+
+/* Help button in header */
+.convai-help-button {
+    width: 20px;
+    height: 20px;
+    border-radius: 10px;
+    background-color: rgba(255, 255, 255, 0.1);
+    border-width: 1px;
+    border-color: rgba(255, 255, 255, 0.2);
+    margin-left: 8px;
+    font-size: 12px;
+    -unity-font-style: bold;
+    color: #A0A0A0;
+    padding: 0;
+    -unity-text-align: middle-center;
+}
+
+.convai-help-button:hover {
+    background-color: rgba(82, 183, 136, 0.3);
+    border-color: #52B788;
+    color: #52B788;
+}
+
+/* Character ID validation error styling */
+.convai-field-error {
+    border-width: 1px;
+    border-color: #EF5350;
+    border-radius: 3px;
+}
+
+.convai-validation-message {
+    font-size: 10px;
+    color: #EF9A9A;
+    margin-top: 2px;
+    margin-left: 110px;
+}
+
+/* Suggestion box (for recommendations like adding AudioOutput) */
+.convai-suggestion-box {
+    padding: 10px 12px;
+    margin: 6px 0;
+    background-color: rgba(33, 150, 243, 0.15);
+    border-left-width: 3px;
+    border-left-color: #2196F3;
+    border-radius: 3px;
+}
+
+.convai-suggestion-box Label {
+    font-size: 12px;
+    color: #90CAF9;
+}
+
+.convai-suggestion-box .convai-suggestion-title {
+    font-size: 12px;
+    -unity-font-style: bold;
+    color: #2196F3;
+    margin-bottom: 4px;
+}
+
+.convai-add-component-button {
+    background-color: #2196F3;
+    color: #FFFFFF;
+    -unity-font-style: bold;
+    padding: 5px 10px;
+    border-radius: 3px;
+    margin-top: 6px;
+    align-self: flex-start;
+    font-size: 11px;
+}
+
+.convai-add-component-button:hover {
+    background-color: #42A5F5;
+}
+
+/* API Key Status Section */
+.convai-api-key-row {
+    flex-direction: row;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+.convai-api-key-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 4px;
+    margin-right: 8px;
+    flex-shrink: 0;
+}
+
+.convai-api-key-indicator--missing {
+    background-color: #FFA726;
+}
+
+.convai-api-key-indicator--configured {
+    background-color: #4CAF50;
+}
+
+.convai-api-key-text {
+    font-size: 12px;
+    -unity-font-style: bold;
+    color: #FFA726;
+}
+
+.convai-api-key-actions {
+    flex-direction: row;
+    margin-top: 8px;
+}
+
+.convai-settings-button {
+    background-color: #FFA726;
+    color: #1A1A1A;
+    -unity-font-style: bold;
+    padding: 5px 10px;
+    border-radius: 3px;
+    margin-right: 6px;
+    font-size: 11px;
+}
+
+.convai-settings-button:hover {
+    background-color: #FFB74D;
+}
+
+.convai-wizard-button {
+    background-color: rgba(255, 167, 38, 0.2);
+    color: #FFA726;
+    padding: 5px 10px;
+    border-radius: 3px;
+    border-width: 1px;
+    border-color: #FFA726;
+    font-size: 11px;
+}
+
+.convai-wizard-button:hover {
+    background-color: rgba(255, 167, 38, 0.3);
+}
+
+/* Fetch Button and Loading Indicator */
+.convai-fetch-button {
+    width: 50px;
+    margin-left: 4px;
+    font-size: 11px;
+    padding: 2px 6px;
+    background-color: #52B788;
+    color: #1A1A1A;
+    border-radius: 3px;
+}
+
+.convai-fetch-button:hover {
+    background-color: #6FCF97;
+}
+
+.convai-fetch-button:disabled {
+    background-color: #4A4A4A;
+    color: #808080;
+}
+
+.convai-loading-indicator {
+    width: 16px;
+    height: 16px;
+    margin-left: 4px;
+    border-width: 2px;
+    border-color: #52B788 transparent transparent transparent;
+    border-radius: 8px;
+}
+
+/* Debug Panel Styles (Runtime) */
+.convai-debug-panel {
+    padding: 8px 12px;
+    margin: 6px 0;
+    background-color: rgba(82, 183, 136, 0.1);
+    border-left-width: 3px;
+    border-left-color: #52B788;
+    border-radius: 3px;
+}
+
+.convai-debug-foldout {
+    margin: 2px 0;
+}
+
+.convai-debug-foldout > Toggle {
+    -unity-font-style: bold;
+    font-size: 11px;
+    color: #52B788;
+}
+
+.convai-debug-label {
+    font-size: 11px;
+    color: #A0A0A0;
+    margin: 2px 0 2px 16px;
+}
+
+/* Event History Panel Styles */
+.convai-event-panel {
+    padding: 8px 12px;
+    margin: 6px 0;
+    background-color: rgba(156, 39, 176, 0.1);
+    border-left-width: 3px;
+    border-left-color: #9C27B0;
+    border-radius: 3px;
+}
+
+.convai-event-header {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+}
+
+.convai-event-controls {
+    flex-direction: row;
+    align-items: center;
+}
+
+.convai-event-filter {
+    width: 100px;
+    font-size: 10px;
+    margin-right: 4px;
+}
+
+.convai-clear-button {
+    font-size: 10px;
+    padding: 2px 6px;
+    background-color: rgba(156, 39, 176, 0.3);
+    color: #CE93D8;
+    border-radius: 3px;
+}
+
+.convai-clear-button:hover {
+    background-color: rgba(156, 39, 176, 0.5);
+}
+
+.convai-event-list {
+    max-height: 150px;
+    background-color: rgba(0, 0, 0, 0.2);
+    border-radius: 3px;
+    padding: 4px;
+}
+
+.convai-event-empty {
+    font-size: 11px;
+    color: #808080;
+    -unity-text-align: middle-center;
+    padding: 10px;
+}
+
+.convai-event-item {
+    flex-direction: row;
+    align-items: flex-start;
+    padding: 3px 4px;
+    border-bottom-width: 1px;
+    border-bottom-color: rgba(255, 255, 255, 0.05);
+}
+
+.convai-event-timestamp {
+    font-size: 9px;
+    color: #606060;
+    width: 55px;
+    flex-shrink: 0;
+}
+
+.convai-event-type {
+    font-size: 10px;
+    -unity-font-style: bold;
+    width: 80px;
+    flex-shrink: 0;
+}
+
+.convai-event-type--ready {
+    color: #4CAF50;
+}
+
+.convai-event-type--transcript {
+    color: #2196F3;
+}
+
+.convai-event-type--speech {
+    color: #FFA726;
+}
+
+.convai-event-data {
+    font-size: 10px;
+    color: #B0B0B0;
+    flex-grow: 1;
+    white-space: normal;
+}
+

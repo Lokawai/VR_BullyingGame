@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements">
+    <ui:VisualElement class="convai-inspector-root">
+        <!-- Header Section with Logo -->
+        <ui:VisualElement class="convai-header">
+            <ui:VisualElement name="header-logo" class="convai-header-logo"/>
+            <ui:Label text="Convai Character" class="convai-header-title"/>
+            <ui:VisualElement class="convai-header-spacer"/>
+            <ui:VisualElement name="status-indicator" class="convai-status-indicator convai-status-indicator--idle"/>
+            <ui:Label name="status-text" text="Disconnected" class="convai-status-text"/>
+            <ui:Button name="help-button" text="?" class="convai-help-button" tooltip="Open Convai Documentation"/>
+        </ui:VisualElement>
+
+        <!-- API Key Status (shown when API key not configured) -->
+        <ui:VisualElement name="api-key-section" class="convai-warning-box" style="display: none;">
+            <ui:VisualElement class="convai-api-key-row">
+                <ui:VisualElement name="api-key-indicator"
+                                  class="convai-api-key-indicator convai-api-key-indicator--missing"/>
+                <ui:Label name="api-key-status-text" text="API Key Not Configured" class="convai-api-key-text"/>
+            </ui:VisualElement>
+            <ui:Label text="Configure your Convai API key in Project Settings to enable character communication."/>
+            <ui:VisualElement class="convai-api-key-actions">
+                <ui:Button name="open-settings-button" text="Open Settings" class="convai-settings-button"
+                           tooltip="Open Convai SDK Settings"/>
+                <ui:Button name="open-wizard-button" text="Setup Wizard" class="convai-wizard-button"
+                           tooltip="Open Convai Setup Wizard"/>
+            </ui:VisualElement>
+        </ui:VisualElement>
+
+        <!-- Scene Setup Validation (shown when required components missing) -->
+        <ui:VisualElement name="scene-setup-section" class="convai-error-box" style="display: none;">
+            <ui:Label text="⚠ Scene Setup Required" class="convai-error-title"/>
+            <ui:VisualElement name="missing-components-list" class="convai-error-list"/>
+            <ui:Button name="fix-setup-button" text="Fix Setup" class="convai-fix-button"
+                       tooltip="Add missing required components to the scene"/>
+        </ui:VisualElement>
+
+        <!-- Warning for missing Character ID -->
+        <ui:VisualElement name="warning-section" class="convai-warning-box" style="display: none;">
+            <ui:Label name="warning-text" text="⚠ Character ID is required for the character to function."/>
+            <ui:Label name="character-id-validation-message" class="convai-validation-message" style="display: none;"/>
+        </ui:VisualElement>
+
+        <!-- Audio Output Suggestion (shown when audio enabled but no AudioOutput component) -->
+        <ui:VisualElement name="audio-suggestion-section" class="convai-suggestion-box" style="display: none;">
+            <ui:Label text="💡 Audio Output Recommended" class="convai-suggestion-title"/>
+            <ui:Label
+                text="Audio is enabled but no ConvaiAudioOutput component is attached. Add one to hear character speech."/>
+            <ui:Button name="add-audio-output-button" text="Add Audio Output" class="convai-add-component-button"
+                       tooltip="Add ConvaiAudioOutput component"/>
+        </ui:VisualElement>
+
+        <!-- Runtime Debug Info Panel (shown during play mode) -->
+        <ui:VisualElement name="runtime-info-section" class="convai-debug-panel" style="display: none;">
+            <ui:Foldout name="debug-connection-foldout" text="Connection Status" value="true"
+                        class="convai-debug-foldout">
+                <ui:Label name="injection-status" text="✗ Dependencies Not Injected" class="convai-debug-label"/>
+                <ui:Label name="session-id-label" text="Session: —" class="convai-debug-label"/>
+                <ui:Label name="participant-id-label" text="Participant: —" class="convai-debug-label"/>
+                <ui:Label name="room-name-label" text="Room: —" class="convai-debug-label"/>
+            </ui:Foldout>
+            <ui:Foldout name="debug-audio-foldout" text="Audio Status" value="false" class="convai-debug-foldout">
+                <ui:Label name="audio-track-status" text="Audio Track: —" class="convai-debug-label"/>
+                <ui:Label name="mic-status" text="Microphone: —" class="convai-debug-label"/>
+                <ui:Label name="speech-state" text="Speech: Idle" class="convai-debug-label"/>
+            </ui:Foldout>
+            <ui:Foldout name="debug-metrics-foldout" text="Metrics" value="false" class="convai-debug-foldout">
+                <ui:Label name="connection-quality" text="Quality: —" class="convai-debug-label"/>
+                <ui:Label name="latency-label" text="Latency: —" class="convai-debug-label"/>
+                <ui:Label name="packet-loss-label" text="Packet Loss: —" class="convai-debug-label"/>
+            </ui:Foldout>
+        </ui:VisualElement>
+
+        <!-- Event History Panel (shown during play mode) -->
+        <ui:VisualElement name="event-history-section" class="convai-event-panel" style="display: none;">
+            <ui:VisualElement class="convai-event-header">
+                <ui:Label text="Event History" class="convai-section-header"/>
+                <ui:VisualElement class="convai-event-controls">
+                    <ui:DropdownField name="event-filter-dropdown" label=""
+                                      choices="All,CharacterReady,Transcript,Speech" index="0"
+                                      class="convai-event-filter"/>
+                    <ui:Button name="clear-events-button" text="Clear" class="convai-clear-button"
+                               tooltip="Clear event history"/>
+                </ui:VisualElement>
+            </ui:VisualElement>
+            <ui:ScrollView name="event-list-scroll" class="convai-event-list">
+                <ui:Label name="event-empty-label" text="No events recorded yet." class="convai-event-empty"/>
+            </ui:ScrollView>
+        </ui:VisualElement>
+
+        <!-- Character Configuration Section -->
+        <ui:Foldout name="character-config-foldout" text="CORE SETUP" value="true" class="convai-section-foldout">
+            <ui:VisualElement class="convai-section-body">
+                <ui:VisualElement class="convai-field-row">
+                    <ui:Label text="Character ID" class="convai-field-label"/>
+                    <ui:TextField name="character-id-field" class="convai-field-value"/>
+                    <ui:Button name="copy-id-button" text="Copy" class="convai-copy-button"
+                               tooltip="Copy Character ID to clipboard"/>
+                </ui:VisualElement>
+
+                <ui:VisualElement class="convai-field-row">
+                    <ui:Label text="Display Name" class="convai-field-label"/>
+                    <ui:TextField name="character-name-field" class="convai-field-value"/>
+                    <ui:Button name="fetch-name-button" text="Fetch" class="convai-fetch-button"
+                               tooltip="Fetch character name from Convai API"/>
+                    <ui:VisualElement name="fetch-loading-indicator" class="convai-loading-indicator"
+                                      style="display: none;"/>
+                </ui:VisualElement>
+
+                <ui:VisualElement class="convai-field-row">
+                    <ui:Label text="Name Tag Color" class="convai-field-label"/>
+                    <uie:ColorField name="name-tag-color-field" class="convai-field-value"/>
+                </ui:VisualElement>
+            </ui:VisualElement>
+        </ui:Foldout>
+
+        <!-- Behavior Section -->
+        <ui:Foldout name="behavior-foldout" text="PLAYBACK &amp; BEHAVIOR" value="true" class="convai-section-foldout">
+            <ui:VisualElement class="convai-section-body">
+                <ui:VisualElement class="convai-settings-stack">
+                    <ui:VisualElement class="convai-setting-card">
+                        <ui:VisualElement class="convai-setting-copy">
+                            <ui:Label text="Auto Connect" class="convai-setting-title"/>
+                            <ui:Label text="Automatically start the conversation once the character is initialized."
+                                      class="convai-setting-description"/>
+                        </ui:VisualElement>
+                        <ui:Toggle name="auto-connect-toggle" class="convai-setting-toggle"
+                                   tooltip="Automatically start conversation when scene loads"/>
+                    </ui:VisualElement>
+
+                    <ui:VisualElement class="convai-setting-card">
+                        <ui:VisualElement class="convai-setting-copy">
+                            <ui:Label text="Enable Audio" class="convai-setting-title"/>
+                            <ui:Label text="Play remote voice output for this character during the session."
+                                      class="convai-setting-description"/>
+                        </ui:VisualElement>
+                        <ui:Toggle name="enable-audio-toggle" class="convai-setting-toggle"
+                                   tooltip="Enable remote audio playback for this character"/>
+                    </ui:VisualElement>
+
+                    <ui:VisualElement class="convai-setting-card convai-setting-card--last">
+                        <ui:VisualElement class="convai-setting-copy">
+                            <ui:Label text="Enable Session Resume" class="convai-setting-title"/>
+                            <ui:Label text="Reconnect this character to its previous conversation when available."
+                                      class="convai-setting-description"/>
+                        </ui:VisualElement>
+                        <ui:Toggle name="enable-session-resume-toggle" class="convai-setting-toggle"
+                                   tooltip="Resume this character's previous session when reconnecting"/>
+                    </ui:VisualElement>
+                </ui:VisualElement>
+
+                <ui:VisualElement class="convai-field-row convai-field-row--spacious">
+                    <ui:Label text="Ready Timeout" class="convai-field-label"/>
+                    <uie:FloatField name="ready-timeout-field" class="convai-field-value"
+                                    tooltip="Timeout in seconds to wait for character ready signal (0 = infinite)"/>
+                </ui:VisualElement>
+            </ui:VisualElement>
+        </ui:Foldout>
+
+        <!-- Quick Actions Section -->
+        <ui:Foldout name="quick-actions-foldout" text="QUICK ACTIONS" value="true" class="convai-section-foldout">
+            <ui:VisualElement class="convai-section-body convai-section-body--actions">
+                <ui:VisualElement class="convai-actions-row">
+                    <ui:Button name="open-dashboard-button" text="Character Dashboard"
+                               class="convai-action-button convai-action-button--primary"
+                               tooltip="Open this character in Convai Dashboard"/>
+                    <ui:Button name="open-dashboard-home-button" text="Dashboard" class="convai-action-button"
+                               tooltip="Open Convai Dashboard"/>
+                    <ui:Button name="test-connection-button" text="Status" class="convai-action-button"
+                               tooltip="Log current connection status (Play Mode only)"/>
+                </ui:VisualElement>
+            </ui:VisualElement>
+        </ui:Foldout>
+    </ui:VisualElement>
+</ui:UXML>
+

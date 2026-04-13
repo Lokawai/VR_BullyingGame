@@ -1,0 +1,26 @@
+{
+    "name": "Convai.Infrastructure.Networking.WebGL",
+    "rootNamespace": "Convai.Infrastructure.Networking.WebGL",
+    "references": [
+        "Convai.Infrastructure.Networking.Abstractions",
+        "Convai.Infrastructure.Protocol",
+        "Convai.RestAPI",
+        "Convai.Shared",
+        "Convai.Domain",
+        "Convai.Runtime",
+        "LiveKitBridge",
+        "Newtonsoft.Json"
+    ],
+    "includePlatforms": [
+        "Editor",
+        "WebGL"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

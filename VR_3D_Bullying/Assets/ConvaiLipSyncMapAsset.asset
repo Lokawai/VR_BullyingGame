@@ -1,0 +1,630 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3e269b39c8e9499c8b7febc3548e30fa, type: 3}
+  m_Name: ConvaiLipSyncMapAsset
+  m_EditorClassIdentifier: Convai.Modules.LipSync::Convai.Modules.LipSync.ConvaiLipSyncMapAsset
+  _targetProfileId: arkit
+  _description: 
+  _mappings:
+  - sourceBlendshape: EyeBlinkLeft
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: EyeLookDownLeft
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: EyeLookInLeft
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: EyeLookOutLeft
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: EyeLookUpLeft
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: EyeSquintLeft
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: EyeWideLeft
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: EyeBlinkRight
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: EyeLookDownRight
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: EyeLookInRight
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: EyeLookOutRight
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: EyeLookUpRight
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: EyeSquintRight
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: EyeWideRight
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: JawForward
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: JawRight
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: JawLeft
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: JawOpen
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthClose
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthFunnel
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthPucker
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthRight
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthLeft
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthSmileLeft
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthSmileRight
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthFrownLeft
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthFrownRight
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthDimpleLeft
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthDimpleRight
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthStretchLeft
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthStretchRight
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthRollLower
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthRollUpper
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthShrugLower
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthShrugUpper
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthPressLeft
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthPressRight
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthLowerDownLeft
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthLowerDownRight
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthUpperUpLeft
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: MouthUpperUpRight
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: BrowDownLeft
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: BrowDownRight
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: BrowInnerUp
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: BrowOuterUpLeft
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: BrowOuterUpRight
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: CheekPuff
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: CheekSquintLeft
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: CheekSquintRight
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: NoseSneerLeft
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: NoseSneerRight
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: TongueOut
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: HeadYaw
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: HeadPitch
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: HeadRoll
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: LeftEyeYaw
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: LeftEyePitch
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: LeftEyeRoll
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: RightEyeYaw
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: RightEyePitch
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  - sourceBlendshape: RightEyeRoll
+    targetNames: []
+    multiplier: 1
+    offset: 0
+    enabled: 1
+    useOverrideValue: 0
+    overrideValue: 0
+    ignoreGlobalModifiers: 0
+    clampMinValue: 0
+    clampMaxValue: 1
+  _globalMultiplier: 1
+  _globalOffset: 0
+  _allowUnmappedPassthrough: 1
