@@ -12,7 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3e269b39c8e9499c8b7febc3548e30fa, type: 3}
   m_Name: ConvaiLipSyncMapAsset
   m_EditorClassIdentifier: Convai.Modules.LipSync::Convai.Modules.LipSync.ConvaiLipSyncMapAsset
-  _targetProfileId: arkit
+  _targetProfileId: mha
   _description: 
   _mappings:
   - sourceBlendshape: EyeBlinkLeft
