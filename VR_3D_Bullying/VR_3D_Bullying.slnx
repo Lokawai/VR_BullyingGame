@@ -3,8 +3,8 @@
   <Project Path="Convai.Runtime.csproj" />
   <Project Path="LiveKit.csproj" />
   <Project Path="Convai.Infrastructure.Protocol.csproj" />
-  <Project Path="Convai.Tests.EditMode.csproj" />
   <Project Path="Unity.XR.Interaction.Toolkit.Samples.StarterAssets.csproj" />
+  <Project Path="Convai.Tests.EditMode.csproj" />
   <Project Path="Convai.Infrastructure.Networking.WebGL.csproj" />
   <Project Path="Convai.Modules.LipSync.csproj" />
   <Project Path="Convai.Domain.csproj" />
