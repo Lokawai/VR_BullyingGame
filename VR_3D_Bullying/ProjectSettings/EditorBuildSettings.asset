@@ -9,8 +9,17 @@ EditorBuildSettings:
     path: Assets/Scenes/Start UI.unity
     guid: 46ab3854c9121ff4e89e59b5018793dc
   - enabled: 1
+    path: Assets/Scenes/Choose Different Level.unity
+    guid: eb1dfeee6aa7fd14c954e5522a40eb26
+  - enabled: 1
+    path: Assets/Scenes/Canteen.unity
+    guid: f8d0eb5a6e950d64ca4b138fc320ed0a
+  - enabled: 1
     path: Assets/Scenes/Main.unity
     guid: e022884e71496974b8997aa91fd993db
+  - enabled: 1
+    path: Assets/Scenes/Corridor.unity
+    guid: 9147aed9513acec45bf30815c64abcea
   m_configObjects:
     Unity.XR.Oculus.Settings: {fileID: 11400000, guid: 338b0dffb1e56cf4789b424d3ba4019c, type: 2}
     com.unity.xr.management.loader_settings: {fileID: 11400000, guid: 46a920288f9e6d5438179209ed978b81, type: 2}

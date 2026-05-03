@@ -9,6 +9,7 @@
   <Project Path="Convai.Modules.LipSync.csproj" />
   <Project Path="Convai.Domain.csproj" />
   <Project Path="Convai.Sample.csproj" />
+  <Project Path="Assembly-CSharp.csproj" />
   <Project Path="Convai.Infrastructure.csproj" />
   <Project Path="LiveKitBridge.csproj" />
   <Project Path="Convai.Application.csproj" />
@@ -19,7 +20,6 @@
   <Project Path="Convai.Runtime.Behaviors.csproj" />
   <Project Path="Convai.Modules.LipSync.Editor.csproj" />
   <Project Path="Convai.Editor.csproj" />
-  <Project Path="Assembly-CSharp.csproj" />
   <Project Path="Convai.Modules.Vision.csproj" />
   <Project Path="Convai.Modules.Narrative.csproj" />
   <Project Path="Convai.Samples.LipSyncSample.csproj" />

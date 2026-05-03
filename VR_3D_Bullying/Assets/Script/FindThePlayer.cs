@@ -16,11 +16,13 @@ public class FindThePlayer : MonoBehaviour
     private float lastAttackTime;
 
     private NavMeshAgent agent;
+    private Animator animator; // Optional: For handling animations
 
     void Start()
     {
         // Get the NavMeshAgent component attached to this enemy
         agent = GetComponent<NavMeshAgent>();
+        animator = GetComponent<Animator>(); // Optional: For handling animations
 
         // Automatically find the player if not assigned in the inspector
         if (player == null)
@@ -64,12 +66,14 @@ public class FindThePlayer : MonoBehaviour
         // Tell the NavMeshAgent to move to the player's current position
         agent.isStopped = false;
         agent.SetDestination(player.position);
+        animator.SetFloat("Blend", 1); 
     }
 
     void AttackPlayer()
     {
         // Stop moving while attacking
         agent.isStopped = true;
+        animator.SetFloat("Blend", 0); // Optional: Set animation speed to 0 when idle
         
         // Face the player
         Vector3 direction = (player.position - transform.position).normalized;
@@ -83,6 +87,7 @@ public class FindThePlayer : MonoBehaviour
             
             // TODO: Add your actual damage logic here (e.g., player.GetComponent<Health>().TakeDamage(10);)
             // TODO: Trigger attack animation here (e.g., animator.SetTrigger("Attack");)
+            animator.SetTrigger("Attack"); // Optional: Set animation speed to 0 when idle
 
             // Reset the cooldown timer
             lastAttackTime = Time.time;
@@ -93,6 +98,7 @@ public class FindThePlayer : MonoBehaviour
     {
         // Stop the agent from moving
         agent.isStopped = true;
+        animator.SetFloat("Blend", 0); // Optional: Set animation speed to 0 when idle
     }
 
     // This draws visual circles in the Unity Editor so you can easily see the ranges
