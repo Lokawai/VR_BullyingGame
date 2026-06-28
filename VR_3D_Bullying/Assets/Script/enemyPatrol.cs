@@ -11,6 +11,8 @@ public class enemyPatrol : MonoBehaviour
 
     [SerializeField] LayerMask playerLayer, groundLayer;
 
+    private  int enemyHealth = 100;
+
     Vector3 walkPoint;
     bool walkPointSet;
 
