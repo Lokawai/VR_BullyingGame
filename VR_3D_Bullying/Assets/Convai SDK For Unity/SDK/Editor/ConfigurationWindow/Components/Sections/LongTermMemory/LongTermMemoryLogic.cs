@@ -13,7 +13,7 @@ using UnityEngine.UIElements;
 namespace Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory
 {
     /// <summary>
-    ///     Handles Long Term Memory (End User) management logic.
+    ///     Handles end-user management logic for the Long Term Memory section.
     /// </summary>
     public class LongTermMemoryLogic : IDisposable
     {
@@ -85,6 +85,7 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory
         {
             if (!_isSectionVisible) return;
 
+            CancelPendingRequests();
             if (hasApiKey)
                 RefreshEndUserList();
             else
@@ -100,7 +101,7 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory
 
         private void SelectAllEndUsers()
         {
-            int itemCount = GetLtmItemCount();
+            int itemCount = GetEndUserItemCount();
             if (itemCount == 0) return;
 
             bool allSelected = _selectedEndUserIds.Count == itemCount;
@@ -111,7 +112,7 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory
                 _selectedEndUserIds.Clear();
                 foreach (VisualElement child in _ui.IDContainer.Children())
                 {
-                    if (child is LTMItemUI item)
+                    if (child is EndUserItemUI item)
                     {
                         item.SetSelected(true);
                         _selectedEndUserIds.Add(item.EndUserId);
@@ -128,7 +129,7 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory
             _selectedEndUserIds.Clear();
             foreach (VisualElement child in _ui.IDContainer.Children())
             {
-                if (child is LTMItemUI item)
+                if (child is EndUserItemUI item)
                     item.SetSelected(false);
             }
 
@@ -136,12 +137,12 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory
             _ui.SelectAllButton.text = SelectAllText;
         }
 
-        private int GetLtmItemCount()
+        private int GetEndUserItemCount()
         {
             int count = 0;
             foreach (VisualElement child in _ui.IDContainer.Children())
             {
-                if (child is LTMItemUI)
+                if (child is EndUserItemUI)
                     count++;
             }
 
@@ -150,7 +151,7 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory
 
         private void RefreshSelectAllButtonText()
         {
-            int itemCount = GetLtmItemCount();
+            int itemCount = GetEndUserItemCount();
             if (itemCount == 0)
             {
                 _ui.SelectAllButton.text = SelectAllText;
@@ -167,7 +168,7 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory
             if (_selectedEndUserIds.Count == 0 || _isDeleting || !_isSectionVisible) return;
 
             if (!EditorUtility.DisplayDialog(
-                    "Delete Long Term Memory Users",
+                    "Delete End Users",
                     $"Delete {_selectedEndUserIds.Count} selected user(s)? This cannot be undone.",
                     "Delete",
                     "Cancel"))
@@ -186,7 +187,7 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory
 
             try
             {
-                var options = new ConvaiRestClientOptions(settings.ApiKey);
+                var options = ConvaiRestOptionsFactory.Create(settings.ApiKey);
                 using var client = new ConvaiRestClient(options);
 
                 List<Task<bool>> deleteTasks = new();
@@ -226,18 +227,18 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory
             }
 
             _isRefreshing = true;
-            SetLoadingState("Loading Long Term Memory users...");
+            SetLoadingState("Loading end users...");
 
             try
             {
-                var options = new ConvaiRestClientOptions(settings.ApiKey);
+                var options = ConvaiRestOptionsFactory.Create(settings.ApiKey);
                 using var client = new ConvaiRestClient(options);
-                EndUsersListResponse response = await client.Ltm.GetEndUsersAsync();
+                EndUsersListResponse response = await FetchAllEndUsersAsync(client);
 
                 if (ShouldIgnoreResult(requestId)) return;
 
                 PopulateEndUserList(response);
-                SetStatus("Long Term Memory users loaded.", false);
+                SetStatus("End users loaded.", false);
             }
             catch (Exception ex)
             {
@@ -253,11 +254,41 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory
             }
         }
 
+        private static async Task<EndUsersListResponse> FetchAllEndUsersAsync(ConvaiRestClient client)
+        {
+            const int pageSize = 200;
+            var allEndUsers = new List<EndUserDetails>();
+            string cursor = null;
+            int totalCount = 0;
+
+            while (true)
+            {
+                EndUsersListResponse page = await client.EndUsers.ListAsync(pageSize, cursor);
+                if (page?.EndUsers != null && page.EndUsers.Count > 0)
+                    allEndUsers.AddRange(page.EndUsers);
+
+                totalCount = Math.Max(totalCount, page?.TotalCount ?? 0);
+
+                if (page == null || !page.HasMore || string.IsNullOrWhiteSpace(page.NextCursor))
+                    break;
+
+                cursor = page.NextCursor;
+            }
+
+            return new EndUsersListResponse
+            {
+                EndUsers = allEndUsers,
+                TotalCount = totalCount > 0 ? totalCount : allEndUsers.Count,
+                NextCursor = null,
+                HasMore = false
+            };
+        }
+
         private static async Task<bool> DeleteEndUserAsync(ConvaiRestClient client, string endUserId)
         {
             try
             {
-                await client.Ltm.DeleteEndUserAsync(endUserId);
+                await client.EndUsers.DeleteAsync(endUserId);
                 ConvaiLogger.Debug($"Deleted end user {endUserId}.", LogCategory.REST);
                 return true;
             }
@@ -275,7 +306,7 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory
         {
             _ui.IDContainer.Clear();
             _selectedEndUserIds.Clear();
-            _ui.TableTitle.text = "No Long Term Memory Users Found";
+            _ui.TableTitle.text = "No End Users Found";
             _ui.IDContainer.style.display = DisplayStyle.None;
             _ui.SelectAllButton.SetEnabled(false);
             _ui.SelectAllButton.text = SelectAllText;
@@ -291,7 +322,7 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory
             List<EndUserDetails> endUsers = response?.EndUsers ?? new List<EndUserDetails>();
             if (endUsers.Count == 0)
             {
-                _ui.TableTitle.text = "No Long Term Memory Users Found";
+                _ui.TableTitle.text = "No End Users Found";
                 _ui.SelectAllButton.SetEnabled(false);
                 _ui.SelectAllButton.text = SelectAllText;
                 _ui.IDContainer.style.display = DisplayStyle.None;
@@ -299,7 +330,7 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory
                 return;
             }
 
-            _ui.TableTitle.text = $"Long Term Memory Users ({response.TotalCount} total)";
+            _ui.TableTitle.text = $"End Users ({response.TotalCount} total)";
             _ui.IDContainer.style.display = DisplayStyle.Flex;
             _ui.SelectAllButton.SetEnabled(true);
             _ui.SelectAllButton.text = SelectAllText;
@@ -307,7 +338,8 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory
 
             foreach (EndUserDetails endUser in endUsers)
             {
-                var item = new LTMItemUI(endUser.DisplayName, endUser.EndUserId, endUser.ShortId, OnEndUserSelected);
+                var item = new EndUserItemUI(endUser.DisplayName, endUser.EndUserId, endUser.ShortId,
+                    OnEndUserSelected);
                 _ui.IDContainer.Add(item);
             }
         }

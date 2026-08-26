@@ -2,7 +2,7 @@
 using System;
 using Convai.Domain.Logging;
 using Convai.Runtime.Logging;
-using Convai.Runtime.Vision;
+using Convai.Runtime.Vision.Sources;
 using Convai.Shared.Types;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -19,7 +19,7 @@ namespace Convai.Runtime.Adapters.Networking
         private const string VisionRootName = "ConvaiVisionRoot";
 
         private const string VideoPublisherTypeName =
-            "Convai.Modules.Vision.ConvaiVideoPublisher, Convai.Modules.Vision";
+            "Convai.Modules.Vision.ConvaiVisionPublisher, Convai.Modules.Vision";
 
         // Non-serialized editor-only field
         private bool _visionSetupQueued;
@@ -28,16 +28,21 @@ namespace Convai.Runtime.Adapters.Networking
         {
             if (UnityEngine.Application.isPlaying) return;
 
-            if (ConnectionType != ConvaiConnectionType.Video)
+            EnsureConfigurationSourceInitialized();
+
+            ConvaiConnectionType effectiveConnectionType = EffectiveConnectionType;
+            // Gate on the resolved vision capability, not the raw connection type: a Disabled+Video
+            // room (legacy native-video path) must not be nagged about dynamic-vision components.
+            if (!EffectiveVisionContextEnabled)
             {
-                _lastValidatedConnectionType = ConnectionType;
+                _lastValidatedConnectionType = effectiveConnectionType;
                 _visionSetupPrompted = false;
                 _visionSetupQueued = false;
                 return;
             }
 
-            bool connectionTypeChanged = _lastValidatedConnectionType != ConnectionType;
-            _lastValidatedConnectionType = ConnectionType;
+            bool connectionTypeChanged = _lastValidatedConnectionType != effectiveConnectionType;
+            _lastValidatedConnectionType = effectiveConnectionType;
 
             (bool hasPublisher, bool hasFrameSource) = GetVisionComponentFlags();
             if (hasPublisher && hasFrameSource)
@@ -63,7 +68,7 @@ namespace Convai.Runtime.Adapters.Networking
                 _visionSetupQueued = false;
                 if (this == null) return;
 
-                if (UnityEngine.Application.isPlaying || ConnectionType != ConvaiConnectionType.Video) return;
+                if (UnityEngine.Application.isPlaying || !EffectiveVisionContextEnabled) return;
 
                 (bool hasPublisher, bool hasFrameSource) = GetVisionComponentFlags();
                 if (hasPublisher && hasFrameSource)
@@ -74,7 +79,7 @@ namespace Convai.Runtime.Adapters.Networking
 
                 bool addComponents = EditorUtility.DisplayDialog(
                     "Convai Vision Setup",
-                    "Connection Type is set to Video, but required vision components are missing.\n\nAdd ConvaiVideoPublisher and CameraVisionFrameSource under this ConvaiRoomManager?",
+                    "Dynamic vision context requires a video publisher and frame source.\n\nAdd ConvaiVisionPublisher and CameraVisionFrameSource under this ConvaiRoomManager?",
                     "Add Components",
                     "Later");
 
@@ -102,7 +107,7 @@ namespace Convai.Runtime.Adapters.Networking
                 if (videoPublisherType == null)
                 {
                     ConvaiLogger.Warning(
-                        "[ConvaiRoomManager] ConvaiVideoPublisher type not found. Ensure Convai.Modules.Vision is installed.",
+                        "ConvaiVisionPublisher type not found. Ensure Convai.Modules.Vision is installed.",
                         LogCategory.Vision);
                     success = false;
                 }
@@ -142,7 +147,7 @@ namespace Convai.Runtime.Adapters.Networking
         private void LogVisionSetupWarning()
         {
             ConvaiLogger.Warning(
-                "[ConvaiRoomManager] Vision components are missing. Add ConvaiVideoPublisher and CameraVisionFrameSource (or another IVisionFrameSource) under this ConvaiRoomManager to enable vision streaming.",
+                "Dynamic vision context is enabled, but vision components are missing. Add ConvaiVisionPublisher and CameraVisionFrameSource (or another IVisionFrameSource) under this ConvaiRoomManager to enable vision streaming.",
                 LogCategory.Vision);
         }
     }

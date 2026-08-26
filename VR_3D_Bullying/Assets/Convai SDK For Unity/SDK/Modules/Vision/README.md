@@ -1,82 +1,70 @@
 # Vision Module (Video Streaming)
 
-## What this is
+This module publishes a video track to the active Convai room so characters can receive visual context from your Unity scene.
 
-The Vision module publishes a **video track** to the Convai room so characters can receive visual context from your Unity scene.
+## Use this when
 
-This module is optional because video has real privacy/performance implications.
+- `ConvaiRoomManager` is in `Video` connection mode
+- you want the AI to see a Unity camera feed, another custom frame source, or the visible WebGL canvas
+- you need editor-side preview/debug tools for the active vision source
 
-On native platforms, the publisher streams a Unity `RenderTexture` produced by an `IVisionFrameSource`.
-On WebGL, the publisher streams the visible Unity browser canvas via `canvas.captureStream()`.
+## Runtime model
 
-## Who should read this
+- On native platforms, `ConvaiVisionPublisher` streams an `IVisionFrameSource`
+- On WebGL, `ConvaiVisionPublisher` publishes the visible Unity browser canvas via `canvas.captureStream()`
+- `CameraVisionFrameSource` uses built-in render hooks on the built-in pipeline and explicit camera rendering on SRP/URP
+- `CameraVisionFrameSource` now owns capture presets and custom capture dimensions directly in the component inspector
+- camera backend internals are treated as SDK-debug settings; normal setup should leave capture strategy on `Auto`
+- Unity treats backend vision capabilities as unknown, so the publisher exposes client transport policy rather than backend-model mode
+- publishing starts after the room connects and stops when the room or module stops unless the publisher is set to `Manual`
 
-- Integrators enabling **Video** mode (via the manager-driven room pipeline)
-- Engineers building a custom vision source (screen capture, AR passthrough, etc.)
+## Publish policy
 
-## Why it exists
+`ConvaiVisionPublisher` owns the public vision transport surface.
 
-The core SDK supports audio + transcripts. Vision is shipped as a module so projects can:
+- `AutoCompatible`: default continuous publish profile for unknown backend capability
+- `HighResponsiveness`: higher transport budget for latency-sensitive live multimodal sessions
+- `LowOverhead`: lower transport budget for cost-sensitive or snapshot-heavy sessions
+- `Manual`: do not auto-publish on connect; call `EnablePublishing(true)` explicitly
 
-- opt in only when needed
-- choose *what* the AI should see (camera, webcam, render texture)
-- control bandwidth and capture costs
+Policy defaults:
 
-## How it's used (recommended path)
+- `AutoCompatible`: `10 fps`, `750_000 bps`
+- `HighResponsiveness`: `15 fps`, `1_000_000 bps`
+- `LowOverhead`: `5 fps`, `350_000 bps`
+- `Manual`: uses `AutoCompatible` defaults when manually enabled
 
-1. Ensure the module is present in your project (this folder exists and compiles as `Convai.Modules.Vision`).
-2. In your scene, select the object with `ConvaiManager` (usually `Systems`) and set the managed `ConvaiRoomManager`:
-   - **Connection Type** → `Video`
-3. In the Unity Editor, if required vision components are missing, the managed room pipeline will prompt you to auto‑add:
-   - `ConvaiVideoPublisher` (publishes to LiveKit)
-   - `CameraVisionFrameSource` (captures from a Unity Camera)
+Optional overrides:
 
-   These are created under a child GameObject named `ConvaiVisionRoot`.
-4. Press Play and connect. When the room connects, the publisher starts capture and publishes the track.
+- `publishFrameRateOverride = 0` means "use the policy default"
+- `publishBitrateOverride = 0` means "use the policy default"
 
-Optional (Editor only): add a preview overlay so you can verify what is being streamed:
+## Recommended setup
 
-- `Convai/Vision/Vision Debug Preview (Editor Only)` (`VisionDebugPreview`)
+1. Ensure the Vision module is present in the project.
+2. Set `ConvaiRoomManager.Connection Type` to `Video`.
+3. Add or accept the suggested vision components:
+   - `ConvaiVisionPublisher`
+   - `CameraVisionFrameSource` or another `IVisionFrameSource` on native platforms
+4. Connect the room.
 
-## Choosing a frame source
+## Common pitfalls
 
-On native platforms, the publisher works with any `IVisionFrameSource`.
+- Camera capture defaults live on `CameraVisionFrameSource`; there is no separate project-wide Vision capture defaults surface
+- if multiple frame sources exist in one hierarchy, assign the publisher source explicitly instead of relying on auto-find
+- `VisionPublishPolicy` describes only client-side publish behavior; it does not reveal which model/provider the backend resolved
+- WebGL still needs a user gesture for audio playback even when video is publishing
+- `VisionDebugPreview` previews `IVisionFrameSource.CurrentRenderTexture`; it does not preview the WebGL canvas-capture path
+- Built-in and SRP camera capture use different internals by design; SRP/URP does not rely on render-hook command buffers
 
-Built-in options:
+## Go deeper (paths from package root)
 
-- `CameraVisionFrameSource` (Runtime) — captures from a Unity `Camera`
-  - Inspector values of `0` fall back to `ConvaiSettings.VisionCaptureWidth/Height/FrameRate`
-- `WebcamVisionFrameSource` (Samples) — captures from a physical webcam device
-
-Custom sources:
-
-- Implement `Convai.Runtime.Vision.IVisionFrameSource`
-- Provide a `RenderTexture` via `CurrentRenderTexture`
-
-Important: `IVisionFrameSource.CurrentRenderTexture` must be **top-down (Y-flipped)** for correct streaming.
-
-### WebGL scene publishing
-
-- WebGL does not publish Unity `RenderTexture` or camera sources directly.
-- `ConvaiVideoPublisher` captures the visible Unity canvas in the browser and publishes that video track instead.
-- Assigned `IVisionFrameSource` components are ignored on WebGL.
-- This path is intended for in-game scene video, not browser screen-share or device camera capture.
-
-## Common pitfalls / gotchas
-
-- Vision is enabled by setting **Connection Type** to `Video` on the manager-managed `ConvaiRoomManager`.
-  - `ConvaiSettings.VisionEnabled` exists, but it does not currently gate the video pipeline in this snapshot.
-- `ConvaiSettings.VisionJpegQuality` exists, but this pipeline streams **video** (not JPEG frames), so it is currently unused.
-- WebGL audio playback still requires a user gesture on most browsers. The default SDK flow consumes the first non-UI scene click after room connection and calls `EnableAudioAndStartListening()`. Use an explicit button in UI-heavy scenes.
-- WebGL/mobile camera & mic permissions are product‑level UX requirements; see `Documentation~/PLATFORMS.md`.
-- Start conservative: low resolution + ~10–15fps to reduce bandwidth and CPU/GPU load.
-- `VisionDebugPreview` is tied to `IVisionFrameSource.CurrentRenderTexture` and does not preview the WebGL canvas-capture path in this snapshot.
-
-## Go deeper
-
-- Platform constraints: `Documentation~/PLATFORMS.md`
-- Project settings reference: `Documentation~/PROJECT-SETTINGS.md`
-- Publisher: `ConvaiVideoPublisher.cs`
-- Frame source interface: `../../Runtime/Vision/IVisionFrameSource.cs`
-- Camera capture source: `../../Runtime/Vision/CameraVisionFrameSource.cs`
-- Debug preview: `../../Runtime/Vision/VisionDebugPreview.cs`
+- Publisher (MonoBehaviour entry): `SDK/Modules/Vision/ConvaiVisionPublisher.cs`
+- Frame source contract: `SDK/Runtime/Vision/Sources/IVisionFrameSource.cs`
+- Camera frame source: `SDK/Runtime/Vision/Sources/CameraVisionFrameSource.cs`
+- Webcam source: `SDK/Runtime/Vision/Sources/WebcamVisionFrameSource.cs`
+- Publish controller: `SDK/Runtime/Vision/Publishing/VisionPublishCoordinator.cs`
+- Publish profile resolver: `SDK/Runtime/Vision/Publishing/VisionPublishProfileResolver.cs`
+- Publish policy enum: `SDK/Runtime/Vision/Publishing/VisionPublishPolicy.cs`
+- Debug preview: `SDK/Runtime/Vision/Debug/VisionDebugPreview.cs`
+- In-repo overview: `Documentation~/SOURCE-REFERENCE.md`

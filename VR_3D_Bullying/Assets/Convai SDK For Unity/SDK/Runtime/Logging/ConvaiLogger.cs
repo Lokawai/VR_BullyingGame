@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
+using System.Runtime.CompilerServices;
 using Convai.Domain.Logging;
 using Unity.Profiling;
 using UnityEngine;
@@ -18,11 +21,11 @@ namespace Convai.Runtime.Logging
     ///     2. ILogger implementation for dependency injection in domain/service layers
     ///     Log level filtering is controlled by ConvaiSettings.GlobalLogLevel and per-category overrides.
     ///     Performance optimizations:
-    ///     - Copy-on-write pattern for lock-free sink dispatch (P0-1)
-    ///     - Cached category level lookup via LoggingConfig (P0-2)
-    ///     - Redundant ShouldLog checks eliminated (P0-4)
-    ///     - Conditional compilation for debug logs (P1-2)
-    ///     - Unity Profiler integration for performance analysis (P2-1)
+    ///     - Copy-on-write pattern for lock-free sink dispatch
+    ///     - Cached category level lookup via LoggingConfig
+    ///     - Redundant ShouldLog checks eliminated
+    ///     - Conditional compilation for debug logs
+    ///     - Unity Profiler integration for performance analysis
     ///     Structured Logging:
     ///     - Supports context dictionaries for key-value pairs
     ///     - Integrates with LogContext for correlation IDs and scoped properties
@@ -39,47 +42,13 @@ namespace Convai.Runtime.Logging
         private static readonly ProfilerMarker _logMessageMarker = new("ConvaiLogger.LogMessage");
         private static readonly ProfilerMarker _dispatchToSinksMarker = new("ConvaiLogger.DispatchToSinks");
         private static readonly ProfilerMarker _shouldLogMarker = new("ConvaiLogger.ShouldLog");
+        private static readonly ConcurrentDictionary<string, string> _sourceTags =
+            new(StringComparer.Ordinal);
 
         /// <summary>
         ///     Raised after the singleton logger instance has been initialized.
         /// </summary>
         public static Action<ConvaiLogger> OnInitializationCompleted = delegate { };
-
-        private static readonly Dictionary<LogLevel, string> _levelColors = new()
-        {
-            { LogLevel.Debug, "cyan" },
-            { LogLevel.Info, "grey" },
-            { LogLevel.Warning, "yellow" },
-            { LogLevel.Error, "red" }
-        };
-
-        private static readonly Dictionary<LogLevel, string> _levelNames = new()
-        {
-            { LogLevel.Trace, nameof(LogLevel.Trace) },
-            { LogLevel.Debug, nameof(LogLevel.Debug) },
-            { LogLevel.Info, nameof(LogLevel.Info) },
-            { LogLevel.Warning, nameof(LogLevel.Warning) },
-            { LogLevel.Error, nameof(LogLevel.Error) },
-            { LogLevel.Off, nameof(LogLevel.Off) }
-        };
-
-        private static readonly Dictionary<LogCategory, string> _categoryNames = new()
-        {
-            { LogCategory.SDK, nameof(LogCategory.SDK) },
-            { LogCategory.Character, nameof(LogCategory.Character) },
-            { LogCategory.Audio, nameof(LogCategory.Audio) },
-            { LogCategory.UI, nameof(LogCategory.UI) },
-            { LogCategory.REST, nameof(LogCategory.REST) },
-            { LogCategory.Transport, nameof(LogCategory.Transport) },
-            { LogCategory.Events, nameof(LogCategory.Events) },
-            { LogCategory.Player, nameof(LogCategory.Player) },
-            { LogCategory.Editor, nameof(LogCategory.Editor) },
-            { LogCategory.Vision, nameof(LogCategory.Vision) },
-            { LogCategory.Bootstrap, nameof(LogCategory.Bootstrap) },
-            { LogCategory.Transcript, nameof(LogCategory.Transcript) },
-            { LogCategory.Narrative, nameof(LogCategory.Narrative) },
-            { LogCategory.LipSync, nameof(LogCategory.LipSync) }
-        };
 
         /// <summary>
         ///     Gets the singleton logger instance. Auto-initializes if not already initialized.
@@ -125,10 +94,71 @@ namespace Convai.Runtime.Logging
             return LoggingConfig.IsEnabled(level, category);
         }
 
+        private static string TagSourceMessage(string message, string callerFilePath)
+        {
+            string tag = ResolveSourceTag(callerFilePath);
+            return string.IsNullOrEmpty(tag) ? message : $"[{tag}] {message}";
+        }
+
+        internal static string ResolveSourceTag(string callerFilePath)
+        {
+            if (string.IsNullOrEmpty(callerFilePath)) return string.Empty;
+
+            return _sourceTags.GetOrAdd(callerFilePath, CreateSourceTag);
+        }
+
+        private static string CreateSourceTag(string callerFilePath)
+        {
+            int lastSeparator = Math.Max(callerFilePath.LastIndexOf('/'), callerFilePath.LastIndexOf('\\'));
+            string sourceFileName = lastSeparator >= 0
+                ? callerFilePath.Substring(lastSeparator + 1)
+                : callerFilePath;
+            string fileName = Path.GetFileNameWithoutExtension(sourceFileName);
+            if (string.IsNullOrEmpty(fileName)) return string.Empty;
+
+            int partialSeparator = fileName.IndexOf('.');
+            return partialSeparator > 0 ? fileName.Substring(0, partialSeparator) : fileName;
+        }
+
+        private static void LogSourceMessage(
+            string message,
+            LogLevel level,
+            LogCategory category,
+            string callerFilePath,
+            Exception exception = null)
+        {
+            using ProfilerMarker.AutoScope _ = _logMessageMarker.Auto();
+
+            if (!ShouldLog(level, category)) return;
+
+            LogMessageUnchecked(TagSourceMessage(message, callerFilePath), level, category, exception);
+        }
+
+        private static void LogSourceMessage(
+            string message,
+            LogLevel level,
+            LogCategory category,
+            IReadOnlyDictionary<string, object> context,
+            string callerFilePath,
+            Exception exception = null)
+        {
+            using ProfilerMarker.AutoScope _ = _logMessageMarker.Auto();
+
+            if (!ShouldLog(level, category)) return;
+
+            LogMessageUnchecked(TagSourceMessage(message, callerFilePath), level, category, context, exception);
+        }
+
+        [Conditional("UNITY_EDITOR")]
+        [Conditional("DEVELOPMENT_BUILD")]
+        [Conditional("CONVAI_DEBUG_LOGGING")]
+        private static void LogDebugMessage(string message, LogCategory category) =>
+            LogMessage(message, LogLevel.Debug, category);
+
         /// <summary>
         ///     Main logging method with ShouldLog check.
         ///     For string messages where the check hasn't been done yet.
-        ///     Instrumented with ProfilerMarker for performance analysis (P2-1).
+        ///     Instrumented with ProfilerMarker for performance analysis.
         /// </summary>
         private static void LogMessage(string message, LogLevel level, LogCategory category, Exception exception = null)
         {
@@ -154,7 +184,7 @@ namespace Convai.Runtime.Logging
 
         /// <summary>
         ///     Internal logging method that skips ShouldLog check.
-        ///     Use when caller has already verified ShouldLog (P0-4 optimization).
+        ///     Use when caller has already verified ShouldLog.
         /// </summary>
         private static void LogMessageUnchecked(string message, LogLevel level, LogCategory category,
             Exception exception = null)
@@ -220,7 +250,7 @@ namespace Convai.Runtime.Logging
         /// <summary>
         ///     Dispatches a log entry to all registered sinks.
         ///     Uses lock-free read of volatile snapshot for high-frequency performance.
-        ///     Instrumented with ProfilerMarker for performance analysis (P2-1).
+        ///     Instrumented with ProfilerMarker for performance analysis.
         /// </summary>
         private static void DispatchToSinks(in LogEntry entry)
         {
@@ -240,10 +270,6 @@ namespace Convai.Runtime.Logging
                 }
             }
         }
-
-        /// <summary>Logs a message using the default SDK category at debug level.</summary>
-        /// <param name="message">Message object.</param>
-        public void Log(object message) => Debug(message, LogCategory.SDK);
 
         #region Sink Management
 
@@ -340,88 +366,109 @@ namespace Convai.Runtime.Logging
 
         /// <summary>
         ///     Logs an info message. Checks if logging is enabled before converting to string.
-        ///     Calls LogMessageUnchecked to avoid redundant check (P0-4).
+        ///     Calls LogMessageUnchecked to avoid redundant check.
         /// </summary>
-        public static void Info(object message, LogCategory category)
+        public static void Info(object message, LogCategory category, [CallerFilePath] string callerFilePath = "")
         {
             if (!ShouldLog(LogLevel.Info, category)) return;
-            LogMessageUnchecked(message.ToString(), LogLevel.Info, category);
+            LogMessageUnchecked(TagSourceMessage(message.ToString(), callerFilePath), LogLevel.Info, category);
         }
 
         /// <summary>
         ///     Logs a debug message. Checks if logging is enabled before converting to string.
-        ///     Calls LogMessageUnchecked to avoid redundant check (P0-4).
-        ///     Conditionally compiled - stripped in release builds unless CONVAI_DEBUG_LOGGING is defined (P1-2).
+        ///     Calls LogMessageUnchecked to avoid redundant check.
+        ///     Conditionally compiled - stripped in release builds unless CONVAI_DEBUG_LOGGING is defined.
         /// </summary>
         [Conditional("UNITY_EDITOR")]
         [Conditional("DEVELOPMENT_BUILD")]
         [Conditional("CONVAI_DEBUG_LOGGING")]
-        public static void Debug(object message, LogCategory category)
+        public static void Debug(object message, LogCategory category, [CallerFilePath] string callerFilePath = "")
         {
             if (!ShouldLog(LogLevel.Debug, category)) return;
-            LogMessageUnchecked(message.ToString(), LogLevel.Debug, category);
+            LogMessageUnchecked(TagSourceMessage(message.ToString(), callerFilePath), LogLevel.Debug, category);
         }
 
         /// <summary>
         ///     Logs a warning message. Checks if logging is enabled before converting to string.
-        ///     Calls LogMessageUnchecked to avoid redundant check (P0-4).
+        ///     Calls LogMessageUnchecked to avoid redundant check.
         /// </summary>
-        public static void Warning(object message, LogCategory category)
+        public static void Warning(object message, LogCategory category, [CallerFilePath] string callerFilePath = "")
         {
             if (!ShouldLog(LogLevel.Warning, category)) return;
-            LogMessageUnchecked(message.ToString(), LogLevel.Warning, category);
+            LogMessageUnchecked(TagSourceMessage(message.ToString(), callerFilePath), LogLevel.Warning, category);
         }
 
         /// <summary>
         ///     Logs an error message. Checks if logging is enabled before converting to string.
-        ///     Calls LogMessageUnchecked to avoid redundant check (P0-4).
+        ///     Calls LogMessageUnchecked to avoid redundant check.
         /// </summary>
-        public static void Error(object message, LogCategory category)
+        public static void Error(object message, LogCategory category, [CallerFilePath] string callerFilePath = "")
         {
             if (!ShouldLog(LogLevel.Error, category)) return;
-            LogMessageUnchecked(message.ToString(), LogLevel.Error, category);
+            LogMessageUnchecked(TagSourceMessage(message.ToString(), callerFilePath), LogLevel.Error, category);
         }
 
         /// <summary>Logs an informational message.</summary>
         /// <param name="message">Message text.</param>
         /// <param name="category">Log category.</param>
-        public static void Info(string message, LogCategory category) => LogMessage(message, LogLevel.Info, category);
+        public static void Info(
+            string message,
+            LogCategory category,
+            [CallerFilePath] string callerFilePath = "") =>
+            LogSourceMessage(message, LogLevel.Info, category, callerFilePath);
 
         /// <summary>
         ///     Logs a debug message (string overload).
-        ///     Conditionally compiled - stripped in release builds unless CONVAI_DEBUG_LOGGING is defined (P1-2).
+        ///     Conditionally compiled - stripped in release builds unless CONVAI_DEBUG_LOGGING is defined.
         /// </summary>
         [Conditional("UNITY_EDITOR")]
         [Conditional("DEVELOPMENT_BUILD")]
         [Conditional("CONVAI_DEBUG_LOGGING")]
-        public static void Debug(string message, LogCategory category) => LogMessage(message, LogLevel.Debug, category);
+        public static void Debug(
+            string message,
+            LogCategory category,
+            [CallerFilePath] string callerFilePath = "") =>
+            LogSourceMessage(message, LogLevel.Debug, category, callerFilePath);
 
         /// <summary>Logs a warning message.</summary>
         /// <param name="message">Message text.</param>
         /// <param name="category">Log category.</param>
-        public static void Warning(string message, LogCategory category) =>
-            LogMessage(message, LogLevel.Warning, category);
+        public static void Warning(
+            string message,
+            LogCategory category,
+            [CallerFilePath] string callerFilePath = "") =>
+            LogSourceMessage(message, LogLevel.Warning, category, callerFilePath);
 
         /// <summary>Logs an error message.</summary>
         /// <param name="message">Message text.</param>
         /// <param name="category">Log category.</param>
-        public static void Error(string message, LogCategory category) => LogMessage(message, LogLevel.Error, category);
+        public static void Error(
+            string message,
+            LogCategory category,
+            [CallerFilePath] string callerFilePath = "") =>
+            LogSourceMessage(message, LogLevel.Error, category, callerFilePath);
 
         /// <summary>Logs an exception message.</summary>
         /// <param name="message">Message text.</param>
         /// <param name="category">Log category.</param>
-        public static void Exception(string message, LogCategory category) =>
-            LogMessage(message, LogLevel.Error, category);
+        public static void Exception(
+            string message,
+            LogCategory category,
+            [CallerFilePath] string callerFilePath = "") =>
+            LogSourceMessage(message, LogLevel.Error, category, callerFilePath);
 
         /// <summary>
         ///     Logs an exception. Checks if error logging is enabled before formatting exception.
-        ///     Calls LogMessageUnchecked to avoid redundant check (P0-4).
+        ///     Calls LogMessageUnchecked to avoid redundant check.
         /// </summary>
-        public static void Exception(Exception ex, LogCategory category)
+        public static void Exception(
+            Exception ex,
+            LogCategory category,
+            [CallerFilePath] string callerFilePath = "")
         {
             if (!ShouldLog(LogLevel.Error, category)) return;
             string message = $"{ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}";
-            LogMessageUnchecked(message, LogLevel.Error, category);
+            LogMessageUnchecked(TagSourceMessage(message, callerFilePath), LogLevel.Error, category);
         }
 
         #endregion
@@ -437,16 +484,16 @@ namespace Convai.Runtime.Logging
             {
                 case LogLevel.Trace:
                 case LogLevel.Debug:
-                    Debug(message, category);
+                    LogDebugMessage(message, category);
                     break;
                 case LogLevel.Info:
-                    Info(message, category);
+                    LogMessage(message, LogLevel.Info, category);
                     break;
                 case LogLevel.Warning:
-                    Warning(message, category);
+                    LogMessage(message, LogLevel.Warning, category);
                     break;
                 case LogLevel.Error:
-                    Error(message, category);
+                    LogMessage(message, LogLevel.Error, category);
                     break;
             }
         }
@@ -457,7 +504,7 @@ namespace Convai.Runtime.Logging
         public void Log(LogLevel level, string message, IReadOnlyDictionary<string, object> context,
             LogCategory category = LogCategory.SDK) => LogMessage(message, level, category, context);
 
-        void ILogger.Debug(string message, LogCategory category) => Debug(message, category);
+        void ILogger.Debug(string message, LogCategory category) => LogDebugMessage(message, category);
 
         /// <summary>
         ///     Implements ILogger.Debug with structured context.
@@ -469,7 +516,7 @@ namespace Convai.Runtime.Logging
             LogMessageUnchecked(message, LogLevel.Debug, category, context);
         }
 
-        void ILogger.Info(string message, LogCategory category) => Info(message, category);
+        void ILogger.Info(string message, LogCategory category) => LogMessage(message, LogLevel.Info, category);
 
         /// <summary>
         ///     Implements ILogger.Info with structured context.
@@ -481,7 +528,7 @@ namespace Convai.Runtime.Logging
             LogMessageUnchecked(message, LogLevel.Info, category, context);
         }
 
-        void ILogger.Warning(string message, LogCategory category) => Warning(message, category);
+        void ILogger.Warning(string message, LogCategory category) => LogMessage(message, LogLevel.Warning, category);
 
         /// <summary>
         ///     Implements ILogger.Warning with structured context.
@@ -493,7 +540,7 @@ namespace Convai.Runtime.Logging
             LogMessageUnchecked(message, LogLevel.Warning, category, context);
         }
 
-        void ILogger.Error(string message, LogCategory category) => Error(message, category);
+        void ILogger.Error(string message, LogCategory category) => LogMessage(message, LogLevel.Error, category);
 
         /// <summary>
         ///     Implements ILogger.Error with structured context.
@@ -511,12 +558,9 @@ namespace Convai.Runtime.Logging
         /// </summary>
         public void Error(Exception exception, string message = null, LogCategory category = LogCategory.SDK)
         {
-            if (!IsEnabled(LogLevel.Error, category)) return;
+            if (exception == null || !IsEnabled(LogLevel.Error, category)) return;
 
-            string fullMessage = string.IsNullOrEmpty(message)
-                ? $"{exception.GetType().Name}: {exception.Message}\n{exception.StackTrace}"
-                : $"{message}\n{exception.GetType().Name}: {exception.Message}\n{exception.StackTrace}";
-            Error(fullMessage, category);
+            LogMessageUnchecked(message, LogLevel.Error, category, exception);
         }
 
         /// <summary>
@@ -525,12 +569,9 @@ namespace Convai.Runtime.Logging
         public void Error(Exception exception, string message, IReadOnlyDictionary<string, object> context,
             LogCategory category = LogCategory.SDK)
         {
-            if (!IsEnabled(LogLevel.Error, category)) return;
+            if (exception == null || !IsEnabled(LogLevel.Error, category)) return;
 
-            string fullMessage = string.IsNullOrEmpty(message)
-                ? $"{exception.GetType().Name}: {exception.Message}\n{exception.StackTrace}"
-                : $"{message}\n{exception.GetType().Name}: {exception.Message}\n{exception.StackTrace}";
-            LogMessageUnchecked(fullMessage, LogLevel.Error, category, context);
+            LogMessageUnchecked(message, LogLevel.Error, category, context, exception);
         }
 
         /// <summary>
@@ -546,19 +587,22 @@ namespace Convai.Runtime.Logging
         ///     Logs an info message with structured context (static convenience method).
         /// </summary>
         public static void InfoWithContext(string message, IReadOnlyDictionary<string, object> context,
-            LogCategory category) => LogMessage(message, LogLevel.Info, category, context);
+            LogCategory category, [CallerFilePath] string callerFilePath = "") =>
+            LogSourceMessage(message, LogLevel.Info, category, context, callerFilePath);
 
         /// <summary>
         ///     Logs a warning message with structured context (static convenience method).
         /// </summary>
         public static void WarningWithContext(string message, IReadOnlyDictionary<string, object> context,
-            LogCategory category) => LogMessage(message, LogLevel.Warning, category, context);
+            LogCategory category, [CallerFilePath] string callerFilePath = "") =>
+            LogSourceMessage(message, LogLevel.Warning, category, context, callerFilePath);
 
         /// <summary>
         ///     Logs an error message with structured context (static convenience method).
         /// </summary>
         public static void ErrorWithContext(string message, IReadOnlyDictionary<string, object> context,
-            LogCategory category) => LogMessage(message, LogLevel.Error, category, context);
+            LogCategory category, [CallerFilePath] string callerFilePath = "") =>
+            LogSourceMessage(message, LogLevel.Error, category, context, callerFilePath);
 
         /// <summary>
         ///     Logs a debug message with structured context (static convenience method).
@@ -568,7 +612,8 @@ namespace Convai.Runtime.Logging
         [Conditional("DEVELOPMENT_BUILD")]
         [Conditional("CONVAI_DEBUG_LOGGING")]
         public static void DebugWithContext(string message, IReadOnlyDictionary<string, object> context,
-            LogCategory category) => LogMessage(message, LogLevel.Debug, category, context);
+            LogCategory category, [CallerFilePath] string callerFilePath = "") =>
+            LogSourceMessage(message, LogLevel.Debug, category, context, callerFilePath);
 
         #endregion
 

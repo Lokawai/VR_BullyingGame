@@ -102,7 +102,7 @@ namespace Convai.Infrastructure.Networking.WebGL
         {
             if (IsAttached)
             {
-                ConvaiLogger.Warning("[WebGLRemoteVideoTrack] Track is already attached.", LogCategory.Transport);
+                ConvaiLogger.Warning("Track is already attached.", LogCategory.Transport);
                 return;
             }
 
@@ -110,7 +110,7 @@ namespace Convai.Infrastructure.Networking.WebGL
             UnderlyingTrack.Attach();
             IsAttached = true;
 
-            ConvaiLogger.Info($"[WebGLRemoteVideoTrack] Attached video track '{Name}' to browser video element. " +
+            ConvaiLogger.Info($"Attached video track '{Name}' to browser video element. " +
                               "Note: RenderTexture parameter is not directly usable on WebGL. " +
                               "Consider using HTML overlay or WebGL canvas integration for video display.",
                 LogCategory.Transport);
@@ -139,18 +139,12 @@ namespace Convai.Infrastructure.Networking.WebGL
 
         #region Internal Methods
 
-        /// <summary>
-        ///     Sets the subscription state of this track.
-        /// </summary>
         internal void SetSubscribed(bool subscribed)
         {
             IsSubscribed = subscribed;
             if (!subscribed) Detach();
         }
 
-        /// <summary>
-        ///     Gets the underlying LiveKit remote track.
-        /// </summary>
         internal RemoteTrack UnderlyingTrack { get; }
 
         #endregion

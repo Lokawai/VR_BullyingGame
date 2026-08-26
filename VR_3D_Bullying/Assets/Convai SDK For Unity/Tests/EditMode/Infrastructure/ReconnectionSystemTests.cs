@@ -2,233 +2,98 @@ using System;
 using Convai.Infrastructure.Networking.Models;
 using NUnit.Framework;
 
-namespace Convai.Tests.EditMode
+namespace Convai.Tests.EditMode.Infrastructure
 {
     [TestFixture]
-    public class ConnectionContextTests
+    public sealed class ReconnectionSystemTests
     {
         [Test]
-        public void Empty_HasNoValidRoom()
+        public void ConnectionContext_TracksImmutableDisconnectionSnapshot()
         {
-            var context = ConnectionContext.Empty;
-            Assert.IsFalse(context.HasValidRoom, "Empty context should not have a valid room.");
-            Assert.IsFalse(context.CanResumeSession, "Empty context should not be able to resume session.");
+            DateTime connected = DateTime.UtcNow.AddMinutes(-5);
+            DateTime disconnected = DateTime.UtcNow;
+            var original = new ConnectionContext("room", "character-session", "session", "character", connected);
+
+            ConnectionContext snapshot = original.WithDisconnection(disconnected);
+
+            Assert.That(snapshot.RoomName, Is.EqualTo("room"));
+            Assert.That(snapshot.CharacterSessionId, Is.EqualTo("character-session"));
+            Assert.That(snapshot.SessionId, Is.EqualTo("session"));
+            Assert.That(snapshot.CharacterId, Is.EqualTo("character"));
+            Assert.That(snapshot.ConnectedAtUtc, Is.EqualTo(connected));
+            Assert.That(snapshot.DisconnectedAtUtc, Is.EqualTo(disconnected));
+            Assert.That(original.DisconnectedAtUtc, Is.Null);
+        }
+
+        [TestCase("room", true, 30, 60, true)]
+        [TestCase("room", true, 120, 60, false)]
+        [TestCase("room", false, 0, 60, false)]
+        [TestCase(null, true, 30, 60, false)]
+        public void ConnectionContext_RejoinValidityUsesRoomTimestampAndTtl(
+            string room,
+            bool hasDisconnectedAt,
+            int ageSeconds,
+            int ttlSeconds,
+            bool expected)
+        {
+            DateTime? disconnected = hasDisconnectedAt ? DateTime.UtcNow.AddSeconds(-ageSeconds) : null;
+            var context = new ConnectionContext(room, "character-session", "session", "character",
+                DateTime.UtcNow.AddMinutes(-5), disconnected);
+
+            Assert.That(context.IsRoomValidForRejoin(ttlSeconds), Is.EqualTo(expected));
         }
 
         [Test]
-        public void Constructor_SetsPropertiesCorrectly()
+        public void ReconnectPolicy_PresetsCarryOperationalDefaults()
         {
-            DateTime connectedAt = DateTime.UtcNow;
+            ReconnectPolicy defaults = ReconnectPolicy.Default;
+            Assert.That(defaults.RoomRejoinTtlSeconds, Is.EqualTo(60));
+            Assert.That(defaults.ResumePolicy, Is.EqualTo(ResumePolicy.ResumeIfPossible));
+            Assert.That(defaults.MaxReconnectAttempts, Is.EqualTo(3));
+            Assert.That(defaults.SpawnAgentOnRejoin, Is.True);
+            Assert.That(defaults.StartWaitTimeoutMs, Is.EqualTo(5000));
+            Assert.That(defaults.AutoMicStartDelaySeconds, Is.EqualTo(0.5f));
+
+            ReconnectPolicy fresh = ReconnectPolicy.AlwaysCreateNew;
+            Assert.That(fresh.RoomRejoinTtlSeconds, Is.Zero);
+            Assert.That(fresh.ResumePolicy, Is.EqualTo(ResumePolicy.AlwaysFresh));
+        }
+
+        [TestCase(30, ResumePolicy.ResumeIfPossible, true, true, "room", "character-session")]
+        [TestCase(120, ResumePolicy.ResumeIfPossible, true, false, null, "character-session")]
+        [TestCase(30, ResumePolicy.AlwaysFresh, true, true, "room", null)]
+        [TestCase(30, ResumePolicy.AlwaysResume, false, true, "room", "character-session")]
+        public void RoomJoinOptions_FromContextAppliesTtlResumeAndSpawnPolicy(
+            int disconnectedAgeSeconds,
+            ResumePolicy resumePolicy,
+            bool spawnAgent,
+            bool expectedJoin,
+            string expectedRoom,
+            string expectedSession)
+        {
             var context = new ConnectionContext(
-                "test-room",
-                "char-session-123",
-                "session-456",
-                "character-1",
-                connectedAt);
-
-            Assert.AreEqual("test-room", context.RoomName);
-            Assert.AreEqual("char-session-123", context.CharacterSessionId);
-            Assert.AreEqual("session-456", context.SessionId);
-            Assert.AreEqual("character-1", context.CharacterId);
-            Assert.AreEqual(connectedAt, context.ConnectedAtUtc);
-            Assert.IsNull(context.DisconnectedAtUtc);
-            Assert.IsTrue(context.HasValidRoom);
-            Assert.IsTrue(context.CanResumeSession);
-        }
-
-        [Test]
-        public void WithDisconnection_CreatesNewContextWithTimestamp()
-        {
-            DateTime connectedAt = DateTime.UtcNow.AddMinutes(-5);
-            DateTime disconnectedAt = DateTime.UtcNow;
-            var original = new ConnectionContext("room", "sess", "sid", "char", connectedAt);
-            ConnectionContext withDisconnect = original.WithDisconnection(disconnectedAt);
-
-            Assert.AreEqual("room", withDisconnect.RoomName);
-            Assert.AreEqual(disconnectedAt, withDisconnect.DisconnectedAtUtc);
-            Assert.IsNull(original.DisconnectedAtUtc, "Original should not be modified.");
-        }
-
-        [Test]
-        public void IsRoomValidForRejoin_WithinTTL_ReturnsTrue()
-        {
-            DateTime connectedAt = DateTime.UtcNow.AddMinutes(-5);
-            DateTime disconnectedAt = DateTime.UtcNow.AddSeconds(-30);
-            var context = new ConnectionContext("room", "sess", "sid", "char", connectedAt, disconnectedAt);
-
-            Assert.IsTrue(context.IsRoomValidForRejoin(60), "Room should be valid for rejoin within 60s TTL.");
-        }
-
-        [Test]
-        public void IsRoomValidForRejoin_ExpiredTTL_ReturnsFalse()
-        {
-            DateTime connectedAt = DateTime.UtcNow.AddMinutes(-5);
-            DateTime disconnectedAt = DateTime.UtcNow.AddSeconds(-120);
-            var context = new ConnectionContext("room", "sess", "sid", "char", connectedAt, disconnectedAt);
-
-            Assert.IsFalse(context.IsRoomValidForRejoin(60), "Room should not be valid for rejoin after TTL expired.");
-        }
-
-        [Test]
-        public void IsRoomValidForRejoin_NoDisconnectTimestamp_ReturnsFalse()
-        {
-            var context = new ConnectionContext("room", "sess", "sid", "char", DateTime.UtcNow);
-            Assert.IsFalse(context.IsRoomValidForRejoin(60),
-                "Room should not be valid for rejoin without disconnect timestamp.");
-        }
-
-        [Test]
-        public void IsRoomValidForRejoin_NoValidRoom_ReturnsFalse()
-        {
-            var context = new ConnectionContext(null, "sess", "sid", "char", DateTime.UtcNow, DateTime.UtcNow);
-            Assert.IsFalse(context.IsRoomValidForRejoin(60), "Should return false when no valid room.");
-        }
-    }
-
-    [TestFixture]
-    public class ReconnectPolicyTests
-    {
-        [Test]
-        public void Default_HasSensibleDefaults()
-        {
-            var policy = ReconnectPolicy.Default;
-
-            Assert.AreEqual(60.0, policy.RoomRejoinTtlSeconds);
-            Assert.AreEqual(ResumePolicy.ResumeIfPossible, policy.ResumePolicy);
-            Assert.AreEqual(3, policy.MaxReconnectAttempts);
-            Assert.IsTrue(policy.SpawnAgentOnRejoin);
-        }
-
-        [Test]
-        public void AlwaysCreateNew_HasZeroTTLAndAlwaysFresh()
-        {
-            ReconnectPolicy policy = ReconnectPolicy.AlwaysCreateNew;
-
-            Assert.AreEqual(0, policy.RoomRejoinTtlSeconds);
-            Assert.AreEqual(ResumePolicy.AlwaysFresh, policy.ResumePolicy);
-        }
-
-        [Test]
-        public void Constructor_CustomValues_ArePreserved()
-        {
-            var policy = new ReconnectPolicy(
-                120,
-                ResumePolicy.AlwaysResume,
-                5,
-                false,
-                10000,
-                1.0f);
-
-            Assert.AreEqual(120, policy.RoomRejoinTtlSeconds);
-            Assert.AreEqual(ResumePolicy.AlwaysResume, policy.ResumePolicy);
-            Assert.AreEqual(5, policy.MaxReconnectAttempts);
-            Assert.IsFalse(policy.SpawnAgentOnRejoin);
-            Assert.AreEqual(10000, policy.StartWaitTimeoutMs);
-            Assert.AreEqual(1.0f, policy.AutoMicStartDelaySeconds, 0.001f);
-        }
-
-        [Test]
-        public void Default_HasCorrectTimeoutDefaults()
-        {
-            var policy = ReconnectPolicy.Default;
-
-            Assert.AreEqual(5000, policy.StartWaitTimeoutMs);
-            Assert.AreEqual(0.5f, policy.AutoMicStartDelaySeconds, 0.001f);
-        }
-    }
-
-    [TestFixture]
-    public class RoomJoinOptionsTests
-    {
-        [Test]
-        public void IsJoinRequest_WithRoomName_ReturnsTrue()
-        {
-            var options = new RoomJoinOptions("my-room");
-            Assert.IsTrue(options.IsJoinRequest);
-        }
-
-        [Test]
-        public void IsJoinRequest_WithoutRoomName_ReturnsFalse()
-        {
-            var options = RoomJoinOptions.CreateNew();
-            Assert.IsFalse(options.IsJoinRequest);
-        }
-
-        [Test]
-        public void FromContext_ValidRoomWithinTTL_ReturnsJoinRequest()
-        {
-            DateTime disconnectedAt = DateTime.UtcNow.AddSeconds(-30);
-            var context = new ConnectionContext("room", "sess", "sid", "char", DateTime.UtcNow.AddMinutes(-5),
-                disconnectedAt);
-            var policy = ReconnectPolicy.Default;
+                "room",
+                "character-session",
+                "session",
+                "character",
+                DateTime.UtcNow.AddMinutes(-5),
+                DateTime.UtcNow.AddSeconds(-disconnectedAgeSeconds));
+            var policy = new ReconnectPolicy(resumePolicy: resumePolicy, spawnAgentOnRejoin: spawnAgent);
 
             RoomJoinOptions options = RoomJoinOptions.FromContext(context, policy);
 
-            Assert.IsTrue(options.IsJoinRequest);
-            Assert.AreEqual("room", options.RoomName);
-            Assert.AreEqual("sess", options.CharacterSessionId);
+            Assert.That(options.IsJoinRequest, Is.EqualTo(expectedJoin));
+            Assert.That(options.RoomName, Is.EqualTo(expectedRoom));
+            Assert.That(options.CharacterSessionId, Is.EqualTo(expectedSession));
+            Assert.That(options.SpawnAgent, Is.EqualTo(expectedJoin ? spawnAgent : true));
         }
 
         [Test]
-        public void FromContext_ExpiredRoom_ReturnsCreateNew()
-        {
-            DateTime disconnectedAt = DateTime.UtcNow.AddSeconds(-120);
-            var context = new ConnectionContext("room", "sess", "sid", "char", DateTime.UtcNow.AddMinutes(-5),
-                disconnectedAt);
-            var policy = ReconnectPolicy.Default;
-
-            RoomJoinOptions options = RoomJoinOptions.FromContext(context, policy);
-
-            Assert.IsFalse(options.IsJoinRequest, "Expired room should result in create new.");
-            Assert.IsNull(options.RoomName);
-            Assert.AreEqual("sess", options.CharacterSessionId);
-        }
-
-        [Test]
-        public void FromContext_NullContext_ReturnsCreateNew()
+        public void RoomJoinOptions_NullContextCreatesFreshRoom()
         {
             RoomJoinOptions options = RoomJoinOptions.FromContext(null, ReconnectPolicy.Default);
-            Assert.IsFalse(options.IsJoinRequest);
-        }
-
-        [Test]
-        public void FromContext_AlwaysFreshPolicy_DoesNotIncludeSessionId()
-        {
-            DateTime disconnectedAt = DateTime.UtcNow.AddSeconds(-30);
-            var context = new ConnectionContext("room", "sess", "sid", "char", DateTime.UtcNow.AddMinutes(-5),
-                disconnectedAt);
-            ReconnectPolicy policy = ReconnectPolicy.AlwaysCreateNew;
-
-            RoomJoinOptions options = RoomJoinOptions.FromContext(context, policy);
-
-            Assert.IsNull(options.CharacterSessionId, "AlwaysFresh policy should not include session ID.");
-        }
-
-        [Test]
-        public void FromContext_SpawnAgentOnRejoin_IsRespected()
-        {
-            DateTime disconnectedAt = DateTime.UtcNow.AddSeconds(-30);
-            var context = new ConnectionContext("room", "sess", "sid", "char", DateTime.UtcNow.AddMinutes(-5),
-                disconnectedAt);
-            var policyWithSpawn = new ReconnectPolicy(spawnAgentOnRejoin: true);
-            var policyNoSpawn = new ReconnectPolicy(spawnAgentOnRejoin: false);
-
-            RoomJoinOptions optionsWithSpawn = RoomJoinOptions.FromContext(context, policyWithSpawn);
-            RoomJoinOptions optionsNoSpawn = RoomJoinOptions.FromContext(context, policyNoSpawn);
-
-            Assert.IsTrue(optionsWithSpawn.SpawnAgent);
-            Assert.IsFalse(optionsNoSpawn.SpawnAgent);
-        }
-
-        [Test]
-        public void CreateNew_SetsCorrectDefaults()
-        {
-            var options = RoomJoinOptions.CreateNew("session-123", 10);
-
-            Assert.IsFalse(options.IsJoinRequest);
-            Assert.AreEqual("session-123", options.CharacterSessionId);
-            Assert.AreEqual(10, options.MaxNumParticipants);
-            Assert.IsTrue(options.SpawnAgent);
+            Assert.That(options.IsJoinRequest, Is.False);
+            Assert.That(options.CharacterSessionId, Is.Null);
         }
     }
 }

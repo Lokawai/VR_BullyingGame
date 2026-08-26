@@ -112,6 +112,7 @@ namespace LiveKit
         }
     }
 
+
     public class FrameCryptor
     {
         internal FfiHandle RoomHandle;
@@ -150,6 +151,7 @@ namespace LiveKit
         }
     }
 
+
     public class E2EEManager
     {
         internal FfiHandle RoomHandle;
@@ -175,7 +177,7 @@ namespace LiveKit
         {
             using var request = FFIBridge.Instance.NewRequest<E2eeManagerSetEnabledRequest>();
             var e2ee = request.request;
-   
+
             using var response = request.Send();
             FfiResponse resp = response;
 

@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using Convai.Runtime.Presentation.Services;
 using Convai.Runtime.Presentation.Services.Settings;
+using Convai.Runtime.Room;
 using Convai.Shared.Abstractions;
 using Convai.Shared.Types;
+using Convai.Tests.EditMode.Mocks;
 using NUnit.Framework;
 
 namespace Convai.Tests.EditMode.Runtime
@@ -14,7 +16,7 @@ namespace Convai.Tests.EditMode.Runtime
         public void SettingsPanelPresenter_BuildsCorrectPatch_FromView()
         {
             var settingsService = new StubSettingsService(
-                new ConvaiRuntimeSettingsSnapshot("Default", true, false, "Mic-A", ConvaiTranscriptMode.Chat));
+                new ConvaiRuntimeSettingsSnapshot("Default", true, false, "Mic-A"));
             var panelController = new ConvaiSettingsPanelController();
             var microphoneService = new StubMicrophoneDeviceService(
                 new ConvaiMicrophoneDevice("Mic-A", "Mic A", 0),
@@ -24,29 +26,27 @@ namespace Convai.Tests.EditMode.Runtime
             using var presenter = new SettingsPanelPresenter(settingsService, panelController, microphoneService);
             presenter.Bind(view);
 
-            view.PlayerDisplayNameInput = " Updated Name ";
+            view.PlayerDisplayNameInput = "Rishav";
             view.TranscriptEnabledInput = false;
             view.NotificationsEnabledInput = true;
             view.SelectedMicrophoneDeviceId = "Mic-B";
-            view.SelectedTranscriptModeInput = ConvaiTranscriptMode.Subtitle;
 
             panelController.Open();
             view.RaiseSaveRequested();
 
             Assert.IsNotNull(settingsService.LastPatch);
-            Assert.AreEqual(" Updated Name ", settingsService.LastPatch.PlayerDisplayName);
+            Assert.AreEqual("Rishav", settingsService.LastPatch.PlayerDisplayName);
             Assert.AreEqual(false, settingsService.LastPatch.TranscriptEnabled);
             Assert.AreEqual(true, settingsService.LastPatch.NotificationsEnabled);
             Assert.AreEqual("Mic-B", settingsService.LastPatch.PreferredMicrophoneDeviceId);
-            Assert.AreEqual(ConvaiTranscriptMode.Chat, settingsService.LastPatch.TranscriptMode);
             Assert.IsFalse(panelController.IsOpen);
         }
 
         [Test]
-        public void SettingsPanelPresenter_RendersSnapshot_AndChatOnlyModes()
+        public void SettingsPanelPresenter_RendersSnapshot()
         {
             var settingsService = new StubSettingsService(
-                new ConvaiRuntimeSettingsSnapshot("Initial", true, false, "Mic-A", ConvaiTranscriptMode.Chat));
+                new ConvaiRuntimeSettingsSnapshot("Initial", true, false, "Mic-A"));
             var panelController = new ConvaiSettingsPanelController();
             var microphoneService = new StubMicrophoneDeviceService(
                 new ConvaiMicrophoneDevice("Mic-A", "Mic A", 0),
@@ -60,51 +60,88 @@ namespace Convai.Tests.EditMode.Runtime
             Assert.IsTrue(view.RenderedTranscriptEnabled);
             Assert.IsFalse(view.RenderedNotificationsEnabled);
             Assert.AreEqual("Mic-A", view.RenderedSelectedMicrophoneDeviceId);
-            CollectionAssert.AreEqual(
-                new[] { ConvaiTranscriptMode.Chat },
-                view.RenderedTranscriptModes);
-            Assert.AreEqual(ConvaiTranscriptMode.Chat, view.RenderedSelectedTranscriptMode);
 
             settingsService.EmitChange(new ConvaiRuntimeSettingsSnapshot(
                 "Updated",
                 false,
                 true,
-                "Mic-B",
-                ConvaiTranscriptMode.Subtitle));
+                "Mic-B"));
 
             Assert.AreEqual("Updated", view.RenderedPlayerDisplayName);
             Assert.IsFalse(view.RenderedTranscriptEnabled);
             Assert.IsTrue(view.RenderedNotificationsEnabled);
             Assert.AreEqual("Mic-B", view.RenderedSelectedMicrophoneDeviceId);
-            CollectionAssert.AreEqual(
-                new[] { ConvaiTranscriptMode.Chat },
-                view.RenderedTranscriptModes);
-            Assert.AreEqual(ConvaiTranscriptMode.Chat, view.RenderedSelectedTranscriptMode);
+        }
+
+        [Test]
+        public void SettingsPanelPresenter_RendersEffectivePlayerName_OnBindAndOpen()
+        {
+            var settingsService = new StubSettingsService(
+                new ConvaiRuntimeSettingsSnapshot("Player", true, false, string.Empty));
+            var panelController = new ConvaiSettingsPanelController();
+            var microphoneService = new StubMicrophoneDeviceService();
+            var view = new StubSettingsPanelView();
+            string effectiveName = "InspectorName";
+
+            using var presenter = new SettingsPanelPresenter(
+                settingsService,
+                panelController,
+                microphoneService,
+                effectivePlayerNameProvider: () => effectiveName);
+            presenter.Bind(view);
+
+            Assert.AreEqual("InspectorName", view.RenderedPlayerDisplayName);
+
+            effectiveName = "RuntimeName";
+            panelController.Open();
+
+            Assert.AreEqual("RuntimeName", view.RenderedPlayerDisplayName);
+        }
+
+        [Test]
+        public void SettingsPanelPresenter_ShowsConversationMode_WhenRoomServiceAvailable()
+        {
+            var settingsService = new StubSettingsService(
+                new ConvaiRuntimeSettingsSnapshot("Player", true, false, string.Empty));
+            var panelController = new ConvaiSettingsPanelController();
+            var microphoneService = new StubMicrophoneDeviceService();
+            var roomConnectionService = new MockRoomConnectionService();
+            var view = new StubSettingsPanelView();
+
+            using var presenter = new SettingsPanelPresenter(
+                settingsService,
+                panelController,
+                microphoneService,
+                roomConnectionService);
+            presenter.Bind(view);
+
+            Assert.IsTrue(view.ConversationInputModeVisible);
+            Assert.AreEqual(ConversationInputMode.HandsFree, view.RenderedConversationInputMode);
         }
 
         private sealed class StubSettingsPanelView : ISettingsPanelView
         {
-            public string RenderedPlayerDisplayName { get; private set; } = string.Empty;
+            public string RenderedPlayerDisplayName { get; private set; }
             public bool RenderedTranscriptEnabled { get; private set; }
             public bool RenderedNotificationsEnabled { get; private set; }
             public string RenderedSelectedMicrophoneDeviceId { get; private set; } = string.Empty;
-
-            public IReadOnlyList<ConvaiTranscriptMode> RenderedTranscriptModes { get; private set; } =
-                Array.Empty<ConvaiTranscriptMode>();
-
-            public ConvaiTranscriptMode RenderedSelectedTranscriptMode { get; private set; } =
-                ConvaiTranscriptMode.Chat;
+            public ConversationInputMode RenderedConversationInputMode { get; private set; }
+            public bool ConversationInputModeVisible { get; private set; }
 
             public event Action SaveRequested;
-            public event Action CloseRequested;
+            public event Action CloseRequested
+            {
+                add { }
+                remove { }
+            }
 
-            public string PlayerDisplayNameInput { get; set; } = string.Empty;
+            public string PlayerDisplayNameInput { get; set; }
             public bool TranscriptEnabledInput { get; set; }
             public bool NotificationsEnabledInput { get; set; }
             public string SelectedMicrophoneDeviceId { get; set; } = string.Empty;
-            public ConvaiTranscriptMode SelectedTranscriptModeInput { get; set; } = ConvaiTranscriptMode.Chat;
+            public ConversationInputMode SelectedConversationInputModeInput { get; set; } = ConversationInputMode.HandsFree;
 
-            public void SetPlayerDisplayName(string value) => RenderedPlayerDisplayName = value ?? string.Empty;
+            public void SetPlayerDisplayName(string value) => RenderedPlayerDisplayName = value;
 
             public void SetTranscriptEnabled(bool value) => RenderedTranscriptEnabled = value;
 
@@ -113,15 +150,10 @@ namespace Convai.Tests.EditMode.Runtime
             public void SetMicrophoneOptions(IReadOnlyList<ConvaiMicrophoneDevice> devices, string selectedDeviceId) =>
                 RenderedSelectedMicrophoneDeviceId = selectedDeviceId ?? string.Empty;
 
-            public void SetTranscriptModes(IReadOnlyList<ConvaiTranscriptMode> modes, ConvaiTranscriptMode selectedMode)
-            {
-                RenderedTranscriptModes = modes ?? Array.Empty<ConvaiTranscriptMode>();
-                RenderedSelectedTranscriptMode = selectedMode;
-            }
+            public void SetConversationInputMode(ConversationInputMode mode) => RenderedConversationInputMode = mode;
+            public void SetConversationInputModeVisible(bool visible) => ConversationInputModeVisible = visible;
 
             public void RaiseSaveRequested() => SaveRequested?.Invoke();
-
-            public void RaiseCloseRequested() => CloseRequested?.Invoke();
         }
 
         private sealed class StubSettingsService : IConvaiRuntimeSettingsService
@@ -137,9 +169,6 @@ namespace Convai.Tests.EditMode.Runtime
 
             public ConvaiRuntimeSettingsSnapshot Current { get; private set; }
 
-            public IReadOnlyCollection<ConvaiTranscriptMode> SupportedTranscriptModes { get; private set; } =
-                new List<ConvaiTranscriptMode> { ConvaiTranscriptMode.Chat };
-
             public ConvaiRuntimeSettingsApplyResult Apply(ConvaiRuntimeSettingsPatch patch)
             {
                 LastPatch = patch;
@@ -147,17 +176,13 @@ namespace Convai.Tests.EditMode.Runtime
                     patch?.PlayerDisplayName,
                     patch?.TranscriptEnabled,
                     patch?.NotificationsEnabled,
-                    patch?.PreferredMicrophoneDeviceId,
-                    patch?.TranscriptMode);
+                    patch?.PreferredMicrophoneDeviceId);
 
                 return ConvaiRuntimeSettingsApplyResult.Ok(Current, ConvaiRuntimeSettingsChangeMask.All);
             }
 
             public ConvaiRuntimeSettingsApplyResult ResetToDefaults() =>
                 ConvaiRuntimeSettingsApplyResult.Ok(Current, ConvaiRuntimeSettingsChangeMask.None);
-
-            public void SetSupportedTranscriptModes(IReadOnlyCollection<ConvaiTranscriptMode> modes) =>
-                SupportedTranscriptModes = modes ?? new List<ConvaiTranscriptMode> { ConvaiTranscriptMode.Chat };
 
             public void EmitChange(ConvaiRuntimeSettingsSnapshot next)
             {

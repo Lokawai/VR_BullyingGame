@@ -5,6 +5,7 @@ namespace LiveKit.Internal.FFIClients.Requests
 {
     public class FFIBridge : IFFIBridge
     {
+        //TODO should be without singleton, remove it
         private static readonly Lazy<FFIBridge> instance = new(() =>
             new FFIBridge(
                 FfiClient.Instance,
@@ -22,6 +23,7 @@ namespace LiveKit.Internal.FFIClients.Requests
             ffiClient = client;
             this.multiPool = multiPool;
         }
+
 
         public FfiRequestWrap<T> NewRequest<T>() where T : class, new()
         {

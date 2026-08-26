@@ -54,8 +54,8 @@ namespace Convai.RestAPI
             CancellationToken cancellationToken = default)
         {
             Uri url = BuildUrl(endpoint, useBeta);
-            ConvaiHttpRequest.Builder builder = ConvaiHttpRequest.CreateBuilder(url, HttpMethod.Post)
-                .WithApiKey(Options.ApiKey);
+            ConvaiHttpRequest.Builder builder = ConvaiHttpRequest.CreateBuilder(url, HttpMethod.Post);
+            ApplyAuthentication(builder);
 
             if (requestBody != null)
             {
@@ -85,11 +85,7 @@ namespace Convai.RestAPI
             CancellationToken cancellationToken = default)
         {
             ConvaiHttpRequest.Builder builder = ConvaiHttpRequest.CreateBuilder(url, HttpMethod.Post);
-
-            if (useXApiKey)
-                builder.WithXApiKey(Options.ApiKey);
-            else
-                builder.WithApiKey(Options.ApiKey);
+            ApplyAuthentication(builder, useXApiKey);
 
             if (requestBody != null)
             {
@@ -119,8 +115,8 @@ namespace Convai.RestAPI
             CancellationToken cancellationToken = default)
         {
             Uri url = BuildUrl(endpoint, useBeta);
-            ConvaiHttpRequest.Builder builder = ConvaiHttpRequest.CreateBuilder(url, HttpMethod.Post)
-                .WithApiKey(Options.ApiKey);
+            ConvaiHttpRequest.Builder builder = ConvaiHttpRequest.CreateBuilder(url, HttpMethod.Post);
+            ApplyAuthentication(builder);
 
             if (requestBody != null)
             {
@@ -140,6 +136,20 @@ namespace Convai.RestAPI
             {
                 throw ConvaiRestException.FromResponse(response);
             }
+        }
+
+        private void ApplyAuthentication(ConvaiHttpRequest.Builder builder, bool useXApiKey = false)
+        {
+            if (Options.AuthenticationMode == ConvaiAuthenticationMode.AuthToken)
+            {
+                builder.WithAuthToken(Options.ApiKey);
+                return;
+            }
+
+            if (useXApiKey)
+                builder.WithXApiKey(Options.ApiKey);
+            else
+                builder.WithApiKey(Options.ApiKey);
         }
 
         /// <summary>

@@ -4,7 +4,6 @@ using System.Linq;
 using Convai.Infrastructure.Networking.Transport;
 using LiveKit;
 
-// CS0067: Events required by IRemoteParticipant interface but not yet raised (future LiveKit callback integration)
 #pragma warning disable CS0067
 
 namespace Convai.Infrastructure.Networking.Native
@@ -107,6 +106,9 @@ namespace Convai.Infrastructure.Networking.Native
         public event Action<IRemoteTrack, TrackPublicationInfo> TrackUnsubscribed;
 
         public event Action<TrackPublicationInfo, bool> TrackMuteChanged;
+
+        internal bool HasSubscribedTrack(string trackSid) =>
+            !string.IsNullOrEmpty(trackSid) && _subscribedTracks.ContainsKey(trackSid);
 
         internal void AddSubscribedTrack(IRemoteTrack track)
         {

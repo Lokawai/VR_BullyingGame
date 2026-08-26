@@ -1,22 +1,62 @@
 using System.Collections.Generic;
+using Convai.Editor.Inspectors.Framework;
 using Convai.Modules.Narrative;
 using Convai.Runtime.Behaviors;
+using Convai.Editor.UI;
 using UnityEditor;
 using UnityEngine;
+using Glyphs = Convai.Editor.UI.ConvaiEditorGlyphs;
+using Styles = Convai.Editor.UI.ConvaiEditorStyles;
+using Theme = Convai.Editor.UI.ConvaiEditorTheme;
 
 namespace Convai.Editor.Inspectors
 {
     /// <summary>
-    ///     Custom editor for ConvaiNarrativeDesignManager.
-    ///     Provides auto-fetch functionality, collapsible sections, and visual orphan indicators.
+    ///     Convai editor for <see cref="ConvaiNarrativeDesignManager" />: the assigned character,
+    ///     backend sync status, the synced narrative sections (with orphan indicators), template
+    ///     keys, and section-change events.
     /// </summary>
     [CustomEditor(typeof(ConvaiNarrativeDesignManager))]
-    public class ConvaiNarrativeDesignManagerEditor : UnityEditor.Editor
+    internal sealed class ConvaiNarrativeDesignManagerEditor : ConvaiInspectorEditor
     {
-        private readonly Dictionary<string, bool> _sectionFoldouts = new();
-        private SerializedProperty _characterComponentProp;
-        private bool _eventsFoldout;
+        private const string TitleText = "Narrative Design";
+        private const string SubtitleText = "Convai Narrative Design Manager";
 
+        private const string PurposeText =
+            "Syncs narrative sections and template keys from the backend for this character, and " +
+            "routes section-change events into the scene.";
+
+        private const string SectionSectionsId = "Sections";
+        private const string SectionTemplateKeysId = "TemplateKeys";
+        private const string SectionEventsId = "Events";
+
+        private static readonly GUIContent CharacterSection = new("Character");
+        private static readonly GUIContent SyncSection = new("Sync Status");
+        private static readonly GUIContent TemplateKeysSection = new("Template Keys");
+        private static readonly GUIContent EventsSection = new("Events");
+
+        private static readonly GUIContent SyncButtonIdle = new("Sync with Backend");
+        private static readonly GUIContent SyncButtonBusy = new("Syncing...");
+        private static readonly GUIContent SendToServerButton = new("Send to Server");
+        private static readonly GUIContent KeysLabel = new("Keys");
+
+        /// <summary>
+        ///     Explains the list once, above it, rather than repeating an example on every row.
+        /// </summary>
+        private static readonly string TemplateKeysNote =
+            "Names your narrative design uses to fill in dynamic values, one per row — for example "
+            + "player_name or current_quest. They must match the template variables set up for this "
+            + "character on the Convai dashboard.";
+        private static readonly GUIContent OnSectionStartLabel = new("On Section Start");
+        private static readonly GUIContent OnSectionEndLabel = new("On Section End");
+        private static readonly GUIContent OnAnySectionChangedLabel = new("On Any Section Changed");
+        private static readonly GUIContent OnSectionDataReceivedLabel = new("On Section Data Received");
+        private static readonly GUIContent OnSectionsSyncedLabel = new("On Sections Synced");
+
+        private readonly Dictionary<string, bool> _sectionFoldouts = new();
+        private readonly GUIContent _sectionsTitle = new(string.Empty);
+
+        private SerializedProperty _characterComponentProp;
         private bool _hasPendingCharacterChange;
         private SerializedProperty _isFetchingProp;
 
@@ -31,15 +71,16 @@ namespace Convai.Editor.Inspectors
         private MonoBehaviour _pendingNewCharacter;
         private string _pendingNewCharacterId;
         private SerializedProperty _sectionConfigsProp;
-        private bool _sectionsFoldout = true;
-
-        private GUIStyle _statusLabelStyle;
-        private bool _stylesInitialized;
-        private bool _templateKeysFoldout;
         private SerializedProperty _templateKeysProp;
 
-        private void OnEnable()
+        protected override string Title => TitleText;
+        protected override string Subtitle => SubtitleText;
+        protected override string Purpose => PurposeText;
+
+        protected override void OnEnable()
         {
+            base.OnEnable();
+
             _manager = (ConvaiNarrativeDesignManager)target;
 
             _characterComponentProp = serializedObject.FindProperty("_characterComponent");
@@ -56,79 +97,57 @@ namespace Convai.Editor.Inspectors
             _lastTrackedCharacterId = GetCharacterIdFromComponent(_lastCharacterComponent);
         }
 
-        private void InitializeStyles()
+        protected override void OnBeforeInspectorGUI()
         {
-            if (_stylesInitialized) return;
+            if (_manager == null)
+                return;
 
-            _statusLabelStyle = new GUIStyle(EditorStyles.miniLabel) { alignment = TextAnchor.MiddleRight };
-
-            _stylesInitialized = true;
+            int count = _manager.ActiveSectionCount + _manager.OrphanedSectionCount;
+            _sectionsTitle.text = count > 0 ? $"Narrative Sections ({count})" : "Narrative Sections";
         }
 
-        /// <inheritdoc />
-        public override void OnInspectorGUI()
+        protected override void DrawBody()
         {
-            serializedObject.Update();
-            InitializeStyles();
-
-            DrawCharacterField();
-
-            DrawDivider();
-
-            DrawSyncStatus();
-
-            DrawDivider();
-
-            DrawSectionsSection();
-
-            DrawDivider();
-
-            DrawTemplateKeysSection();
-
-            DrawDivider();
-
-            DrawEventsSection();
-
-            serializedObject.ApplyModifiedProperties();
+            DrawCharacterCard();
+            DrawSyncStatusCard();
+            DrawSectionsCard();
+            DrawTemplateKeysCard();
+            DrawEventsCard();
 
             CheckCharacterChange();
         }
 
-        private void DrawDivider()
+        private void DrawCharacterCard()
         {
-            EditorGUILayout.Space(4);
-            Rect rect = EditorGUILayout.GetControlRect(false, 1);
-            rect.height = 1;
-            EditorGUI.DrawRect(rect, new Color(0.3f, 0.3f, 0.3f, 0.5f));
-            EditorGUILayout.Space(4);
-        }
-
-        private void DrawCharacterField()
-        {
-            EditorGUILayout.LabelField("Character", EditorStyles.boldLabel);
+            Theme.BeginCard();
+            Theme.SectionHeader(Glyphs.Identity, CharacterSection);
 
             EditorGUI.BeginChangeCheck();
             EditorGUILayout.PropertyField(_characterComponentProp, GUIContent.none);
-            if (EditorGUI.EndChangeCheck()) serializedObject.ApplyModifiedProperties();
+            if (EditorGUI.EndChangeCheck())
+                serializedObject.ApplyModifiedProperties();
 
             var charComponent = _characterComponentProp.objectReferenceValue as MonoBehaviour;
             if (charComponent != null && !(charComponent is IConvaiCharacterAgent))
-            {
-                EditorGUILayout.HelpBox("Selected component does not implement IConvaiCharacterAgent.",
-                    MessageType.Warning);
-            }
+                WarningBox("Invalid character reference", "Selected component does not implement IConvaiCharacterAgent.");
+
+            Theme.EndCard();
         }
 
-        private void DrawSyncStatus()
+        private void DrawSyncStatusCard()
         {
-            if (_manager == null) return;
+            if (_manager == null)
+                return;
+
+            Theme.BeginCard();
+            Theme.SectionHeader(Glyphs.Routing, SyncSection);
 
             EditorGUILayout.BeginHorizontal();
 
             bool isFetching = _isFetchingProp?.boolValue ?? false;
             GUI.enabled = !isFetching && !string.IsNullOrEmpty(_manager.GetCharacterId());
 
-            if (GUILayout.Button(isFetching ? "Syncing..." : "Sync with Backend", GUILayout.Width(130)))
+            if (GUILayout.Button(isFetching ? SyncButtonBusy : SyncButtonIdle, GUILayout.Width(130)))
                 _manager.FetchAndSyncFromBackend();
 
             GUI.enabled = true;
@@ -142,49 +161,46 @@ namespace Convai.Editor.Inspectors
                 ? $"{activeCount} sections, {orphanedCount} orphaned"
                 : $"{activeCount} sections";
 
-            EditorGUILayout.LabelField(statusText, _statusLabelStyle, GUILayout.Width(120));
+            EditorGUILayout.LabelField(statusText, Styles.MicroLabelRight, GUILayout.Width(120));
 
             EditorGUILayout.EndHorizontal();
 
             string lastSync = _lastSyncTimeProp.stringValue;
             if (!string.IsNullOrEmpty(lastSync))
-                EditorGUILayout.LabelField($"Last sync: {lastSync}", EditorStyles.miniLabel);
+                EditorGUILayout.LabelField($"Last sync: {lastSync}", ConvaiEditorStyles.MicroLabel);
 
             string lastError = _lastFetchErrorProp.stringValue;
-            if (!string.IsNullOrEmpty(lastError)) EditorGUILayout.HelpBox(lastError, MessageType.Error);
+            if (!string.IsNullOrEmpty(lastError))
+                ErrorBox("Sync failed", lastError);
+
+            Theme.EndCard();
         }
 
-        private void DrawSectionsSection()
+        private void DrawSectionsCard()
         {
-            if (_manager == null) return;
+            if (_manager == null)
+                return;
 
-            int count = _manager.ActiveSectionCount + _manager.OrphanedSectionCount;
-            string headerText = count > 0 ? $"Narrative Sections ({count})" : "Narrative Sections";
-
-            _sectionsFoldout = EditorGUILayout.Foldout(_sectionsFoldout, headerText, true, EditorStyles.foldoutHeader);
-
-            if (_sectionsFoldout)
+            if (!DrawSection(SectionSectionsId, _sectionsTitle, Glyphs.Content)) return;
+            DrawSectionBody(() =>
             {
-                EditorGUI.indentLevel++;
-
                 if (_sectionConfigsProp == null || _sectionConfigsProp.arraySize == 0)
-                    EditorGUILayout.HelpBox("No sections. Click 'Sync with Backend' to fetch.", MessageType.Info);
+                    InfoBox("No sections yet", "Click 'Sync with Backend' to fetch.");
                 else
                 {
-                    EditorGUILayout.Space(4);
+                    GUILayout.Space(4);
 
                     for (int i = 0; i < _sectionConfigsProp.arraySize; i++)
                     {
                         SerializedProperty sectionProp = _sectionConfigsProp.GetArrayElementAtIndex(i);
-                        if (sectionProp != null) DrawSection(sectionProp, i);
+                        if (sectionProp != null)
+                            DrawNarrativeSectionEntry(sectionProp, i);
                     }
                 }
-
-                EditorGUI.indentLevel--;
-            }
+            });
         }
 
-        private void DrawSection(SerializedProperty sectionProp, int index)
+        private void DrawNarrativeSectionEntry(SerializedProperty sectionProp, int index)
         {
             SerializedProperty sectionIdProp = sectionProp.FindPropertyRelative("_sectionId");
             SerializedProperty sectionNameProp = sectionProp.FindPropertyRelative("_sectionName");
@@ -197,11 +213,13 @@ namespace Convai.Editor.Inspectors
             bool isOrphaned = isOrphanedProp?.boolValue ?? false;
 
             string foldoutKey = string.IsNullOrEmpty(sectionId) ? $"section_{index}" : sectionId;
-            if (!_sectionFoldouts.ContainsKey(foldoutKey)) _sectionFoldouts[foldoutKey] = false;
+            if (!_sectionFoldouts.ContainsKey(foldoutKey))
+                _sectionFoldouts[foldoutKey] = false;
 
             string displayName = !string.IsNullOrEmpty(sectionName) ? sectionName : sectionId;
 
-            if (isOrphaned) displayName = $"⚠ {displayName} (orphaned)";
+            if (isOrphaned)
+                displayName = $"{Glyphs.Status.Warn} {displayName} (orphaned)";
 
             _sectionFoldouts[foldoutKey] = EditorGUILayout.Foldout(_sectionFoldouts[foldoutKey], displayName, true);
 
@@ -213,12 +231,13 @@ namespace Convai.Editor.Inspectors
                 EditorGUILayout.TextField("Section ID", sectionId);
                 EditorGUI.EndDisabledGroup();
 
-                if (isOrphaned) EditorGUILayout.HelpBox("Deleted on backend. Events preserved.", MessageType.Warning);
+                if (isOrphaned)
+                    WarningBox("Orphaned section", "Deleted on backend. Events preserved.");
 
                 EditorGUILayout.Space(2);
 
-                EditorGUILayout.PropertyField(onStartProp, new GUIContent("On Section Start"));
-                EditorGUILayout.PropertyField(onEndProp, new GUIContent("On Section End"));
+                EditorGUILayout.PropertyField(onStartProp, OnSectionStartLabel);
+                EditorGUILayout.PropertyField(onEndProp, OnSectionEndLabel);
 
                 EditorGUILayout.Space(4);
 
@@ -226,61 +245,55 @@ namespace Convai.Editor.Inspectors
             }
         }
 
-        private void DrawTemplateKeysSection()
+        private void DrawTemplateKeysCard()
         {
-            _templateKeysFoldout =
-                EditorGUILayout.Foldout(_templateKeysFoldout, "Template Keys", true, EditorStyles.foldoutHeader);
-
-            if (_templateKeysFoldout)
+            if (!DrawSection(SectionTemplateKeysId, TemplateKeysSection, Glyphs.Content, defaultExpanded: false)) return;
+            DrawSectionBody(() =>
             {
-                EditorGUI.indentLevel++;
-
                 if (_templateKeysProp != null)
-                    EditorGUILayout.PropertyField(_templateKeysProp, new GUIContent("Keys"), true);
+                    EditorGUILayout.PropertyField(_templateKeysProp, KeysLabel, true);
+
+                GUILayout.Space(4f);
+                GUILayout.Label(TemplateKeysNote, Theme.MutedWrapped);
 
                 EditorGUILayout.Space(4);
 
                 EditorGUILayout.BeginHorizontal();
                 GUILayout.FlexibleSpace();
 
-                if (GUILayout.Button("Send to Server", GUILayout.Width(100)))
+                if (GUILayout.Button(SendToServerButton, GUILayout.Width(100)))
                 {
                     if (UnityEngine.Application.isPlaying)
                         _manager.SendTemplateKeysUpdate();
                     else
                     {
                         EditorUtility.DisplayDialog("Not in Play Mode",
-                            "Template keys can only be sent during Play Mode.", "OK");
+                            "Sending template keys needs a live connection to the character. "
+                            + "Enter Play Mode, then press Send to Server again.", "OK");
                     }
                 }
 
                 EditorGUILayout.EndHorizontal();
-
-                EditorGUI.indentLevel--;
-            }
+            });
         }
 
-        private void DrawEventsSection()
+        private void DrawEventsCard()
         {
-            _eventsFoldout = EditorGUILayout.Foldout(_eventsFoldout, "Events", true, EditorStyles.foldoutHeader);
-
-            if (_eventsFoldout)
+            if (!DrawSection(SectionEventsId, EventsSection, Glyphs.Events, defaultExpanded: false)) return;
+            DrawSectionBody(() =>
             {
-                EditorGUI.indentLevel++;
-
-                EditorGUILayout.PropertyField(_onAnySectionChangedProp, new GUIContent("On Any Section Changed"));
+                EditorGUILayout.PropertyField(_onAnySectionChangedProp, OnAnySectionChangedLabel);
                 EditorGUILayout.Space(2);
-                EditorGUILayout.PropertyField(_onSectionDataReceivedProp, new GUIContent("On Section Data Received"));
+                EditorGUILayout.PropertyField(_onSectionDataReceivedProp, OnSectionDataReceivedLabel);
                 EditorGUILayout.Space(2);
-                EditorGUILayout.PropertyField(_onSectionsSyncedProp, new GUIContent("On Sections Synced"));
-
-                EditorGUI.indentLevel--;
-            }
+                EditorGUILayout.PropertyField(_onSectionsSyncedProp, OnSectionsSyncedLabel);
+            });
         }
 
         private void CheckCharacterChange()
         {
-            if (_characterComponentProp == null || _manager == null) return;
+            if (_characterComponentProp == null || _manager == null)
+                return;
 
             var currentCharacter = _characterComponentProp.objectReferenceValue as MonoBehaviour;
             string currentCharacterId = GetCharacterIdFromComponent(currentCharacter);
@@ -325,7 +338,8 @@ namespace Convai.Editor.Inspectors
         {
             _hasPendingCharacterChange = false;
 
-            if (_manager == null) return;
+            if (_manager == null)
+                return;
 
             bool confirmed = EditorUtility.DisplayDialog(
                 "Character Change Detected",
@@ -368,7 +382,8 @@ namespace Convai.Editor.Inspectors
 
         private string GetCharacterIdFromComponent(MonoBehaviour component)
         {
-            if (component is IConvaiCharacterAgent agent) return agent.CharacterId;
+            if (component is IConvaiCharacterAgent agent)
+                return agent.CharacterId;
             return null;
         }
     }

@@ -9,6 +9,7 @@ using Unity.Collections;
 namespace LiveKit
 {
 
+    // VideoSource for Unity Camera
     public class CameraVideoSource : RtcVideoSource
     {
         private TextureFormat _textureFormat;
@@ -50,15 +51,27 @@ namespace LiveKit
             ClearRenderTexture();
         }
 
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && _renderTexture != null)
+            {
+                _renderTexture.Release();
+                UnityEngine.Object.Destroy(_renderTexture);
+                _renderTexture = null;
+            }
+            base.Dispose(disposing);
+        }
+
         private void ClearRenderTexture()
         {
             if (_renderTexture)
             {
                 var renderText = _renderTexture as RenderTexture;
-                renderText.Release();
+                renderText.Release(); // can only be done on main thread
             }
         }
 
+        // Read the texture data into a native array asynchronously
         protected override bool ReadBuffer()
         {
             if (_reading)
@@ -69,8 +82,20 @@ namespace LiveKit
             {
                 if (_renderTexture == null || _renderTexture.width != GetWidth() || _renderTexture.height != GetHeight())
                 {
+                    // Free previously allocated GPU/native resources before reallocating;
+                    // otherwise the old textures and NativeArray leak on every resolution change.
+                    if (_renderTexture != null)
+                    {
+                        _renderTexture.Release();
+                        UnityEngine.Object.Destroy(_renderTexture);
+                    }
+                    if (_previewTexture != null)
+                        UnityEngine.Object.Destroy(_previewTexture);
+                    if (_captureBuffer.IsCreated)
+                        _captureBuffer.Dispose();
+
                     var targetFormat = Utils.GetSupportedGraphicsFormat(SystemInfo.graphicsDeviceType);
-                    var compatibleFormat = SystemInfo.GetCompatibleFormat(targetFormat, GraphicsFormatUsage.ReadPixels);
+                    var compatibleFormat = SystemInfo.GetCompatibleFormat(targetFormat, FormatUsage.ReadPixels);
                     _textureFormat = GraphicsFormatUtility.GetTextureFormat(compatibleFormat);
                     _bufferType = GetVideoBufferType(_textureFormat);
                     _renderTexture = new RenderTexture(GetWidth(), GetHeight(), 0, compatibleFormat);
@@ -82,6 +107,7 @@ namespace LiveKit
                 ScreenCapture.CaptureScreenshotIntoRenderTexture(_renderTexture);
 
 #if UNITY_EDITOR_OSX || UNITY_STANDALONE_OSX
+                // Flip the texture for OSX
                 Graphics.CopyTexture(_renderTexture, _previewTexture);
                 var pixels = _previewTexture.GetPixels();
                 var flippedPixels = new Color[pixels.Length];
@@ -104,4 +130,3 @@ namespace LiveKit
         }
     }
 }
-

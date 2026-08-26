@@ -58,7 +58,7 @@ namespace Convai.Infrastructure.Networking.WebGL
         {
             if (_room?.LocalParticipant == null)
             {
-                LogTransportWarning($"{LogPrefix} Room not connected. Cannot send data.");
+                LogTransportWarning($"Room not connected. Cannot send data.");
                 return Task.CompletedTask;
             }
 
@@ -70,7 +70,7 @@ namespace Convai.Infrastructure.Networking.WebGL
             }
             catch (Exception ex)
             {
-                LogTransportError(ex, $"{LogPrefix} Error sending data");
+                LogTransportError(ex, $"Error sending data");
                 return Task.FromException(ex);
             }
         }
@@ -99,7 +99,6 @@ namespace Convai.Infrastructure.Networking.WebGL
 
         #region Private Fields
 
-        private const string LogPrefix = "[WebGLTransport]";
 
         private Room _room;
 
@@ -226,7 +225,7 @@ namespace Convai.Infrastructure.Networking.WebGL
             }
             catch (Exception ex)
             {
-                LogTransportError(ex, $"{LogPrefix} Failed to create Room");
+                LogTransportError(ex, $"Failed to create Room");
                 SetState(TransportState.Disconnected);
                 ConnectionFailed?.Invoke(new TransportError(ex.Message, TransportErrorCode.Unknown, ex));
                 tcs.TrySetResult(false);
@@ -244,7 +243,7 @@ namespace Convai.Infrastructure.Networking.WebGL
             }
             catch (Exception ex)
             {
-                LogTransportError(ex, $"{LogPrefix} Exception calling Connect");
+                LogTransportError(ex, $"Exception calling Connect");
                 SetState(TransportState.Disconnected);
                 ConnectionFailed?.Invoke(new TransportError(ex.Message, TransportErrorCode.NetworkError, ex));
                 tcs.TrySetResult(false);
@@ -280,7 +279,7 @@ namespace Convai.Infrastructure.Networking.WebGL
             if (connectOp.IsError)
             {
                 string errorMsg = connectOp.Error?.Message ?? "Unknown error";
-                LogTransportError($"{LogPrefix} LiveKit connection failed: {errorMsg}");
+                LogTransportError($"LiveKit connection failed: {errorMsg}");
                 CleanupRoom();
                 SetState(TransportState.Disconnected);
                 ConnectionFailed?.Invoke(new TransportError(errorMsg, TransportErrorCode.NetworkError));
@@ -301,7 +300,7 @@ namespace Convai.Infrastructure.Networking.WebGL
             SetState(TransportState.Connected);
             Connected?.Invoke(_currentSession.Value);
 
-            LogTransportInfo($"{LogPrefix} Connected to room: {_room.Name}");
+            LogTransportInfo($"Connected to room: {_room.Name}");
             tcs.TrySetResult(true);
         }
 
@@ -353,7 +352,7 @@ namespace Convai.Infrastructure.Networking.WebGL
                 }
                 catch (Exception ex)
                 {
-                    LogTransportWarning($"{LogPrefix} Error during Disconnect: {ex.Message}");
+                    LogTransportWarning($"Error during Disconnect: {ex.Message}");
                 }
 
                 yield return null;
@@ -365,7 +364,7 @@ namespace Convai.Infrastructure.Networking.WebGL
                 }
                 catch (Exception ex)
                 {
-                    LogTransportWarning($"{LogPrefix} Error during Dispose: {ex.Message}");
+                    LogTransportWarning($"Error during Dispose: {ex.Message}");
                 }
 
                 _room = null;
@@ -380,7 +379,7 @@ namespace Convai.Infrastructure.Networking.WebGL
             SetState(TransportState.Disconnected);
             Disconnected?.Invoke(reason);
 
-            LogTransportInfo($"{LogPrefix} Disconnect complete");
+            LogTransportInfo($"Disconnect complete");
             tcs.TrySetResult(true);
         }
 
@@ -393,30 +392,31 @@ namespace Convai.Infrastructure.Networking.WebGL
         {
             if (_room == null)
             {
-                LogAudioWarning($"{LogPrefix} Room not connected. Cannot enable audio.");
+                LogAudioWarning($"Room not connected. Cannot enable audio.");
                 return;
             }
 
             if (_isAudioPlaybackActive)
             {
-                LogAudioWarning($"{LogPrefix} Audio already enabled.");
+                LogAudioWarning($"Audio already enabled.");
                 return;
             }
 
             // This must be called from user gesture context in browser
             try
             {
+                WebGLAudioStream.ResumeTimingContext();
                 _room.StartAudio();
             }
             catch (Exception ex)
             {
-                LogAudioError(ex, $"{LogPrefix} Failed to enable audio playback");
+                LogAudioError(ex, $"Failed to enable audio playback");
                 return;
             }
 
             _isAudioPlaybackActive = true;
             AudioPlaybackStateChanged?.Invoke(true);
-            LogAudioInfo($"{LogPrefix} Audio playback enabled");
+            LogAudioInfo($"Audio playback enabled");
         }
 
         /// <inheritdoc />
@@ -431,7 +431,7 @@ namespace Convai.Infrastructure.Networking.WebGL
         {
             if (_room == null || State != TransportState.Connected)
             {
-                LogAudioWarning($"{LogPrefix} Room not connected. Cannot enable microphone.");
+                LogAudioWarning($"Room not connected. Cannot enable microphone.");
                 tcs.TrySetResult(false);
                 yield break;
             }
@@ -460,7 +460,7 @@ namespace Convai.Infrastructure.Networking.WebGL
             {
                 JSError error = _room.LocalParticipant.LastMicrophoneError();
                 string errorMsg = error?.Message ?? "Unknown error";
-                LogAudioError($"{LogPrefix} Failed to enable microphone: {errorMsg}");
+                LogAudioError($"Failed to enable microphone: {errorMsg}");
                 tcs.TrySetResult(false);
                 yield break;
             }
@@ -468,7 +468,7 @@ namespace Convai.Infrastructure.Networking.WebGL
             IsMicrophoneEnabled = true;
             IsMicrophoneMuted = false;
             MicrophoneEnabledChanged?.Invoke(true);
-            LogAudioInfo($"{LogPrefix} Microphone enabled");
+            LogAudioInfo($"Microphone enabled");
             tcs.TrySetResult(true);
         }
 
@@ -504,7 +504,7 @@ namespace Convai.Infrastructure.Networking.WebGL
             if (micPromise.IsError)
             {
                 JSError error = _room.LocalParticipant.LastMicrophoneError();
-                LogAudioWarning($"{LogPrefix} Error disabling microphone: {error?.Message ?? "Unknown error"}");
+                LogAudioWarning($"Error disabling microphone: {error?.Message ?? "Unknown error"}");
             }
 
             IsMicrophoneEnabled = false;
@@ -515,7 +515,7 @@ namespace Convai.Infrastructure.Networking.WebGL
             }
 
             MicrophoneEnabledChanged?.Invoke(false);
-            LogAudioInfo($"{LogPrefix} Microphone disabled");
+            LogAudioInfo($"Microphone disabled");
             tcs.TrySetResult(true);
         }
 
@@ -524,7 +524,7 @@ namespace Convai.Infrastructure.Networking.WebGL
         {
             if (!IsMicrophoneEnabled)
             {
-                LogAudioWarning($"{LogPrefix} Microphone not enabled. Cannot set mute state.");
+                LogAudioWarning($"Microphone not enabled. Cannot set mute state.");
                 return;
             }
 
@@ -545,13 +545,13 @@ namespace Convai.Infrastructure.Networking.WebGL
             {
                 JSError error = _room.LocalParticipant.LastMicrophoneError();
                 LogAudioWarning(
-                    $"{LogPrefix} Error setting microphone mute state: {error?.Message ?? "Unknown error"}");
+                    $"Error setting microphone mute state: {error?.Message ?? "Unknown error"}");
                 yield break;
             }
 
             IsMicrophoneMuted = muted;
             MicrophoneMuteChanged?.Invoke(muted);
-            LogAudioInfo($"{LogPrefix} Microphone muted: {muted}");
+            LogAudioInfo($"Microphone muted: {muted}");
         }
 
         /// <inheritdoc />
@@ -707,8 +707,8 @@ namespace Convai.Infrastructure.Networking.WebGL
         {
             if (_isDisconnecting) return;
 
-            // Auto-attach audio tracks for browser playback
-            if (track.Kind == TrackKind.Audio) track.Attach();
+            if (track.Kind == TrackKind.Audio)
+                track.Attach();
 
             TrackSubscribed?.Invoke(new TrackInfo(
                 track.Sid,

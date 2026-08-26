@@ -5,20 +5,11 @@ using System.Threading;
 namespace Convai.Domain.Logging
 {
     /// <summary>
-    ///     Represents a single log entry with all metadata.
-    ///     This is a readonly struct to minimize allocations in the logging hot path.
+    ///     Represents a single log entry with associated metadata.
     /// </summary>
-    /// <remarks>
-    ///     LogEntry is passed to ILogSink implementations for formatting and output.
-    ///     The struct is immutable to ensure thread-safety when passed across threads.
-    ///     Performance optimizations:
-    ///     - DateTime caching per frame reduces DateTime.Now calls (P1-3)
-    ///     - Readonly struct eliminates defensive copies
-    ///     - Thread-safe: background thread logging falls back to DateTime.Now
-    /// </remarks>
     public readonly struct LogEntry
     {
-        #region Timestamp Caching (P1-3)
+        #region Timestamp Caching
 
         private static DateTime _cachedTimestamp = DateTime.Now;
         private static int _lastUpdateFrame = -1;
@@ -29,7 +20,6 @@ namespace Convai.Domain.Logging
 
         /// <summary>
         ///     Registers a frame count provider for timestamp caching.
-        ///     Call from Unity Runtime layer initialization (must be called from main thread).
         /// </summary>
         /// <param name="provider">A function that returns the current frame count.</param>
         public static void SetFrameCountProvider(Func<int> provider)
@@ -50,15 +40,8 @@ namespace Convai.Domain.Logging
         }
 
         /// <summary>
-        ///     Gets the current timestamp, using frame-cached value when provider is set
-        ///     and running on the main thread. Falls back to DateTime.Now for background
-        ///     threads or when caching is not available.
+        ///     Gets the current timestamp, using a cached per-frame value when available.
         /// </summary>
-        /// <remarks>
-        ///     Thread-safety: UnityEngine.Time.frameCount can only be called from the main thread.
-        ///     When logging from background threads (e.g., async operations), this method
-        ///     safely falls back to DateTime.Now without throwing UnityException.
-        /// </remarks>
         private static DateTime GetTimestamp()
         {
             Func<int> provider = _frameCountProvider;
@@ -87,8 +70,6 @@ namespace Convai.Domain.Logging
 
         /// <summary>
         ///     Manually updates the cached timestamp.
-        ///     Call from a Unity component's Update() if needed for precise timing.
-        ///     Must be called from the main thread.
         /// </summary>
         public static void UpdateCachedTimestamp()
         {
@@ -220,7 +201,6 @@ namespace Convai.Domain.Logging
 
         /// <summary>
         ///     Creates a new LogEntry with exception information.
-        ///     Uses cached timestamp for performance (P1-3).
         /// </summary>
         /// <param name="level">The log level.</param>
         /// <param name="category">The log category.</param>

@@ -1,12 +1,13 @@
 using System;
 using Convai.Domain.Logging;
 using Convai.Runtime.Behaviors;
+using Convai.Runtime.Core.DependencyInjection;
 using Convai.Runtime.Logging;
 using Convai.Runtime.Presentation.Services;
-using Convai.Shared;
 using Convai.Shared.Abstractions;
-using Convai.Shared.DependencyInjection;
 using UnityEngine;
+using UnityEngine.Serialization;
+using ILogger = Convai.Domain.Logging.ILogger;
 
 namespace Convai.Runtime.Components
 {
@@ -17,26 +18,27 @@ namespace Convai.Runtime.Components
     /// <remarks>
     ///     <para>
     ///         This component is the player-side equivalent of <see cref="ConvaiCharacter" />.
-    ///         It provides player identity (name, speakerId, color) and text messaging capability.
+    ///         It provides player identity (name, playerId, color) and text messaging capability.
     ///         Microphone input is managed separately by <see cref="Convai.Runtime.Adapters.Networking.ConvaiRoomManager" />.
     ///         Player behavior can be extended using <see cref="ConvaiPlayerBehaviorBase" />.
     ///     </para>
     ///     <para>
-    ///         <b>Important - SpeakerId vs Server Speaker ID:</b>
+    ///         <b>Important - PlayerId vs Server Speaker ID:</b>
     ///     </para>
     ///     <para>
-    ///         The <c>SpeakerId</c> property on this component is a <b>local display identifier</b> used for
+    ///         The <c>PlayerId</c> property on this component is a <b>local display identifier</b> used for
     ///         transcript UI attribution. It is NOT the same as the server-generated <c>speaker_id</c> used
     ///         for Long-Term Memory (LTM) and interaction tracking.
     ///     </para>
     ///     <para>
-    ///         The server-generated speaker ID is available via
+    ///         When the backend includes it for diagnostics, the server-generated speaker ID may be visible via
     ///         <see cref="Convai.Infrastructure.Networking.IConvaiRoomController.ResolvedSpeakerId" />
     ///         after connection is established.
     ///     </para>
     /// </remarks>
     [AddComponentMenu("Convai/Convai Player")]
-    public class ConvaiPlayer : MonoBehaviour, IConvaiPlayerAgent, IInjectable
+    public class ConvaiPlayer : MonoBehaviour, IConvaiPlayerAgent,
+        IInjectable<IConvaiPlayerDependencies>
     {
         #region Events
 
@@ -45,16 +47,32 @@ namespace Convai.Runtime.Components
 
         #endregion
 
-        #region IInjectable
+        #region Dependency Injection
 
-        /// <inheritdoc />
-        public void InjectServices(IServiceContainer container)
+        /// <inheritdoc cref="IInjectable{TDependencies}.InjectDependencies" />
+        public void InjectDependencies(IConvaiPlayerDependencies dependencies)
         {
-            if (container.TryGet(out IPlayerInputService playerInputService)) playerInputService.SetPlayer(this);
+            _deps = dependencies ?? throw new ArgumentNullException(nameof(dependencies));
 
-            if (container.TryGet(out IConvaiRuntimeSettingsService runtimeSettings))
-                SetRuntimeDisplayName(runtimeSettings.Current.PlayerDisplayName);
+            // Register with player input service if available
+            if (PlayerInputService != null)
+                PlayerInputService.SetPlayer(this);
+
+            Logger?.Debug($"[{_playerName}] Dependencies injected (typed bundle)");
         }
+
+        #endregion
+
+        #region Dependencies
+
+        /// <summary>
+        ///     Typed dependency bundle (new pattern). When set, provides all dependencies.
+        /// </summary>
+        private IConvaiPlayerDependencies _deps;
+
+        // Accessor properties for dependencies
+        private IPlayerInputService PlayerInputService => _deps?.PlayerInputService;
+        private ILogger Logger => _deps?.Logger;
 
         #endregion
 
@@ -66,9 +84,11 @@ namespace Convai.Runtime.Components
         private string _playerName = "Player";
 
         [SerializeField]
-        [Tooltip("Optional local speaker identifier for transcript UI attribution. " +
+        [FormerlySerializedAs("_speakerId")]
+        [FormerlySerializedAs("_actorId")]
+        [Tooltip("Optional local player identifier for transcript UI attribution. " +
                  "If empty, PlayerName is used. This is NOT the server-generated speaker ID used for Long-Term Memory.")]
-        private string _speakerId = "";
+        private string _playerId = "";
 
         [SerializeField] private Color _nameTagColor = Color.green;
 
@@ -83,14 +103,14 @@ namespace Convai.Runtime.Components
         public string PlayerName => _hasRuntimeDisplayName ? _runtimeDisplayName : _playerName;
 
         /// <summary>
-        ///     Local speaker identifier for transcript UI attribution.
+        ///     Local player identifier for transcript UI attribution.
         /// </summary>
         /// <remarks>
         ///     This is a local display identifier, NOT the server-generated speaker_id used for LTM.
-        ///     For the server-assigned speaker ID, see
+        ///     If the backend exposes a resolved speaker ID for diagnostics, it can be read from
         ///     <see cref="Convai.Infrastructure.Networking.ConvaiRoomController.ResolvedSpeakerId" />.
         /// </remarks>
-        public string SpeakerId => string.IsNullOrEmpty(_speakerId) ? PlayerName : _speakerId;
+        public string PlayerId => string.IsNullOrWhiteSpace(_playerId) ? PlayerName : _playerId.Trim();
 
         /// <summary>Name tag color for transcript display.</summary>
         public Color NameTagColor => _nameTagColor;
@@ -103,7 +123,7 @@ namespace Convai.Runtime.Components
         {
             if (string.IsNullOrWhiteSpace(message))
             {
-                ConvaiLogger.Warning("[ConvaiPlayer] SendTextMessage called with null or empty message; ignoring.",
+                ConvaiLogger.Warning("SendTextMessage called with null or empty message; ignoring.",
                     LogCategory.SDK);
                 return;
             }
@@ -111,7 +131,7 @@ namespace Convai.Runtime.Components
             if (OnTextMessageSent == null)
             {
                 ConvaiLogger.Warning(
-                    "[ConvaiPlayer] SendTextMessage has no subscribers (is ConvaiRoomManager active?); message dropped.",
+                    "SendTextMessage has no subscribers (is ConvaiRoomManager active?); message dropped.",
                     LogCategory.SDK);
                 return;
             }
@@ -127,11 +147,11 @@ namespace Convai.Runtime.Components
         ///     Configures the player identity.
         /// </summary>
         /// <param name="playerName">Display name for the player.</param>
-        /// <param name="speakerId">Optional speaker ID (defaults to playerName).</param>
-        public void Configure(string playerName, string speakerId = null)
+        /// <param name="playerId">Optional local player ID (defaults to playerName).</param>
+        public void Configure(string playerName, string playerId = null)
         {
             _playerName = string.IsNullOrWhiteSpace(playerName) ? "Player" : playerName.Trim();
-            _speakerId = string.IsNullOrWhiteSpace(speakerId) ? _playerName : speakerId;
+            _playerId = string.IsNullOrWhiteSpace(playerId) ? _playerName : playerId.Trim();
             _runtimeDisplayName = string.Empty;
             _hasRuntimeDisplayName = false;
         }
@@ -152,6 +172,14 @@ namespace Convai.Runtime.Components
             _runtimeDisplayName = displayName.Trim();
             _hasRuntimeDisplayName = true;
         }
+
+        #endregion
+
+        #region Unity Lifecycle
+
+        private void Awake() { }
+
+        private void OnDestroy() { }
 
         #endregion
     }

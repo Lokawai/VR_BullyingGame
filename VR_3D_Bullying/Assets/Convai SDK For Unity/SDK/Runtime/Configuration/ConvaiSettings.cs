@@ -1,7 +1,9 @@
 using System;
 using System.IO;
 using Convai.Domain.Logging;
-using Convai.Domain.Models;
+using Convai.Runtime.Actions;
+using Convai.Runtime.Core;
+using Convai.Runtime.Core.Configuration;
 using Convai.Runtime.Logging;
 using UnityEngine;
 #if UNITY_EDITOR
@@ -12,21 +14,15 @@ namespace Convai.Runtime
 {
     /// <summary>
     ///     Centralized settings for the Convai SDK.
-    ///     Accessible via Edit > Project Settings > Convai SDK.
     /// </summary>
-    /// <remarks>
-    ///     This ScriptableObject provides a unified location for SDK configuration.
-    ///     Settings are stored in Assets/Resources/ConvaiSettings.asset
-    ///     and can be accessed via ConvaiSettings.Instance at runtime.
-    ///     For session-specific data (like CharacterSessionIdMap), use <see cref="ConvaiSessionData" />.
-    ///     This class is accessed via IConvaiSettingsProvider interface (ConvaiSettingsAdapter).
-    ///     No [Preserve] attribute needed - typed access prevents IL2CPP stripping.
-    /// </remarks>
     [CreateAssetMenu(fileName = "ConvaiSettings", menuName = "Convai/SDK Settings")]
     public class ConvaiSettings : ScriptableObject
     {
         private const string ResourcePath = "ConvaiSettings";
         private const string ResourceAssetPath = "Assets/Resources/ConvaiSettings.asset";
+
+        /// <summary>Default realtime core server URL, used unless the environment is Custom.</summary>
+        public const string DefaultCoreServerUrl = "https://live.convai.com";
 
 #if UNITY_EDITOR
         /// <summary>
@@ -35,37 +31,46 @@ namespace Convai.Runtime
         /// </summary>
         private void OnValidate()
         {
-            _nativeRuntimeMode = NativeRuntimeMode.Transport;
             IncrementConfigVersion();
         }
 #endif
 
 #if UNITY_EDITOR
         [InitializeOnLoadMethod]
-        private static void EnsureSettingsAssetExists()
+        internal static void EnsureSettingsAssetExists()
         {
             var asset = AssetDatabase.LoadAssetAtPath<ConvaiSettings>(ResourceAssetPath);
-            if (asset != null)
+            if (asset == null) asset = Resources.Load<ConvaiSettings>(ResourcePath);
+
+            if (asset == null)
             {
-                _instance = asset;
-                return;
+                string directory = Path.GetDirectoryName(ResourceAssetPath);
+                if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+                    Directory.CreateDirectory(directory);
+
+                asset = CreateInstance<ConvaiSettings>();
+                AssetDatabase.CreateAsset(asset, ResourceAssetPath);
+                AssetDatabase.SaveAssets();
+                AssetDatabase.Refresh();
             }
 
-            asset = Resources.Load<ConvaiSettings>(ResourcePath);
-            if (asset != null)
-            {
-                _instance = asset;
-                return;
-            }
-
-            string directory = Path.GetDirectoryName(ResourceAssetPath);
-            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory)) Directory.CreateDirectory(directory);
-
-            asset = CreateInstance<ConvaiSettings>();
-            AssetDatabase.CreateAsset(asset, ResourceAssetPath);
-            AssetDatabase.SaveAssets();
-            AssetDatabase.Refresh();
             _instance = asset;
+            asset.MigrateLegacyDataIfNeeded();
+        }
+
+        /// <summary>
+        ///     One-time migration of legacy serialized data. Currently: plaintext API key
+        ///     to the obfuscated representation. Safe to call repeatedly.
+        /// </summary>
+        internal void MigrateLegacyDataIfNeeded()
+        {
+            if (string.IsNullOrEmpty(_apiKey)) return;
+
+            if (string.IsNullOrEmpty(_apiKeyObfuscated))
+                _apiKeyObfuscated = ConvaiApiKeyObfuscation.Obfuscate(_apiKey);
+            _apiKey = string.Empty;
+            EditorUtility.SetDirty(this);
+            AssetDatabase.SaveAssetIfDirty(this);
         }
 #endif
 
@@ -97,70 +102,97 @@ namespace Convai.Runtime
 
         #region Serialized Fields
 
-        [Header("API Configuration")] [SerializeField] [Tooltip("Your Convai API key from the dashboard.")]
-        private string _apiKey = "";
+        [SerializeField]
+        [ConvaiInspectorSection("Credentials")]
+        [Tooltip("Obfuscated Convai API key. Edit via Project Settings > Convai SDK.")]
+        private string _apiKeyObfuscated = "";
+
+        // Legacy plaintext key. Migrated into _apiKeyObfuscated and cleared on first editor load.
+        [SerializeField] [HideInInspector] private string _apiKey = "";
 
         [SerializeField]
-        [Tooltip("Convai realtime server URL used for room connect requests. Leave default unless directed otherwise.")]
-        private string _serverUrl = "https://live.convai.com";
+        [ConvaiInspectorSection("Credentials")]
+        [Tooltip("Authentication mode used by runtime room connections.")]
+        private ConvaiAuthMode _authMode = ConvaiAuthMode.ApiKey;
 
-        [Header("Player Settings")] [SerializeField] [Tooltip("The player's display name shown in conversations.")]
-        private string _playerName = "";
-
-        [Header("Audio Settings")]
         [SerializeField]
-        [Tooltip("Default microphone device index. 0 = default device.")]
-        [Range(0, 10)]
-        private int _defaultMicrophoneIndex;
+        [Tooltip("Developer backend endpoint that returns a short-lived Convai auth token.")]
+        private string _authTokenEndpointUrl = "";
 
-        [SerializeField] [Tooltip("Connection timeout in seconds.")] [Range(5f, 120f)]
+        [SerializeField]
+        [Tooltip("HTTP method used when requesting a short-lived auth token from the developer backend.")]
+        private ConvaiAuthTokenHttpMethod _authTokenHttpMethod = ConvaiAuthTokenHttpMethod.Get;
+
+        [SerializeField]
+        [Tooltip("JSON response field containing the short-lived auth token. Dotted paths are supported.")]
+        private string _authTokenResponseField = "apiAuthToken";
+
+        [SerializeField]
+        [Tooltip("Optional headers sent only to the developer auth-token endpoint.")]
+        private ConvaiAuthTokenHeader[] _authTokenHeaders = Array.Empty<ConvaiAuthTokenHeader>();
+
+        [SerializeField]
+        [Tooltip("Convai service environment. Production unless directed otherwise; Custom unlocks raw URLs.")]
+        private ConvaiApiEnvironment _apiEnvironment = ConvaiApiEnvironment.Production;
+
+        [SerializeField]
+        [ConvaiInspectorSection("Credentials")]
+        [Tooltip("Convai realtime server URL used for room connect requests. Only honored when Environment is Custom.")]
+        private string _serverUrl = DefaultCoreServerUrl;
+
+        [SerializeField]
+        [ConvaiInspectorSection("Credentials")]
+        [Tooltip("REST API base URL override. Only honored when Environment is Custom. Empty = production URL.")]
+        private string _customRestBaseUrl = "";
+
+        [SerializeField]
+        [ConvaiInspectorSection("Audio")]
+        [Tooltip("Default microphone device id. Empty = system default device.")]
+        private string _defaultMicrophoneDeviceId = "";
+
+        [SerializeField] [ConvaiInspectorSection("Audio")]
+        [Tooltip("Connection timeout in seconds.")] [Range(5f, 120f)]
         private float _connectionTimeout = 30f;
 
-        [SerializeField] [Tooltip("Native/editor realtime uses the transport runtime path.")]
-        private NativeRuntimeMode _nativeRuntimeMode = NativeRuntimeMode.Transport;
+        [SerializeField] [ConvaiInspectorSection("Audio")]
+        [Tooltip("Default master volume for character audio.")] [Range(0f, 1f)]
+        private float _characterAudioVolume = 1f;
 
-        [Header("Logging")] [SerializeField] [Tooltip("Global minimum log level. Logs below this level are filtered.")]
+        [SerializeField] [ConvaiInspectorSection("Audio")]
+        [Tooltip("Play audio feedback sounds (e.g., listening indicator) by default.")]
+        private bool _audioFeedbackEnabled = true;
+
+        [SerializeField] [ConvaiInspectorSection("Audio")]
+        [Tooltip("How Convai audio, transcript presentation, and LipSync behave while the application is backgrounded.")]
+        private RuntimeBackgroundPolicy _backgroundPolicy = RuntimeBackgroundPolicy.PauseTimeline;
+
+        [SerializeField] [ConvaiInspectorSection("Logging")]
+        [Tooltip("Global minimum log level. Logs below this level are filtered.")]
         private LogLevel _globalLogLevel = LogLevel.Info;
 
-        [SerializeField] [Tooltip("Enable stack traces for Warning and Error logs.")]
+        [SerializeField] [ConvaiInspectorSection("Logging")]
+        [Tooltip("Enable stack traces for Warning and Error logs.")]
         private bool _includeStackTraces = true;
 
-        [SerializeField] [Tooltip("Enable colored output in Unity Console.")]
+        [SerializeField] [ConvaiInspectorSection("Logging")]
+        [Tooltip("Enable colored output in Unity Console.")]
         private bool _coloredOutput = true;
 
-        [SerializeField] [Tooltip("Per-category log level overrides. Empty = use global level.")]
+        [SerializeField] [ConvaiInspectorSection("Logging")]
+        [Tooltip("Per-category log level overrides. Empty = use global level.")]
         private LogLevelOverride[] _categoryOverrides = Array.Empty<LogLevelOverride>();
 
-        [Header("Features")] [SerializeField] [Tooltip("Enable the transcript system.")]
+        [SerializeField] [ConvaiInspectorSection("Features")]
+        [Tooltip("Enable the transcript system.")]
         private bool _transcriptSystemEnabled = true;
 
-        [SerializeField] [Tooltip("Enable the notification system.")]
+        [SerializeField] [ConvaiInspectorSection("Features")]
+        [Tooltip("Enable the notification system.")]
         private bool _notificationSystemEnabled;
 
-        [Header("UI Settings")]
-        [SerializeField]
-        [Tooltip("Index of the active transcript style (0-based).")]
-        [Range(0, 10)]
-        private int _activeTranscriptStyleIndex;
-
-        [Header("Vision Settings")]
-        [SerializeField]
-        [Tooltip("Enable camera capture for visual context in conversations.")]
-        private bool _visionEnabled;
-
-        [SerializeField] [Tooltip("Capture resolution width in pixels.")] [Range(320, 1920)]
-        private int _visionCaptureWidth = 1280;
-
-        [SerializeField] [Tooltip("Capture resolution height in pixels.")] [Range(240, 1080)]
-        private int _visionCaptureHeight = 720;
-
-        [SerializeField] [Tooltip("Target capture frame rate in frames per second.")] [Range(1, 30)]
-        private int _visionFrameRate = 15;
-
-        [SerializeField]
-        [Tooltip("JPEG compression quality (1-100). Lower = smaller size, higher = better quality.")]
-        [Range(1, 100)]
-        private int _visionJpegQuality = 75;
+        [SerializeField] [ConvaiInspectorSection("Features")]
+        [Tooltip("Default display name for the local player.")]
+        private string _defaultPlayerDisplayName = "Player";
 
         #endregion
 
@@ -179,22 +211,69 @@ namespace Convai.Runtime
         public LogLevelOverride[] CategoryOverrides => _categoryOverrides;
 
         /// <summary>Convai API key for authentication.</summary>
-        public string ApiKey => _apiKey;
+        public string ApiKey
+        {
+            get
+            {
+                if (ConvaiApiKeyObfuscation.TryDeobfuscate(_apiKeyObfuscated, out string plain)) return plain;
 
-        /// <summary>Convai server URL.</summary>
-        public string ServerUrl => _serverUrl;
+                // Legacy plaintext fallback: covers builds made from an unmigrated asset.
+                return _apiKey ?? string.Empty;
+            }
+        }
 
-        /// <summary>The player's display name shown in conversations.</summary>
-        public string PlayerName => _playerName;
+        /// <summary>Authentication mode used for runtime room connections.</summary>
+        public ConvaiAuthMode AuthMode => _authMode;
 
-        /// <summary>Default microphone device index.</summary>
-        public int DefaultMicrophoneIndex => _defaultMicrophoneIndex;
+        /// <summary>Developer backend URL used to resolve a short-lived auth token.</summary>
+        public string AuthTokenEndpointUrl => _authTokenEndpointUrl?.Trim() ?? string.Empty;
+
+        /// <summary>HTTP method used to request a short-lived auth token.</summary>
+        public ConvaiAuthTokenHttpMethod AuthTokenHttpMethod => _authTokenHttpMethod;
+
+        /// <summary>JSON field, or dotted field path, containing the resolved auth token.</summary>
+        public string AuthTokenResponseField => string.IsNullOrWhiteSpace(_authTokenResponseField)
+            ? "apiAuthToken"
+            : _authTokenResponseField.Trim();
+
+        /// <summary>Optional headers sent to the developer auth-token endpoint.</summary>
+        public ConvaiAuthTokenHeader[] AuthTokenHeaders =>
+            _authTokenHeaders ?? Array.Empty<ConvaiAuthTokenHeader>();
+
+        /// <summary>Convai service environment preset.</summary>
+        public ConvaiApiEnvironment ApiEnvironment => _apiEnvironment;
+
+        /// <summary>
+        ///     Convai realtime core server URL. Returns the serialized URL only when the
+        ///     environment is Custom; Production and Beta both use the default core server.
+        /// </summary>
+        public string ServerUrl =>
+            _apiEnvironment == ConvaiApiEnvironment.Custom && !string.IsNullOrWhiteSpace(_serverUrl)
+                ? _serverUrl
+                : DefaultCoreServerUrl;
+
+        /// <summary>REST API base URL override. Only honored when the environment is Custom.</summary>
+        public string RestBaseUrlOverride =>
+            _apiEnvironment == ConvaiApiEnvironment.Custom ? _customRestBaseUrl : string.Empty;
+
+        /// <summary>Default microphone device id. Empty = system default device.</summary>
+        public string DefaultMicrophoneDeviceId => _defaultMicrophoneDeviceId ?? string.Empty;
 
         /// <summary>Connection timeout in seconds.</summary>
         public float ConnectionTimeout => _connectionTimeout;
 
-        /// <summary>Gets the native/editor realtime runtime path.</summary>
-        public NativeRuntimeMode NativeRuntimeMode => NormalizeNativeRuntimeMode(_nativeRuntimeMode);
+        /// <summary>Default master volume for character audio (0-1).</summary>
+        public float CharacterAudioVolume => _characterAudioVolume;
+
+        /// <summary>Whether audio feedback sounds are enabled by default.</summary>
+        public bool AudioFeedbackEnabled => _audioFeedbackEnabled;
+
+        /// <summary>Project-wide default policy for application background transitions.</summary>
+        public RuntimeBackgroundPolicy BackgroundPolicy => _backgroundPolicy;
+
+        /// <summary>Default display name for the local player.</summary>
+        public string DefaultPlayerDisplayName =>
+            string.IsNullOrWhiteSpace(_defaultPlayerDisplayName) ? "Player" : _defaultPlayerDisplayName;
 
         /// <summary>Global minimum log level.</summary>
         public LogLevel GlobalLogLevel => _globalLogLevel;
@@ -231,58 +310,27 @@ namespace Convai.Runtime
         /// <summary>Whether the notification system is enabled.</summary>
         public bool NotificationSystemEnabled => _notificationSystemEnabled;
 
-        /// <summary>Index of the active transcript style.</summary>
-        public int ActiveTranscriptStyleIndex => _activeTranscriptStyleIndex;
-
         /// <summary>Whether an API key is configured.</summary>
-        public bool HasApiKey => !string.IsNullOrEmpty(_apiKey);
+        public bool HasApiKey => !string.IsNullOrEmpty(ApiKey);
 
-        /// <summary>Whether vision capture is enabled.</summary>
-        public bool VisionEnabled => _visionEnabled;
+        /// <summary>
+        ///     Whether the selected authentication mode has enough configuration to attempt a runtime connection.
+        /// </summary>
+        /// <remarks>
+        ///     Auth Token mode is valid when a custom provider is registered or the configured endpoint uses HTTPS
+        ///     (HTTP is accepted only for loopback development). The token itself is resolved once per connection.
+        /// </remarks>
+        public bool HasValidAuthConfig => _authMode == ConvaiAuthMode.ApiKey
+            ? HasApiKey
+            : ConvaiAuthTokenProviderRegistry.IsRegistered || TryGetAuthTokenEndpointUri(out _);
 
-        /// <summary>Vision capture width in pixels.</summary>
-        public int VisionCaptureWidth => _visionCaptureWidth;
-
-        /// <summary>Vision capture height in pixels.</summary>
-        public int VisionCaptureHeight => _visionCaptureHeight;
-
-        /// <summary>Vision capture frame rate in frames per second.</summary>
-        public int VisionFrameRate => _visionFrameRate;
-
-        /// <summary>Vision JPEG compression quality (1-100).</summary>
-        public int VisionJpegQuality => _visionJpegQuality;
-
-        private static NativeRuntimeMode NormalizeNativeRuntimeMode(NativeRuntimeMode runtimeMode) =>
-            Enum.IsDefined(typeof(NativeRuntimeMode), runtimeMode) ? runtimeMode : NativeRuntimeMode.Transport;
+        /// <summary>Resolves a secure auth-token endpoint, allowing HTTP only for local loopback development.</summary>
+        internal bool TryGetAuthTokenEndpointUri(out Uri endpoint) =>
+            EndpointAuthTokenProvider.TryCreateEndpointUri(AuthTokenEndpointUrl, out endpoint);
 
         #endregion
 
         #region Runtime Setters
-
-        /// <summary>
-        ///     Sets whether vision capture is enabled at runtime.
-        /// </summary>
-        /// <param name="enabled">Whether to enable vision capture.</param>
-        public void SetVisionEnabled(bool enabled)
-        {
-            _visionEnabled = enabled;
-            MarkDirtyIfEditor();
-        }
-
-        /// <summary>
-        ///     Creates a <see cref="VisionCaptureSettings" /> instance from the current settings.
-        /// </summary>
-        /// <returns>A VisionCaptureSettings configured from ConvaiSettings values.</returns>
-        public VisionCaptureSettings GetVisionCaptureSettings()
-        {
-            return new VisionCaptureSettings(
-                _visionCaptureWidth,
-                _visionCaptureHeight,
-                _visionFrameRate,
-                _visionJpegQuality,
-                null
-            );
-        }
 
         private void MarkDirtyIfEditor()
         {
@@ -341,21 +389,23 @@ namespace Convai.Runtime
         #region Editor-Only Setters
 
         /// <summary>
-        ///     Sets the API key. In builds, this logs a warning and does nothing.
+        ///     Sets the API key (stored obfuscated). In builds, this logs a warning and does nothing.
         ///     Use the Project Settings UI to configure the API key in the Editor.
         /// </summary>
         public void SetApiKey(string apiKey)
         {
 #if UNITY_EDITOR
-            _apiKey = apiKey;
+            _apiKeyObfuscated = ConvaiApiKeyObfuscation.Obfuscate(apiKey?.Trim());
+            _apiKey = string.Empty;
             MarkDirtyIfEditor();
 #else
-            ConvaiLogger.Warning("[ConvaiSettings] SetApiKey is only available in the Editor. Use Project Settings to configure the API key.", LogCategory.SDK);
+            ConvaiLogger.Warning("SetApiKey is only available in the Editor. Use Project Settings to configure the API key.", LogCategory.SDK);
 #endif
         }
 
         /// <summary>
-        ///     Sets the server URL. In builds, this logs a warning and does nothing.
+        ///     Sets the custom core server URL. Only honored when the environment is Custom.
+        ///     In builds, this logs a warning and does nothing.
         /// </summary>
         public void SetServerUrl(string serverUrl)
         {
@@ -363,7 +413,7 @@ namespace Convai.Runtime
             _serverUrl = serverUrl;
             MarkDirtyIfEditor();
 #else
-            ConvaiLogger.Warning("[ConvaiSettings] SetServerUrl is only available in the Editor. Use Project Settings to configure the server URL.", LogCategory.SDK);
+            ConvaiLogger.Warning("SetServerUrl is only available in the Editor. Use Project Settings to configure the server URL.", LogCategory.SDK);
 #endif
         }
 

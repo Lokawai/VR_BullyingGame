@@ -331,9 +331,6 @@ namespace Convai.Infrastructure.Networking.WebGL
 
         #region Helper Methods
 
-        /// <summary>
-        ///     Gets the underlying LiveKit local participant (for internal use only).
-        /// </summary>
         internal LocalParticipant UnderlyingParticipant { get; }
 
         private static TrackPublishOptions BuildTrackPublishOptions(IVideoSource source, VideoPublishOptions options)

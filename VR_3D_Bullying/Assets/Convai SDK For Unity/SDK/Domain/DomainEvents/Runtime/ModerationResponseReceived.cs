@@ -8,7 +8,7 @@ namespace Convai.Domain.DomainEvents.Runtime
     ///     and the character response may be replaced with a refusal.
     /// </summary>
     /// <remarks>
-    ///     Subscribe via EventHub or <c>ConvaiManager.Events.OnModerationResponse</c>.
+    ///     Subscribe via EventHub or <c>ConvaiManager.Events.OnModerationResponseReceived</c>.
     ///     <code>
     /// _eventHub.Subscribe&lt;ModerationResponseReceived&gt;(this, e =&gt;
     /// {

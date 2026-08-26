@@ -3,7 +3,6 @@ using Convai.Infrastructure.Networking.Transport;
 using LiveKit;
 using UnityEngine;
 
-// CS0067: Event required by IRemoteTrack interface but not yet raised (future mute state tracking)
 #pragma warning disable CS0067
 
 namespace Convai.Infrastructure.Networking.Native

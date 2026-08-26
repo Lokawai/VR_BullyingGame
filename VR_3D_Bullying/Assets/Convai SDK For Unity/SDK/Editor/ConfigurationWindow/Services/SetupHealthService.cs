@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Convai.Editor.Settings.Services;
 using Convai.Runtime;
 using Convai.Runtime.Components;
+using Convai.Runtime.Core.Configuration;
+using Convai.Shared.Compatibility;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
@@ -26,27 +29,73 @@ namespace Convai.Editor.ConfigurationWindow.Services
             return new SetupHealthReport(checks);
         }
 
-        private static SetupHealthCheckResult CheckApiKey()
+        internal static SetupHealthCheckResult CheckApiKey()
         {
             var settings = ConvaiSettings.Instance;
-            bool hasApiKey = settings != null && settings.HasApiKey;
-
-            return hasApiKey
-                ? new SetupHealthCheckResult(
+            if (settings == null)
+                return new SetupHealthCheckResult(
                     "api-key",
                     "API Key",
-                    SetupHealthStatus.Healthy,
-                    "Configured in Project Settings.")
-                : new SetupHealthCheckResult(
+                    SetupHealthStatus.Blocked,
+                    "Convai settings could not be loaded.");
+
+            if (settings.AuthMode == ConvaiAuthMode.AuthToken)
+                return CheckAuthTokenConfiguration(settings);
+
+            if (!settings.HasApiKey)
+                return new SetupHealthCheckResult(
                     "api-key",
                     "API Key",
                     SetupHealthStatus.Blocked,
                     "Missing. Set it in Edit > Project Settings > Convai SDK.");
+
+            if (ApiKeyValidationService.TryGetCachedResult(
+                    settings.ApiKey, settings.ApiEnvironment, settings.RestBaseUrlOverride,
+                    out ApiKeyValidationResult cached))
+            {
+                return cached.IsValid
+                    ? new SetupHealthCheckResult(
+                        "api-key", "API Key", SetupHealthStatus.Healthy, "Configured and validated.")
+                    : new SetupHealthCheckResult(
+                        "api-key", "API Key", SetupHealthStatus.Blocked,
+                        $"Configured but failed validation: {cached.Message}");
+            }
+
+            return new SetupHealthCheckResult(
+                "api-key", "API Key", SetupHealthStatus.Warning,
+                "Configured but not yet validated. Use Validate in SDK Settings > Credentials.");
+        }
+
+        private static SetupHealthCheckResult CheckAuthTokenConfiguration(ConvaiSettings settings)
+        {
+            if (settings.HasValidAuthConfig)
+            {
+                return new SetupHealthCheckResult(
+                    "api-key",
+                    "Auth Token",
+                    SetupHealthStatus.Healthy,
+                    "A runtime auth-token source is configured. The token will be resolved when a room connection starts.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(settings.AuthTokenEndpointUrl))
+            {
+                return new SetupHealthCheckResult(
+                    "api-key",
+                    "Auth Token",
+                    SetupHealthStatus.Blocked,
+                    "The token endpoint URL is invalid. Use HTTPS, or HTTP only for loopback development, or register an IConvaiAuthTokenProvider before connecting.");
+            }
+
+            return new SetupHealthCheckResult(
+                "api-key",
+                "Auth Token",
+                SetupHealthStatus.Blocked,
+                "No token endpoint is configured. Set one in SDK Settings > Credentials or register an IConvaiAuthTokenProvider before connecting.");
         }
 
         private static SetupHealthCheckResult CheckRequiredSceneComponents()
         {
-            bool hasManager = Object.FindFirstObjectByType<ConvaiManager>() != null;
+            bool hasManager = Object.FindAnyObjectByType<ConvaiManager>() != null;
 
             if (hasManager)
             {
@@ -66,7 +115,7 @@ namespace Convai.Editor.ConfigurationWindow.Services
 
         private static SetupHealthCheckResult CheckCharacterSetup()
         {
-            ConvaiCharacter[] characters = Object.FindObjectsByType<ConvaiCharacter>(FindObjectsSortMode.None);
+            ConvaiCharacter[] characters = ConvaiObjectFind.All<ConvaiCharacter>(FindObjectsInactive.Exclude);
             if (characters.Length == 0)
             {
                 return new SetupHealthCheckResult(
@@ -96,7 +145,7 @@ namespace Convai.Editor.ConfigurationWindow.Services
 
         private static SetupHealthCheckResult CheckPlayerSetup()
         {
-            ConvaiPlayer[] players = Object.FindObjectsByType<ConvaiPlayer>(FindObjectsSortMode.None);
+            ConvaiPlayer[] players = ConvaiObjectFind.All<ConvaiPlayer>(FindObjectsInactive.Exclude);
             if (players.Length == 0)
             {
                 return new SetupHealthCheckResult(
@@ -119,10 +168,6 @@ namespace Convai.Editor.ConfigurationWindow.Services
     /// </summary>
     public sealed class SetupHealthReport
     {
-        /// <summary>
-        ///     Initializes a new instance of the <see cref="SetupHealthReport" /> class.
-        /// </summary>
-        /// <param name="results">Health check results.</param>
         public SetupHealthReport(IReadOnlyList<SetupHealthCheckResult> results)
         {
             Results = results ?? Array.Empty<SetupHealthCheckResult>();
@@ -143,9 +188,6 @@ namespace Convai.Editor.ConfigurationWindow.Services
     /// </summary>
     public sealed class SetupHealthCheckResult
     {
-        /// <summary>
-        ///     Initializes a new instance of the <see cref="SetupHealthCheckResult" /> class.
-        /// </summary>
         public SetupHealthCheckResult(string id, string title, SetupHealthStatus status, string message)
         {
             Id = id;

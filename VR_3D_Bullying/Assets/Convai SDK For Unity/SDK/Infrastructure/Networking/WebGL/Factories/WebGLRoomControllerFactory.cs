@@ -1,7 +1,9 @@
 using System;
 using Convai.Domain.Abstractions;
 using Convai.Domain.EventSystem;
+using Convai.Domain.Logging;
 using Convai.Infrastructure.Networking.Transport;
+using Convai.Runtime.Behaviors;
 using Convai.Runtime.Logging;
 using UnityEngine;
 using ILogger = Convai.Domain.Logging.ILogger;
@@ -14,37 +16,46 @@ namespace Convai.Infrastructure.Networking.WebGL
     ///     Factory for creating IConvaiRoomController instances on WebGL platforms.
     ///     Creates a WebGLRoomController using the IRealtimeTransport abstraction.
     /// </summary>
-    internal sealed class WebGLRoomControllerFactory : IConvaiRoomControllerFactory
+    internal sealed class WebGLRoomControllerFactory : IConvaiRoomControllerFactory, IDisposable
     {
-        private static MonoBehaviour _coroutineRunner;
-        private static readonly object _lock = new();
+        private readonly Func<IRealtimeTransport> _createTransport;
+        private readonly object _lock = new();
+
+        private MonoBehaviour _coroutineRunner;
+
+        /// <summary>
+        ///     Creates a new factory instance with the specified transport factory.
+        /// </summary>
+        /// <param name="createTransport">
+        ///     Factory function that creates IRealtimeTransport instances.
+        ///     Must be provided by the caller (typically an ITransportProvider).
+        /// </param>
+        /// <exception cref="ArgumentNullException">Thrown if createTransport is null.</exception>
+        internal WebGLRoomControllerFactory(Func<IRealtimeTransport> createTransport)
+        {
+            _createTransport = createTransport ?? throw new ArgumentNullException(nameof(createTransport));
+        }
 
         /// <inheritdoc />
         public IConvaiRoomController Create(
-            ICharacterRegistry characterRegistry,
+            IAgentRegistry agentRegistry,
             IPlayerSession playerSession,
-            IConfigurationProvider config,
+            ITransportConfiguration transportConfiguration,
+            ISessionPersistence sessionPersistence,
             IMainThreadDispatcher dispatcher,
             ILogger logger,
             IEventHub eventHub,
             INarrativeSectionNameResolver sectionNameResolver = null)
         {
-            // Get the transport from the RealtimeTransportFactory
-            if (!RealtimeTransportFactory.IsFactoryRegistered)
-            {
-                logger?.Error("[WebGLRoomControllerFactory] RealtimeTransportFactory not registered",
-                    LogCategory.Transport);
-                return null;
-            }
-
+            logger = logger.WithTag(nameof(WebGLRoomControllerFactory));
             IRealtimeTransport transport;
             try
             {
-                transport = RealtimeTransportFactory.Create();
+                transport = _createTransport.Invoke();
             }
             catch (Exception ex)
             {
-                logger?.Error($"[WebGLRoomControllerFactory] Failed to create transport: {ex.Message}",
+                logger?.Error($"Failed to create transport: {ex.Message}",
                     LogCategory.Transport);
                 return null;
             }
@@ -53,14 +64,15 @@ namespace Convai.Infrastructure.Networking.WebGL
             MonoBehaviour coroutineRunner = GetOrCreateCoroutineRunner();
             if (coroutineRunner == null)
             {
-                logger?.Error("[WebGLRoomControllerFactory] Failed to create coroutine runner", LogCategory.Transport);
+                logger?.Error("Failed to create coroutine runner", LogCategory.Transport);
                 return null;
             }
 
             return new WebGLRoomController(
-                characterRegistry,
+                agentRegistry,
                 playerSession,
-                config,
+                transportConfiguration,
+                sessionPersistence,
                 dispatcher,
                 logger,
                 eventHub,
@@ -69,10 +81,28 @@ namespace Convai.Infrastructure.Networking.WebGL
                 sectionNameResolver);
         }
 
+        public void Dispose()
+        {
+            MonoBehaviour coroutineRunner = _coroutineRunner;
+            _coroutineRunner = null;
+
+            if (coroutineRunner == null)
+                return;
+
+            GameObject runnerObject = coroutineRunner.gameObject;
+            if (runnerObject == null)
+                return;
+
+            if (UnityEngine.Application.isPlaying)
+                Object.Destroy(runnerObject);
+            else
+                Object.DestroyImmediate(runnerObject);
+        }
+
         /// <summary>
         ///     Gets or creates a coroutine runner for HTTP operations.
         /// </summary>
-        private static MonoBehaviour GetOrCreateCoroutineRunner()
+        private MonoBehaviour GetOrCreateCoroutineRunner()
         {
             if (_coroutineRunner != null) return _coroutineRunner;
 
@@ -87,7 +117,7 @@ namespace Convai.Infrastructure.Networking.WebGL
 
                 _coroutineRunner = runnerObject.AddComponent<WebGLHttpCoroutineRunner>();
 
-                ConvaiLogger.Debug("[WebGLRoomControllerFactory] Created HTTP coroutine runner.",
+                ConvaiLogger.Debug("Created HTTP coroutine runner.",
                     LogCategory.Transport);
 
                 return _coroutineRunner;

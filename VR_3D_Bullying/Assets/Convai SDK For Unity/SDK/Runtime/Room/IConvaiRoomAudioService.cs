@@ -1,9 +1,21 @@
 using System;
 using System.Threading;
-using System.Threading.Tasks;
+using Convai.Runtime.Core.Async;
+using Convai.Runtime.Core.Coordinators;
+using Convai.Infrastructure.Networking;
 
 namespace Convai.Runtime.Room
 {
+    internal interface IConvaiRoomAudioTimelineService
+    {
+        bool TryGetCharacterAudioTimeline(string characterId, out AudioTimelineSnapshot snapshot);
+    }
+
+    internal interface IConvaiRoomAudioMediaTimelineService
+    {
+        bool TryGetCharacterAudioMediaTimeline(string characterId, out AudioMediaTimelineSnapshot snapshot);
+    }
+
     /// <summary>
     ///     Provides Unity-friendly microphone and Character audio controls for the Convai room.
     /// </summary>
@@ -39,13 +51,14 @@ namespace Convai.Runtime.Room
         /// </summary>
         /// <param name="microphoneIndex">Zero-based microphone device index.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
-        public Task StartListeningAsync(int microphoneIndex = 0, CancellationToken cancellationToken = default);
+        public IConvaiOperation<Unit> StartListeningAsync(int microphoneIndex = 0,
+            CancellationToken cancellationToken = default);
 
         /// <summary>
         ///     Stops microphone capture and unpublishes the audio track.
         /// </summary>
         /// <param name="cancellationToken">Optional cancellation token.</param>
-        public Task StopListeningAsync(CancellationToken cancellationToken = default);
+        public IConvaiOperation<Unit> StopListeningAsync(CancellationToken cancellationToken = default);
 
         /// <summary>
         ///     Sets the microphone mute state for the local participant.
@@ -95,5 +108,13 @@ namespace Convai.Runtime.Room
         ///     Enables audio playback after a user gesture. Required on platforms like WebGL.
         /// </summary>
         public void EnableAudioPlayback();
+
+        /// <summary>
+        ///     Reads the measured audio playhead for a character's remote stream: seconds of source
+        ///     audio actually rendered to the output device since the current playback signal started.
+        ///     Freezes on underrun; accounts for drift-correction skips. Returns false when the
+        ///     platform stream does not expose a playhead (callers should fall back to wall clock).
+        /// </summary>
+        public bool TryGetCharacterAudioPlayhead(string characterId, out double playedSeconds);
     }
 }

@@ -30,6 +30,12 @@ namespace LiveKit
         /// Called when we receive a new texture (first texture or the resolution changed)
         public event TextureReceiveDelegate TextureReceived;
 
+        public delegate FrameMetadata FrameMetadataDelegate();
+        /// Invoked once per outgoing frame. Return null (default) to send no trailer.
+        /// To actually serialize the trailer onto RTP, also enable the matching
+        /// PacketTrailerFeatures on the TrackPublishOptions used at publish time.
+        public FrameMetadataDelegate MetadataProvider { get; set; }
+
         protected Texture2D _previewTexture;
         protected NativeArray<byte> _captureBuffer;
         protected VideoStreamSource _sourceType;
@@ -40,7 +46,9 @@ namespace LiveKit
         protected bool _disposed = false;
         protected bool _playing = false;
         private bool _muted = false;
+        private float _nextCaptureTime;
         public override bool Muted => _muted;
+        public int TargetFrameRate { get; set; } = 30;
 
         internal RtcVideoSource(VideoStreamSource sourceType, VideoBufferType bufferType)
         {
@@ -132,6 +140,7 @@ namespace LiveKit
             {
                 yield return null;
                 if (_disposed) break;
+                if (!ShouldCaptureFrame()) continue;
                 var textureChanged = ReadBuffer();
 
                 if (textureChanged)
@@ -142,6 +151,19 @@ namespace LiveKit
             }
 
             yield break;
+        }
+
+        private bool ShouldCaptureFrame()
+        {
+            if (TargetFrameRate <= 0)
+                return true;
+
+            float now = Time.unscaledTime;
+            if (_nextCaptureTime > now)
+                return false;
+
+            _nextCaptureTime = now + (1f / TargetFrameRate);
+            return true;
         }
 
         public override void SetMute(bool muted)
@@ -167,6 +189,7 @@ namespace LiveKit
                 buffer.Width = (uint)GetWidth();
                 buffer.Height = (uint)GetHeight();
 
+                // Send the frame to WebRTC
                 using var request = FFIBridge.Instance.NewRequest<CaptureVideoFrameRequest>();
                 var capture = request.request;
                 capture.SourceHandle = (ulong)Handle.DangerousGetHandle();
@@ -174,6 +197,8 @@ namespace LiveKit
                 var now = DateTimeOffset.UtcNow;
                 capture.TimestampUs = now.ToUnixTimeMilliseconds() * 1000 + (now.Ticks % TimeSpan.TicksPerMillisecond) / 10;
                 capture.Buffer = buffer;
+                var metadata = MetadataProvider?.Invoke();
+                if (metadata != null) capture.Metadata = metadata;
                 using var response = request.Send();
                 _reading = false;
                 _requestPending = false;
@@ -207,11 +232,10 @@ namespace LiveKit
                  UnityEngine.Object.Destroy(_previewTexture);
             if (_captureBuffer.IsCreated)
             {
-#if UNITY_EDITOR
-                Debug.Log("Disposing capture buffer");
-#endif
+                Utils.Debug("Disposing capture buffer");
                 _captureBuffer.Dispose();
             }
+            Handle?.Dispose();
             _disposed = true;
         }
 
@@ -221,4 +245,3 @@ namespace LiveKit
         }
     }
 }
-

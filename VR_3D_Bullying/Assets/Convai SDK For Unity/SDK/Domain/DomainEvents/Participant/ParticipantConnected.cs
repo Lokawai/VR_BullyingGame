@@ -4,20 +4,7 @@ namespace Convai.Domain.DomainEvents.Participant
 {
     /// <summary>
     ///     Domain event raised when a participant joins the Convai session.
-    ///     Replaces reflection-based RaiseParticipantJoined calls with strongly-typed EventHub publishing.
     /// </summary>
-    /// <remarks>
-    ///     This event is published via EventHub when a remote participant (character or player)
-    ///     connects to the LiveKit room. Subscribe to this event instead of using the legacy
-    ///     ConvaiRoomSession.ParticipantJoined event.
-    ///     Usage:
-    ///     <code>
-    /// _eventHub.Subscribe&lt;ParticipantConnected&gt;(e =>
-    /// {
-    ///     Debug.Log($"Participant joined: {e.Participant.DisplayName} ({e.Participant.ParticipantType})");
-    /// });
-    /// </code>
-    /// </remarks>
     public readonly struct ParticipantConnected
     {
         /// <summary>

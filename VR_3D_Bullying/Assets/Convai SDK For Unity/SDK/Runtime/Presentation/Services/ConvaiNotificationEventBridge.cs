@@ -1,10 +1,10 @@
 using System;
 using System.Collections.Generic;
 using Convai.Domain.DomainEvents.Session;
-using Convai.Domain.Errors;
 using Convai.Domain.EventSystem;
 using Convai.Domain.Logging;
 using Convai.Runtime.Logging;
+using Convai.Runtime.Presentation.Views.Notifications;
 using Convai.Shared.Interfaces;
 using Convai.Shared.Types;
 using UnityEngine;
@@ -19,17 +19,18 @@ namespace Convai.Runtime.Presentation.Services
     /// <remarks>
     ///     This service:
     ///     - Subscribes to SessionError events from IEventHub
-    ///     - Maps error codes to NotificationType values
+    ///     - Resolves notifications from session errors via <see cref="SONotificationErrorMap" />
     ///     - Checks runtime notification enablement before requesting notifications
-    ///     - Implements cooldown/deduplication to avoid notification spam
+    ///     - Implements cooldown/deduplication (keyed by <see cref="SONotification.Id" />)
     /// </remarks>
     [Preserve]
     public sealed class ConvaiNotificationEventBridge : IDisposable
     {
         private readonly object _cooldownLock = new();
+        private readonly SONotificationErrorMap _errorMap;
         private readonly IEventHub _eventHub;
         private readonly Func<bool> _isNotificationEnabled;
-        private readonly Dictionary<NotificationType, float> _lastShownTime = new();
+        private readonly Dictionary<string, float> _lastShownTimeByNotificationId = new();
         private readonly Func<IConvaiNotificationService> _notificationServiceAccessor;
 
         private SubscriptionToken _sessionErrorToken;
@@ -40,16 +41,21 @@ namespace Convai.Runtime.Presentation.Services
         /// <param name="notificationService">The notification service to send requests to.</param>
         /// <param name="eventHub">The event hub to subscribe to domain events.</param>
         /// <param name="isNotificationEnabled">Function that returns true if notifications are enabled in settings.</param>
+        /// <param name="errorMap">
+        ///     Maps session errors to notifications. If null, loads <see cref="SONotificationErrorMap.LoadDefault" />.
+        /// </param>
         public ConvaiNotificationEventBridge(
             IConvaiNotificationService notificationService,
             IEventHub eventHub,
-            Func<bool> isNotificationEnabled)
+            Func<bool> isNotificationEnabled,
+            SONotificationErrorMap errorMap = null)
         {
             if (notificationService == null) throw new ArgumentNullException(nameof(notificationService));
 
             _notificationServiceAccessor = () => notificationService;
             _eventHub = eventHub ?? throw new ArgumentNullException(nameof(eventHub));
             _isNotificationEnabled = isNotificationEnabled ?? (() => false);
+            _errorMap = errorMap ?? SONotificationErrorMap.LoadDefault();
 
             SubscribeToEvents();
         }
@@ -63,20 +69,25 @@ namespace Convai.Runtime.Presentation.Services
         /// </param>
         /// <param name="eventHub">The event hub to subscribe to domain events.</param>
         /// <param name="isNotificationEnabled">Function that returns true if notifications are enabled in settings.</param>
+        /// <param name="errorMap">
+        ///     Maps session errors to notifications. If null, loads <see cref="SONotificationErrorMap.LoadDefault" />.
+        /// </param>
         public ConvaiNotificationEventBridge(
             Func<IConvaiNotificationService> notificationServiceAccessor,
             IEventHub eventHub,
-            Func<bool> isNotificationEnabled)
+            Func<bool> isNotificationEnabled,
+            SONotificationErrorMap errorMap = null)
         {
             _notificationServiceAccessor = notificationServiceAccessor ?? (() => null);
             _eventHub = eventHub ?? throw new ArgumentNullException(nameof(eventHub));
             _isNotificationEnabled = isNotificationEnabled ?? (() => false);
+            _errorMap = errorMap;
 
             SubscribeToEvents();
         }
 
         /// <summary>
-        ///     Cooldown period in seconds before the same notification type can be shown again.
+        ///     Cooldown period in seconds before the same notification id can be shown again.
         /// </summary>
         public float CooldownSeconds { get; set; } = 10f;
 
@@ -89,7 +100,7 @@ namespace Convai.Runtime.Presentation.Services
                 _sessionErrorToken = default;
             }
 
-            ConvaiLogger.Debug("[ConvaiNotificationEventBridge] Disposed", LogCategory.SDK);
+            ConvaiLogger.Debug("Disposed", LogCategory.SDK);
         }
 
         private void SubscribeToEvents()
@@ -97,7 +108,7 @@ namespace Convai.Runtime.Presentation.Services
             _sessionErrorToken = _eventHub.Subscribe<SessionError>(
                 HandleSessionError);
 
-            ConvaiLogger.Debug("[ConvaiNotificationEventBridge] Subscribed to SessionError events", LogCategory.SDK);
+            ConvaiLogger.Debug("Subscribed to SessionError events", LogCategory.SDK);
         }
 
         private void HandleSessionError(SessionError error)
@@ -107,93 +118,54 @@ namespace Convai.Runtime.Presentation.Services
             IConvaiNotificationService notificationService = _notificationServiceAccessor?.Invoke();
             if (notificationService == null) return;
 
-            NotificationType? notificationType = MapErrorCodeToNotificationType(error.ErrorCode);
-            if (!notificationType.HasValue)
+            SONotification notification = MapErrorCodeToNotification(error.ErrorCode);
+            if (notification == null)
             {
                 ConvaiLogger.Debug(
-                    $"[ConvaiNotificationEventBridge] No notification mapping for error code: {error.ErrorCode}",
+                    $"No notification mapping for error code: {error.ErrorCode}",
                     LogCategory.SDK);
                 return;
             }
 
-            if (!TryPassCooldown(notificationType.Value))
+            if (!TryPassCooldown(notification))
             {
                 ConvaiLogger.Debug(
-                    $"[ConvaiNotificationEventBridge] Notification {notificationType.Value} suppressed by cooldown",
+                    $"Notification {notification.Id} suppressed by cooldown",
                     LogCategory.SDK);
                 return;
             }
 
             ConvaiLogger.Debug(
-                $"[ConvaiNotificationEventBridge] Requesting notification: {notificationType.Value} for error: {error.ErrorCode}",
+                $"Requesting notification: {notification.Id} for error: {error.ErrorCode}",
                 LogCategory.SDK);
-            notificationService.RequestNotification(notificationType.Value);
+            notificationService.RequestNotification(notification);
         }
 
-        /// <summary>
-        ///     Maps error codes to notification types.
-        /// </summary>
-        private static NotificationType? MapErrorCodeToNotificationType(string errorCode)
+        private SONotification MapErrorCodeToNotification(string errorCode)
         {
-            if (string.IsNullOrEmpty(errorCode)) return null;
-
-            return errorCode switch
-            {
-                // Auth/API errors
-                SessionErrorCodes.ConnectionAuthFailed => NotificationType.API_KEY_NOT_FOUND,
-                SessionErrorCodes.ConnectionInvalidToken => NotificationType.API_KEY_NOT_FOUND,
-                SessionErrorCodes.ConfigApiKeyMissing => NotificationType.API_KEY_NOT_FOUND,
-
-                // Rate limiting
-                SessionErrorCodes.ConnectionRateLimited => NotificationType.USAGE_LIMIT_EXCEEDED,
-
-                // Network errors
-                SessionErrorCodes.ConnectionTimeout => NotificationType.NETWORK_REACHABILITY_ISSUE,
-                SessionErrorCodes.ConnectionNetworkError => NotificationType.NETWORK_REACHABILITY_ISSUE,
-                SessionErrorCodes.ConnectionServiceUnavailable => NotificationType.NETWORK_REACHABILITY_ISSUE,
-                SessionErrorCodes.ConnectionServerError => NotificationType.NETWORK_REACHABILITY_ISSUE,
-                SessionErrorCodes.TransportLivekitError => NotificationType.NETWORK_REACHABILITY_ISSUE,
-                SessionErrorCodes.ConnectionFailed => NotificationType.NETWORK_REACHABILITY_ISSUE,
-
-                // Microphone errors
-                SessionErrorCodes.AudioMicUnavailable => NotificationType.NO_MICROPHONE_DETECTED,
-                SessionErrorCodes.AudioMicPermissionDenied => NotificationType.MICROPHONE_ISSUE,
-                SessionErrorCodes.AudioMicPublishFailed => NotificationType.MICROPHONE_ISSUE,
-
-                _ => MapByPrefix(errorCode)
-            };
+            SONotificationErrorMap map = _errorMap ?? SONotificationErrorMap.LoadDefault();
+            if (map == null || !map.TryResolve(errorCode, out SONotification notification)) return null;
+            return notification;
         }
 
-        private static NotificationType? MapByPrefix(string errorCode)
+        private bool TryPassCooldown(SONotification notification)
         {
-            if (errorCode.StartsWith("connection.", StringComparison.OrdinalIgnoreCase))
-                return NotificationType.NETWORK_REACHABILITY_ISSUE;
+            if (notification == null) return false;
 
-            if (errorCode.StartsWith("transport.", StringComparison.OrdinalIgnoreCase))
-                return NotificationType.NETWORK_REACHABILITY_ISSUE;
+            string id = notification.Id;
+            if (string.IsNullOrEmpty(id)) return true;
 
-            if (errorCode.StartsWith("audio.", StringComparison.OrdinalIgnoreCase))
-                return NotificationType.MICROPHONE_ISSUE;
-
-            if (errorCode.StartsWith("config.", StringComparison.OrdinalIgnoreCase))
-                return NotificationType.API_KEY_NOT_FOUND;
-
-            return null;
-        }
-
-        private bool TryPassCooldown(NotificationType type)
-        {
             float now = Time.realtimeSinceStartup;
 
             lock (_cooldownLock)
             {
-                if (_lastShownTime.TryGetValue(type, out float lastTime))
+                if (_lastShownTimeByNotificationId.TryGetValue(id, out float lastTime))
                 {
                     if (now - lastTime < CooldownSeconds)
                         return false;
                 }
 
-                _lastShownTime[type] = now;
+                _lastShownTimeByNotificationId[id] = now;
                 return true;
             }
         }
@@ -202,16 +174,17 @@ namespace Convai.Runtime.Presentation.Services
         ///     Manually requests a notification (for pre-flight checks in ConvaiRoomManager).
         ///     Respects settings and cooldown.
         /// </summary>
-        public void RequestNotificationIfEnabled(NotificationType type)
+        public void RequestNotificationIfEnabled(SONotification notification)
         {
+            if (notification == null) return;
             if (!_isNotificationEnabled()) return;
 
             IConvaiNotificationService notificationService = _notificationServiceAccessor?.Invoke();
             if (notificationService == null) return;
 
-            if (!TryPassCooldown(type)) return;
+            if (!TryPassCooldown(notification)) return;
 
-            notificationService.RequestNotification(type);
+            notificationService.RequestNotification(notification);
         }
 
         /// <summary>
@@ -219,7 +192,7 @@ namespace Convai.Runtime.Presentation.Services
         /// </summary>
         public void ClearCooldowns()
         {
-            lock (_cooldownLock) _lastShownTime.Clear();
+            lock (_cooldownLock) _lastShownTimeByNotificationId.Clear();
         }
     }
 }

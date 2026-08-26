@@ -8,8 +8,7 @@ namespace Convai.Runtime.Presentation.Views.Transcript
     ///     Allows users to provide positive/negative feedback on AI responses.
     /// </summary>
     /// <remarks>
-    ///     This is a reference implementation in the Samples layer.
-    ///     Projects can customize or replace this component as needed.
+    ///     Reference implementation that projects can customize or replace as needed.
     /// </remarks>
     public class FeedbackHandler : MonoBehaviour
     {

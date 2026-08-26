@@ -3,6 +3,7 @@ using UnityEngine;
 
 namespace LiveKit
 {
+	// Converts I420 YUV frames to RGBA into an output RenderTexture, via GPU shader or CPU fallback.
 	internal sealed class YuvToRgbConverter : IDisposable
 	{
 		public bool UseGpuShader { get; set; } = true;
@@ -13,6 +14,9 @@ namespace LiveKit
 		private Texture2D _planeU;
 		private Texture2D _planeV;
 
+		private const string SHADER_NAME = "Hidden/LiveKit/YUV2RGB";
+
+		// Ensure Output exists and matches the given size; returns true if created or resized.
 		public bool EnsureOutput(int width, int height)
 		{
 			var changed = false;
@@ -23,13 +27,14 @@ namespace LiveKit
 					Output.Release();
 					UnityEngine.Object.Destroy(Output);
 				}
-				Output = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32);
+				Output = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
 				Output.Create();
 				changed = true;
 			}
 			return changed;
 		}
 
+		// Convert the given buffer to RGBA and write into Output.
 		public void Convert(VideoFrameBuffer buffer)
 		{
 			if (buffer == null || !buffer.IsValid)
@@ -51,11 +56,13 @@ namespace LiveKit
 					GpuConvertToRenderTarget();
 					return;
 				}
+				// fall through to CPU if shader missing
 			}
 
 			CpuConvertToRenderTarget(buffer, width, height);
 		}
 
+		// Release all Unity resources (RT, material, textures).
 		public void Dispose()
 		{
 			if (_planeY != null) UnityEngine.Object.Destroy(_planeY);
@@ -69,16 +76,18 @@ namespace LiveKit
 			if (_yuvToRgbMaterial != null) UnityEngine.Object.Destroy(_yuvToRgbMaterial);
 		}
 
+		// Ensure the GPU YUV->RGB material exists.
 		private void EnsureGpuMaterial()
 		{
 			if (_yuvToRgbMaterial == null)
 			{
-				var shader = Shader.Find("Hidden/LiveKit/YUV2RGB");
+				var shader = Shader.Find(SHADER_NAME);
 				if (shader != null)
 					_yuvToRgbMaterial = new Material(shader);
 			}
 		}
 
+		// Ensure or recreate a plane texture with given format and filter settings.
 		private static void EnsurePlaneTexture(ref Texture2D tex, int width, int height, TextureFormat format, FilterMode filterMode)
 		{
 			if (tex == null || tex.width != width || tex.height != height)
@@ -90,6 +99,7 @@ namespace LiveKit
 			}
 		}
 
+		// Ensure Y, U, V plane textures exist with correct dimensions.
 		private void EnsureYuvPlaneTextures(int width, int height)
 		{
 			EnsurePlaneTexture(ref _planeY, width, height, TextureFormat.R8, FilterMode.Bilinear);
@@ -99,6 +109,7 @@ namespace LiveKit
 			EnsurePlaneTexture(ref _planeV, chromaW, chromaH, TextureFormat.R8, FilterMode.Bilinear);
 		}
 
+		// Upload raw Y, U, V plane bytes from buffer to textures.
 		private void UploadYuvPlanes(VideoFrameBuffer buffer)
 		{
 			var info = buffer.Info;
@@ -115,6 +126,7 @@ namespace LiveKit
 			_planeV.Apply(false, false);
 		}
 
+		// CPU-side conversion to RGBA and blit to the output render target.
 		private void CpuConvertToRenderTarget(VideoFrameBuffer buffer, int width, int height)
 		{
 			var rgba = buffer.ToRGBA();
@@ -123,7 +135,9 @@ namespace LiveKit
 			{
 				tempTex.LoadRawTextureData((IntPtr)rgba.Info.DataPtr, (int)rgba.GetMemorySize());
 				tempTex.Apply();
-				Graphics.Blit(tempTex, Output);
+
+				// Mirror vertically to match the GPU shader path's UV remap.
+				Graphics.Blit(tempTex, Output, new Vector2(1f, -1f), new Vector2(0f, 1f));
 			}
 			finally
 			{
@@ -132,13 +146,14 @@ namespace LiveKit
 			}
 		}
 
+		// GPU-side YUV->RGB conversion using shader material.
 		private void GpuConvertToRenderTarget()
 		{
 			_yuvToRgbMaterial.SetTexture("_TexY", _planeY);
 			_yuvToRgbMaterial.SetTexture("_TexU", _planeU);
 			_yuvToRgbMaterial.SetTexture("_TexV", _planeV);
+
 			Graphics.Blit(Texture2D.blackTexture, Output, _yuvToRgbMaterial);
 		}
 	}
 }
-

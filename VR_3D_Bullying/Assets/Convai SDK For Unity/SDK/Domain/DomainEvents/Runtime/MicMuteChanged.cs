@@ -8,35 +8,8 @@ namespace Convai.Domain.DomainEvents.Runtime
     /// </summary>
     /// <remarks>
     ///     This event is published via EventHub whenever the microphone is muted or unmuted.
-    ///     It replaces direct callbacks on ConvaiRoomManager.
-    ///     Integration Example:
-    ///     <code>
-    /// 
-    /// private readonly IEventHub _eventHub;
-    /// 
-    /// private void OnMicMuteStateChanged(bool isMuted)
-    /// {
-    ///     _eventHub.Publish(MicMuteChanged.Create(isMuted));
-    /// }
-    /// 
-    /// 
-    /// _eventHub.Subscribe&lt;MicMuteChanged&gt;(this, e =>
-    /// {
-    ///     if (e.IsMuted)
-    ///     {
-    ///         micIcon.sprite = mutedSprite;
-    ///         Debug.Log("Microphone muted");
-    ///     }
-    ///     else
-    ///     {
-    ///         micIcon.sprite = unmutedSprite;
-    ///         Debug.Log("Microphone unmuted");
-    ///     }
-    /// });
-    /// </code>
-    ///     Delivery Policy:
-    ///     - Typically use EventDeliveryPolicy.MainThread for UI updates
-    ///     - Can use EventDeliveryPolicy.Immediate for logging
+    ///     Typically use EventDeliveryPolicy.MainThread for UI updates and
+    ///     EventDeliveryPolicy.Immediate for lightweight logging.
     /// </remarks>
     public readonly struct MicMuteChanged
     {

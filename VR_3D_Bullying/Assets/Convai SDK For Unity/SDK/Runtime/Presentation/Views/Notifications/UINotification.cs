@@ -51,10 +51,6 @@ namespace Convai.Runtime.Presentation.Views.Notifications
             SetActive(true);
         }
 
-        /// <summary>
-        ///     Sets the active state of the notification UI element.
-        /// </summary>
-        /// <param name="value">The new active state.</param>
         public void SetActive(bool value) => gameObject.SetActive(value);
     }
 }

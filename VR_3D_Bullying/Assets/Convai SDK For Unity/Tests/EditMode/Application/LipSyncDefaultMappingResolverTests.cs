@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using Convai.Domain.Models.LipSync;
 using Convai.Modules.LipSync;
+using Convai.Modules.LipSync.Editor;
 using Convai.Modules.LipSync.Profiles;
 using NUnit.Framework;
 using UnityEditor;
@@ -147,6 +148,23 @@ namespace Convai.Tests.EditMode.Application
             Assert.AreSame(cc4Default, resolvedCc4);
         }
 
+        [Test]
+        public void ResolveEffective_LegacyMhaMap_IsAcceptedForCanonicalMetaHumanProfile()
+        {
+            ConvaiLipSyncProfile metahuman = Track(CreateProfile(LipSyncProfileId.MetaHumanValue, "mha"));
+            ConvaiLipSyncProfileRegistry profiles = Track(CreateProfileRegistry(metahuman));
+            LipSyncProfileCatalog.SetRegistryOverridesForTests(profiles, new ConvaiLipSyncProfileRegistry[0]);
+            ConvaiLipSyncMapAsset legacyMap = Track(CreateMapAsset(new LipSyncProfileId("mha")));
+
+            ConvaiLipSyncMapAsset resolved = LipSyncDefaultMappingResolver.ResolveEffective(
+                legacyMap,
+                LipSyncProfileId.MetaHuman,
+                out bool usedFallback);
+
+            Assert.AreSame(legacyMap, resolved);
+            Assert.IsFalse(usedFallback);
+        }
+
         private static ConvaiLipSyncMapAsset CreateMapAsset(LipSyncProfileId profileId)
         {
             var map = ScriptableObject.CreateInstance<ConvaiLipSyncMapAsset>();
@@ -155,6 +173,29 @@ namespace Convai.Tests.EditMode.Application
             serialized.ApplyModifiedPropertiesWithoutUndo();
             map.InitializeWithDefaults();
             return map;
+        }
+
+        private static ConvaiLipSyncProfile CreateProfile(string profileId, string transportFormat)
+        {
+            var profile = ScriptableObject.CreateInstance<ConvaiLipSyncProfile>();
+            SerializedObject serialized = new(profile);
+            serialized.FindProperty("_profileId").stringValue = profileId;
+            serialized.FindProperty("_displayName").stringValue = profileId;
+            serialized.FindProperty("_transportFormat").stringValue = transportFormat;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+            return profile;
+        }
+
+        private static ConvaiLipSyncProfileRegistry CreateProfileRegistry(params ConvaiLipSyncProfile[] profiles)
+        {
+            var registry = ScriptableObject.CreateInstance<ConvaiLipSyncProfileRegistry>();
+            SerializedObject serialized = new(registry);
+            SerializedProperty list = serialized.FindProperty("_profiles");
+            list.arraySize = profiles.Length;
+            for (int i = 0; i < profiles.Length; i++)
+                list.GetArrayElementAtIndex(i).objectReferenceValue = profiles[i];
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+            return registry;
         }
 
         private static ConvaiLipSyncDefaultMapRegistry CreateRegistry(

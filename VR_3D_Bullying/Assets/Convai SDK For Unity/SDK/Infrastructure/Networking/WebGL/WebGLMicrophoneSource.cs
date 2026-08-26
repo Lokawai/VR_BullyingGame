@@ -86,7 +86,17 @@ namespace Convai.Infrastructure.Networking.WebGL
         public int DeviceIndex { get; }
 
         /// <inheritdoc />
+        public event Action<IMicrophoneSource, MicrophoneSessionInvalidationReason> SessionInvalidated
+        {
+            add { }
+            remove { }
+        }
+
+        /// <inheritdoc />
         public bool IsMuted { get; set; }
+
+        /// <inheritdoc />
+        public bool EnableAcousticEchoCancellation { get; set; }
 
         #endregion
 
@@ -103,12 +113,12 @@ namespace Convai.Infrastructure.Networking.WebGL
 
             if (_isCapturing)
             {
-                ConvaiLogger.Warning("[WebGLMicrophoneSource] Capture is already started.", LogCategory.Audio);
+                ConvaiLogger.Warning("Capture is already started.", LogCategory.Audio);
                 return;
             }
 
             _isCapturing = true;
-            ConvaiLogger.Info("[WebGLMicrophoneSource] Microphone capture marked as started. " +
+            ConvaiLogger.Info("Microphone capture marked as started. " +
                               "Actual capture is managed by the LiveKit WebGL SDK.",
                 LogCategory.Audio);
         }
@@ -119,7 +129,7 @@ namespace Convai.Infrastructure.Networking.WebGL
             if (!_isCapturing) return;
 
             _isCapturing = false;
-            ConvaiLogger.Info("[WebGLMicrophoneSource] Microphone capture marked as stopped.", LogCategory.Audio);
+            ConvaiLogger.Info("Microphone capture marked as stopped.", LogCategory.Audio);
         }
 
         #endregion

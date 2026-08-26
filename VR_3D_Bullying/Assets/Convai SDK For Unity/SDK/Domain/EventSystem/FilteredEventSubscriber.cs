@@ -7,12 +7,7 @@ namespace Convai.Domain.EventSystem
     /// </summary>
     /// <typeparam name="TEvent">Type of event to subscribe to</typeparam>
     /// <remarks>
-    ///     This wrapper is used internally by EventHub when subscribing with a filter.
-    ///     The filter is evaluated before the inner subscriber's OnEvent is called.
-    ///     Performance:
-    ///     - Filter evaluation happens before event delivery
-    ///     - Rejected events do not invoke the inner subscriber
-    ///     - No allocations during filter evaluation (assuming filter is allocation-free)
+    ///     Used internally to apply a filter before forwarding an event to the wrapped subscriber.
     /// </remarks>
     internal sealed class FilteredEventSubscriber<TEvent> : IEventSubscriber<TEvent> where TEvent : notnull
     {

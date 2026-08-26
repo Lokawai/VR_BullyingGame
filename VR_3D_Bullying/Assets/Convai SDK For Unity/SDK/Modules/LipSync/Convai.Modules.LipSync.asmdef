@@ -3,8 +3,8 @@
     "rootNamespace": "Convai.Modules.LipSync",
     "references": [
         "Convai.Domain",
-        "Convai.Shared",
-        "Convai.Runtime"
+        "Convai.Runtime",
+        "Convai.Shared.Unity"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

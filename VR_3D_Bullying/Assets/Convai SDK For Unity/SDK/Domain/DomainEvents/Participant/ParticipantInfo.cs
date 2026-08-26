@@ -8,7 +8,8 @@ namespace Convai.Domain.DomainEvents.Participant
     /// <remarks>
     ///     ParticipantInfo provides a unified view of all participant types in a room session,
     ///     including local players, remote players (multiplayer), and Characters.
-    ///     This struct is used by ConvaiRoomSession events for participant join/leave notifications.
+    ///     It is carried by room-level participant domain events published through EventHub and
+    ///     surfaced by manager-owned runtime event facades.
     /// </remarks>
     public readonly struct ParticipantInfo : IEquatable<ParticipantInfo>
     {
@@ -45,7 +46,7 @@ namespace Convai.Domain.DomainEvents.Participant
         /// <summary>
         ///     Creates a new ParticipantInfo instance.
         /// </summary>
-        /// <param name="participantId">Transport-layer participant ID</param>
+        /// <param name="participantId">Participant ID</param>
         /// <param name="identity">Identity string</param>
         /// <param name="displayName">Human-readable display name</param>
         /// <param name="participantType">Type of participant</param>

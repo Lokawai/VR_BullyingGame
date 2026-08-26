@@ -4,6 +4,19 @@ using Convai.Domain.Errors;
 namespace Convai.Domain.DomainEvents.Session
 {
     /// <summary>
+    ///     Broad origin of a lifecycle/session error.
+    /// </summary>
+    public enum SessionErrorStage
+    {
+        Unknown = 0,
+        Configuration = 1,
+        ConnectApi = 2,
+        Transport = 3,
+        SessionRecovery = 4,
+        Runtime = 5
+    }
+
+    /// <summary>
     ///     Domain event raised when a session encounters an error.
     ///     Standardizes error reporting across the SDK.
     /// </summary>
@@ -79,6 +92,16 @@ namespace Convai.Domain.DomainEvents.Session
         public Exception Exception { get; }
 
         /// <summary>
+        ///     Broad lifecycle stage where the error originated.
+        /// </summary>
+        public SessionErrorStage Stage { get; }
+
+        /// <summary>
+        ///     Optional HTTP status code when the error originated from an HTTP API call.
+        /// </summary>
+        public int? HttpStatusCode { get; }
+
+        /// <summary>
         ///     Creates a new SessionError event.
         /// </summary>
         public SessionError(
@@ -87,7 +110,9 @@ namespace Convai.Domain.DomainEvents.Session
             string sessionId,
             DateTime timestamp,
             bool isRecoverable = false,
-            Exception exception = null)
+            Exception exception = null,
+            SessionErrorStage stage = SessionErrorStage.Unknown,
+            int? httpStatusCode = null)
         {
             ErrorCode = errorCode;
             Message = message;
@@ -95,6 +120,8 @@ namespace Convai.Domain.DomainEvents.Session
             Timestamp = timestamp;
             IsRecoverable = isRecoverable;
             Exception = exception;
+            Stage = stage;
+            HttpStatusCode = httpStatusCode;
         }
 
         /// <summary>
@@ -111,7 +138,9 @@ namespace Convai.Domain.DomainEvents.Session
             string message,
             string sessionId = null,
             bool isRecoverable = false,
-            Exception exception = null)
+            Exception exception = null,
+            SessionErrorStage stage = SessionErrorStage.Unknown,
+            int? httpStatusCode = null)
         {
             return new SessionError(
                 errorCode,
@@ -119,7 +148,9 @@ namespace Convai.Domain.DomainEvents.Session
                 sessionId,
                 DateTime.UtcNow,
                 isRecoverable,
-                exception
+                exception,
+                stage,
+                httpStatusCode
             );
         }
 

@@ -1,22 +1,21 @@
 using System;
 using System.Collections.Generic;
+using Convai.Shared.Types;
 
 namespace Convai.Domain.DomainEvents.Runtime
 {
     /// <summary>
-    ///     Domain event raised when the backend extracts action tags from a character's response.
-    ///     Action tags (e.g., "[wave]", "[sit]") are stripped from the text stream and
-    ///     delivered separately so game logic can trigger animations or state changes.
+    ///     Domain event raised when backend returns ordered structured actions for a character turn.
     /// </summary>
     /// <remarks>
-    ///     Subscribe via EventHub or <c>ConvaiManager.Events.OnActionReceived</c>.
+    ///     Subscribe via EventHub or <c>ConvaiManager.Events.OnCharacterActionReceived</c>.
     ///     <code>
     /// _eventHub.Subscribe&lt;CharacterActionReceived&gt;(this, e =&gt;
     /// {
-    ///     foreach (string action in e.Actions)
+    ///     foreach (ConvaiActionCommand action in e.Actions)
     ///     {
-    ///         Debug.Log($"Character {e.CharacterId} action: {action}");
-    ///         PlayAnimation(e.CharacterId, action);
+    ///         Debug.Log($"Character {e.CharacterId} action command: {action.Name} (target={action.Target})");
+    ///         PlayAnimation(e.CharacterId, action.Name);
     ///     }
     /// });
     /// </code>
@@ -26,22 +25,29 @@ namespace Convai.Domain.DomainEvents.Runtime
         /// <summary>The character's unique identifier (resolved from participant ID when possible).</summary>
         public string CharacterId { get; }
 
-        /// <summary>List of action tag strings extracted from the character's response.</summary>
-        public IReadOnlyList<string> Actions { get; }
+        /// <summary>Ordered backend action commands for this turn. May be empty for an explicit no-op batch.</summary>
+        public IReadOnlyList<ConvaiActionCommand> Actions { get; }
 
         /// <summary>When the event occurred (UTC).</summary>
         public DateTime Timestamp { get; }
 
-        /// <summary>Creates a new CharacterActionReceived event.</summary>
-        public CharacterActionReceived(string characterId, IReadOnlyList<string> actions, DateTime timestamp)
+        /// <summary>
+        ///     Builds the event, snapshotting <paramref name="actions" /> so later caller
+        ///     mutations never leak into subscribers.
+        /// </summary>
+        public CharacterActionReceived(
+            string characterId,
+            IReadOnlyList<ConvaiActionCommand> actions,
+            DateTime timestamp)
         {
             CharacterId = characterId ?? string.Empty;
-            Actions = actions ?? Array.Empty<string>();
+            // Snapshot: this ctor is public API and the caller may keep mutating its list.
+            Actions = ConvaiActionCommand.CloneBatch(actions);
             Timestamp = timestamp;
         }
 
         /// <summary>Creates a CharacterActionReceived event with the current UTC timestamp.</summary>
-        public static CharacterActionReceived Create(string characterId, IReadOnlyList<string> actions) =>
+        public static CharacterActionReceived Create(string characterId, IReadOnlyList<ConvaiActionCommand> actions) =>
             new(characterId, actions, DateTime.UtcNow);
     }
 }

@@ -10,7 +10,7 @@ using Newtonsoft.Json.Utilities;
 using UnityEngine;
 
 [assembly: InternalsVisibleTo("LiveKit.BridgeTests")]
-[assembly: InternalsVisibleTo("Convai.Infrastructure.Networking.WebGL")]
+[assembly: InternalsVisibleTo("Convai.Transport.WebGL")]
 namespace LiveKit
 {
     internal static class JSNative

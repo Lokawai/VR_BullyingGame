@@ -4,39 +4,10 @@ namespace Convai.Domain.DomainEvents.Session
 {
     /// <summary>
     ///     Domain event raised when a session transitions from one state to another.
-    ///     Replaces ad-hoc callbacks with structured event-based communication via EventHub.
     /// </summary>
     /// <remarks>
-    ///     This event is published via EventHub whenever the session state changes.
-    ///     Services can subscribe to this event instead of registering multiple callbacks
-    ///     on ConvaiRoomManager (OnConnected, OnDisconnected, etc.).
-    ///     Integration Example:
-    ///     <code>
-    /// 
-    /// private readonly IEventHub _eventHub;
-    /// 
-    /// private void OnLiveKitConnected()
-    /// {
-    ///     SessionState oldState = _currentState;
-    ///     _currentState = SessionState.Connected;
-    /// 
-    ///     _eventHub.Publish(new SessionStateChanged(
-    ///         oldState: oldState,
-    ///         newState: SessionState.Connected,
-    ///         sessionId: _sessionId,
-    ///         timestamp: DateTime.UtcNow
-    ///     ));
-    /// }
-    /// 
-    /// 
-    /// _eventHub.Subscribe&lt;SessionStateChanged&gt;(this, e =>
-    /// {
-    ///     if (e.NewState == SessionState.Connected)
-    ///     {
-    ///         Debug.Log($"Session {e.SessionId} connected at {e.Timestamp}");
-    ///     }
-    /// });
-    /// </code>
+    ///     Published whenever session state changes so subscribers can react to
+    ///     connection lifecycle updates.
     /// </remarks>
     public readonly struct SessionStateChanged
     {
@@ -61,9 +32,14 @@ namespace Convai.Domain.DomainEvents.Session
         public DateTime Timestamp { get; }
 
         /// <summary>
+        ///     Optional error snapshot if transitioning to Error state.
+        /// </summary>
+        public SessionError? Error { get; }
+
+        /// <summary>
         ///     Optional error code if transitioning to Error state.
         /// </summary>
-        public string ErrorCode { get; }
+        public string ErrorCode => Error?.ErrorCode;
 
         /// <summary>
         ///     Creates a new SessionStateChanged event.
@@ -73,13 +49,13 @@ namespace Convai.Domain.DomainEvents.Session
             SessionState newState,
             string sessionId,
             DateTime timestamp,
-            string errorCode = null)
+            SessionError? error = null)
         {
             OldState = oldState;
             NewState = newState;
             SessionId = sessionId;
             Timestamp = timestamp;
-            ErrorCode = errorCode;
+            Error = error;
         }
 
         /// <summary>
@@ -94,14 +70,14 @@ namespace Convai.Domain.DomainEvents.Session
             SessionState oldState,
             SessionState newState,
             string sessionId,
-            string errorCode = null)
+            SessionError? error = null)
         {
             return new SessionStateChanged(
                 oldState,
                 newState,
                 sessionId,
                 DateTime.UtcNow,
-                errorCode
+                error
             );
         }
 

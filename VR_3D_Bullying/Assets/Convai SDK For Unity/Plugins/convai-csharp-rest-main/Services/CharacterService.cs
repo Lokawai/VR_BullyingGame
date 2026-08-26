@@ -1,4 +1,5 @@
 #nullable enable
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,6 +15,7 @@ namespace Convai.RestAPI.Services
     public sealed class CharacterService : ConvaiServiceBase
     {
         public const string ProductionCharacterGetUrl = "https://api.convai.com/character/get";
+        private const string CharacterGetEndpoint = "character/get";
         private const string CharacterUpdateEndpoint = "character/update";
 
         internal CharacterService(ConvaiRestClientOptions options, IConvaiHttpTransport transport)
@@ -35,9 +37,10 @@ namespace Convai.RestAPI.Services
             {
                 { "charID", characterId }
             };
+            Uri requestUri = BuildUrl(CharacterGetEndpoint);
 
-            JObject response = await PostToUrlAsync<JObject>(
-                ProductionCharacterGetUrl,
+            JObject response = await PostAsync<JObject>(
+                CharacterGetEndpoint,
                 requestBody,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
 
@@ -49,7 +52,7 @@ namespace Convai.RestAPI.Services
                 {
                     throw ConvaiRestException.ParseError(
                         $"Failed to deserialize response to {nameof(CharacterDetails)}: result was null",
-                        new System.Uri(ProductionCharacterGetUrl),
+                        requestUri,
                         response.ToString(Formatting.None));
                 }
 
@@ -59,7 +62,7 @@ namespace Convai.RestAPI.Services
             {
                 throw ConvaiRestException.ParseError(
                     $"Failed to deserialize response to {nameof(CharacterDetails)}: {ex.Message}",
-                    new System.Uri(ProductionCharacterGetUrl),
+                    requestUri,
                     response.ToString(Formatting.None),
                     ex);
             }
@@ -76,9 +79,40 @@ namespace Convai.RestAPI.Services
             object updateData,
             CancellationToken cancellationToken = default)
         {
+            JObject requestBody = updateData == null
+                ? new JObject()
+                : JObject.FromObject(updateData);
+            requestBody["charID"] = characterId;
+
             await PostVoidAsync(
                 CharacterUpdateEndpoint,
-                updateData,
+                requestBody,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Gets whether long-term memory is enabled for the character.
+        /// </summary>
+        public async Task<bool> GetMemoryEnabledAsync(
+            string characterId,
+            CancellationToken cancellationToken = default)
+        {
+            CharacterDetails details = await GetDetailsAsync(characterId, cancellationToken).ConfigureAwait(false);
+            return details.MemorySettings?.IsEnabled ?? false;
+        }
+
+        /// <summary>
+        /// Enables or disables long-term memory for the character.
+        /// </summary>
+        public async Task SetMemoryEnabledAsync(
+            string characterId,
+            bool enabled,
+            CancellationToken cancellationToken = default)
+        {
+            var requestBody = new CharacterUpdateRequest(characterId, enabled);
+            await PostVoidAsync(
+                CharacterUpdateEndpoint,
+                requestBody,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
         }
     }

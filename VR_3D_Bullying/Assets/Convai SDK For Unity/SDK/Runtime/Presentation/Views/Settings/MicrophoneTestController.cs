@@ -1,17 +1,16 @@
 using System;
 using System.Collections;
 using Convai.Domain.Logging;
+using Convai.Runtime.Components;
 using Convai.Runtime.Logging;
-using Convai.Shared;
 using Convai.Shared.Abstractions;
-using Convai.Shared.DependencyInjection;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
 namespace Convai.Runtime.Presentation.Views.Settings
 {
-    public class MicrophoneTestController : MonoBehaviour, IInjectable
+    public class MicrophoneTestController : MonoBehaviour
     {
         private const string WAITING_FOR_RECORDING = "Waiting for recording...";
         private const string RECORDING = "Recording...";
@@ -40,7 +39,6 @@ namespace Convai.Runtime.Presentation.Views.Settings
         private AudioSource _audioSource;
         private Image _buttonImage;
         private TextMeshProUGUI _buttonText;
-        private IServiceContainer _container;
         private bool _isRecording;
         private IConvaiPermissionService _permissionService;
         private Coroutine _playAudioCoroutine;
@@ -55,6 +53,7 @@ namespace Convai.Runtime.Presentation.Views.Settings
             recordButton.interactable = false;
             return;
 #else
+            TryResolveDependencies();
             EnsurePermissionService();
             CacheButtonComponents();
             recordButton.onClick.AddListener(OnRecordButtonClicked);
@@ -64,15 +63,24 @@ namespace Convai.Runtime.Presentation.Views.Settings
 #endif
         }
 
-        /// <inheritdoc />
-        public void InjectServices(IServiceContainer container)
+        public void Inject(IConvaiPermissionService permissionService = null)
         {
-            _container = container;
-            container.TryGet(out IConvaiPermissionService permissionService);
-            Inject(permissionService);
+            _permissionService = permissionService;
+
+#if !UNITY_WEBGL || UNITY_EDITOR
+            if (isActiveAndEnabled && recordStatusText != null)
+                InitializeRecordStatusText();
+#endif
         }
 
-        public void Inject(IConvaiPermissionService permissionService = null) => _permissionService = permissionService;
+        private void TryResolveDependencies()
+        {
+            if (_permissionService != null) return;
+
+            ConvaiManager manager = ConvaiManager.ActiveManager;
+            if (manager != null && manager.TryGetPermissionService(out IConvaiPermissionService permissionService))
+                Inject(permissionService);
+        }
 
         private void CacheButtonComponents()
         {
@@ -189,7 +197,7 @@ namespace Convai.Runtime.Presentation.Views.Settings
             if (samplesToRemove >= samplesArray.Length)
             {
                 ConvaiLogger.Warning(
-                    "[MicrophoneTestController] Recording is too short to remove 0.5 seconds. Keeping original clip.",
+                    "Recording is too short to remove 0.5 seconds. Keeping original clip.",
                     LogCategory.Audio);
                 return;
             }
@@ -217,9 +225,6 @@ namespace Convai.Runtime.Presentation.Views.Settings
 
         private void EnsurePermissionService()
         {
-            if (_permissionService != null) return;
-
-            _container?.TryGet(out _permissionService);
         }
 
 #endif

@@ -15,7 +15,6 @@ namespace Convai.Runtime.Settings
         private const string TranscriptEnabledKey = Prefix + ".transcript_enabled";
         private const string NotificationsEnabledKey = Prefix + ".notifications_enabled";
         private const string PreferredMicDeviceIdKey = Prefix + ".preferred_microphone_device_id";
-        private const string TranscriptModeKey = Prefix + ".transcript_mode";
 
         private readonly IKeyValueStore _store;
 
@@ -31,8 +30,7 @@ namespace Convai.Runtime.Settings
                 PlayerDisplayName = ReadOptionalString(PlayerDisplayNameKey),
                 TranscriptEnabled = ReadOptionalBool(TranscriptEnabledKey),
                 NotificationsEnabled = ReadOptionalBool(NotificationsEnabledKey),
-                PreferredMicrophoneDeviceId = ReadOptionalString(PreferredMicDeviceIdKey),
-                TranscriptMode = ReadOptionalTranscriptMode(TranscriptModeKey)
+                PreferredMicrophoneDeviceId = ReadOptionalString(PreferredMicDeviceIdKey)
             };
 
             return overrides;
@@ -50,7 +48,6 @@ namespace Convai.Runtime.Settings
             WriteOptionalBool(TranscriptEnabledKey, overrides.TranscriptEnabled);
             WriteOptionalBool(NotificationsEnabledKey, overrides.NotificationsEnabled);
             WriteOptionalString(PreferredMicDeviceIdKey, overrides.PreferredMicrophoneDeviceId);
-            WriteOptionalTranscriptMode(TranscriptModeKey, overrides.TranscriptMode);
             _store.Save();
         }
 
@@ -60,7 +57,6 @@ namespace Convai.Runtime.Settings
             _store.DeleteKey(TranscriptEnabledKey);
             _store.DeleteKey(NotificationsEnabledKey);
             _store.DeleteKey(PreferredMicDeviceIdKey);
-            _store.DeleteKey(TranscriptModeKey);
             _store.Save();
         }
 
@@ -80,21 +76,6 @@ namespace Convai.Runtime.Settings
             if (string.Equals(raw, "0", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(raw, "false", StringComparison.OrdinalIgnoreCase))
                 return false;
-
-            return null;
-        }
-
-        private ConvaiTranscriptMode? ReadOptionalTranscriptMode(string key)
-        {
-            if (!_store.HasKey(key)) return null;
-
-            string raw = _store.GetString(key);
-            if (string.IsNullOrWhiteSpace(raw)) return null;
-
-            if (int.TryParse(raw, out int intValue) && Enum.IsDefined(typeof(ConvaiTranscriptMode), intValue))
-                return (ConvaiTranscriptMode)intValue;
-
-            if (Enum.TryParse(raw, true, out ConvaiTranscriptMode enumValue)) return enumValue;
 
             return null;
         }
@@ -119,17 +100,6 @@ namespace Convai.Runtime.Settings
             }
 
             _store.SetString(key, value.Value ? "1" : "0");
-        }
-
-        private void WriteOptionalTranscriptMode(string key, ConvaiTranscriptMode? value)
-        {
-            if (!value.HasValue)
-            {
-                _store.DeleteKey(key);
-                return;
-            }
-
-            _store.SetString(key, ((int)value.Value).ToString());
         }
     }
 }

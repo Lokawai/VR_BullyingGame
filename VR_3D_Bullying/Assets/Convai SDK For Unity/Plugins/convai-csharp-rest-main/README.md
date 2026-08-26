@@ -1,6 +1,6 @@
 # Convai REST API Client
 
-Modern, type-safe C# client for Convai's REST APIs with Task-based async/await support. Built for Unity 2022.3+ and Unity 6 with WebGL compatibility.
+Modern, type-safe C# client for Convai's REST APIs with Task-based async/await support and WebGL compatibility. When used through the Convai Unity SDK, follow the parent package's supported Unity-version contract.
 
 ## How the Unity SDK uses this
 
@@ -24,15 +24,16 @@ using var client = new ConvaiRestClient(options);
 // Get character details
 var character = await client.Characters.GetDetailsAsync("character-id");
 
-// Create a speaker for LTM
-var speakerId = await client.Ltm.CreateSpeakerAsync("Player Name");
+// Resolve an end user
+var endUser = await client.EndUsers.GetAsync("player-42");
 
 // Connect to a room
 var roomRequest = new RoomConnectionRequest
 {
     CharacterId = "character-id",
     CoreServiceUrl = "https://...",
-    Transport = "livekit"
+    Transport = "livekit",
+    EndUserId = "player-42"
 };
 var roomDetails = await client.Rooms.ConnectAsync(roomRequest);
 ```
@@ -43,12 +44,12 @@ var roomDetails = await client.Rooms.ConnectAsync(roomRequest);
 - **WebGL compatible** - Dual transport: `HttpClient` for Editor/Standalone, `UnityWebRequest` for WebGL
 - **Type-safe** - Strongly-typed models and exceptions
 - **Instance-based** - Thread-safe, disposable client with dependency injection support
-- **Service organization** - Logical grouping: Characters, Users, Ltm, Animations, Rooms, Narratives
+- **Service organization** - Logical grouping: Characters, Users, EndUsers, Memory, Animations, Rooms, Narrative
 
 ## Installation
 
 This SDK requires:
-- Unity 2022.3+ or Unity 6
+- a Unity version supported by the parent Convai package
 - Newtonsoft.Json (via Unity Package Manager or NuGet)
 
 ## API Reference
@@ -61,7 +62,7 @@ The main entry point for all API operations.
 var options = new ConvaiRestClientOptions("your-api-key")
 {
     Environment = ConvaiEnvironment.Production, // or Beta
-    Timeout = TimeSpan.FromSeconds(30)
+    DefaultTimeout = TimeSpan.FromSeconds(30)
 };
 
 using var client = new ConvaiRestClient(options);
@@ -73,8 +74,9 @@ using var client = new ConvaiRestClient(options);
 // Get character details
 CharacterDetails details = await client.Characters.GetDetailsAsync("char-id");
 
-// Update character
-await client.Characters.UpdateAsync("char-id", memoryEnabled: true);
+// Enable or disable memory for a character
+bool memoryEnabled = await client.Characters.GetMemoryEnabledAsync("char-id");
+await client.Characters.SetMemoryEnabledAsync("char-id", enabled: true);
 ```
 
 ### User Service
@@ -90,27 +92,45 @@ await client.Users.UpdateReferralSourceAsync("source-name");
 UserUsageData usage = await client.Users.GetUsageAsync();
 ```
 
-### LTM (Long-Term Memory) Service
+### End User Service
 
 ```csharp
-// Create speaker
-string speakerId = await client.Ltm.CreateSpeakerAsync("Player Name");
+// Get one end user
+EndUserDetails endUser = await client.EndUsers.GetAsync("player-42");
 
-// List speakers (speaker_id compatibility API)
-List<SpeakerIDDetails> speakers = await client.Ltm.GetSpeakersAsync();
+// List tracked end users
+EndUsersListResponse endUsers = await client.EndUsers.ListAsync(limit: 100);
 
-// Delete speaker
-await client.Ltm.DeleteSpeakerAsync("speaker-id");
+// Merge metadata for an end user
+await client.EndUsers.UpdateMetadataAsync(
+    "player-42",
+    new Dictionary<string, object>
+    {
+        ["name"] = "Player 42",
+        ["tier"] = "gold"
+    });
 
-// List end users (modern end_user_id)
-EndUsersListResponse endUsers = await client.Ltm.GetEndUsersAsync(limit: 100);
+// Delete an end user
+await client.EndUsers.DeleteAsync("player-42");
+```
 
-// Delete end user
-await client.Ltm.DeleteEndUserAsync("end-user-id");
+### Memory Service
 
-// Get/Set LTM status for a character
-bool isEnabled = await client.Ltm.GetStatusAsync("char-id");
-await client.Ltm.SetStatusAsync("char-id", enabled: true);
+```csharp
+// Add memories for a specific character + end user pair
+AddMemoriesResponse added = await client.Memory.AddAsync(
+    "char-id",
+    "player-42",
+    new[] { "The player prefers stealth missions." });
+
+// List memories for a specific character + end user pair
+MemoryListResponse memories = await client.Memory.ListAsync("char-id", "player-42");
+
+// Delete one memory
+await client.Memory.DeleteAsync("char-id", "player-42", "memory-id");
+
+// Delete all memories for a character + end user pair
+await client.Memory.DeleteAllAsync("char-id", "player-42");
 ```
 
 ### Animation Service
@@ -132,18 +152,22 @@ var request = new RoomConnectionRequest
     CoreServiceUrl = "https://live.convai.com/connect",
     Transport = "livekit",
     ConnectionType = "conversation",
-    LlmProvider = "convai",
-    EndUserId = "player-uuid",  // Optional: for cross-session LTM
-    TurnDetectionConfig = TurnDetectionConfig.CreateDefault()  // Optional: smart turn detection
+    EndUserId = "player-uuid",  // Stable end-user identity for tracking, management, analytics, and memory
+    EndUserMetadata = new Dictionary<string, object>
+    {
+        ["name"] = "Player One"
+    },
+    TurnDetectionConfig = TurnDetectionConfig.CreateDefault(), // Optional: explicit smart turn detection
+    DefaultSttEnabled = true // Optional: initial backend STT state
 };
 
 RoomDetails room = await client.Rooms.ConnectAsync(request);
-Console.WriteLine($"Room: {room.RoomName}, Token: {room.Token}");
+Console.WriteLine($"Connected to room: {room.RoomName}");
 ```
 
 `RoomService.ConnectAsync` automatically sends `invocation_metadata` in `/connect` payloads:
 - `source` defaults to `unity_sdk`
-- `client_version` defaults to `0.1.0`
+- `client_version` defaults to the current `ConvaiSDK.Version`
 
 You can override defaults with either:
 - `ConvaiRestClientOptions.InvocationSource` / `ConvaiRestClientOptions.ClientVersion`
@@ -153,38 +177,38 @@ You can override defaults with either:
 
 ```csharp
 // List sections
-List<SectionData> sections = await client.Narratives.ListSectionsAsync("char-id");
+List<SectionData> sections = await client.Narrative.ListSectionsAsync("char-id");
 
 // Create section
-CreateSectionResponse created = await client.Narratives.CreateSectionAsync(
+CreateSectionResponse created = await client.Narrative.CreateSectionAsync(
     "char-id", "Intro", "Greet the player");
 
 // Get section
-SectionData section = await client.Narratives.GetSectionAsync("char-id", "section-id");
+SectionData section = await client.Narrative.GetSectionAsync("char-id", "section-id");
 
 // Update section
-EditSectionResponse updated = await client.Narratives.UpdateSectionAsync(
+EditSectionResponse updated = await client.Narrative.UpdateSectionAsync(
     "char-id", "section-id", new NarrativeSectionUpdateData { SectionName = "Welcome" });
 
 // Delete section
-await client.Narratives.DeleteSectionAsync("char-id", "section-id");
+await client.Narrative.DeleteSectionAsync("char-id", "section-id");
 
 // Toggle narrative graph
-await client.Narratives.ToggleNarrativeDrivenAsync("char-id", enabled: true);
+await client.Narrative.ToggleNarrativeDrivenAsync("char-id", enabled: true);
 
 // Manage decisions
-await client.Narratives.AddDecisionAsync("char-id", "from-section", "to-section", "criteria");
-await client.Narratives.UpdateDecisionAsync("char-id", "from", "to", "criteria", 
+await client.Narrative.AddDecisionAsync("char-id", "from-section", "to-section", "criteria");
+await client.Narrative.UpdateDecisionAsync("char-id", "from", "to", "criteria", 
     new NarrativeDecisionUpdatePayload { Priority = 1 });
-await client.Narratives.DeleteDecisionAsync("char-id", "from", "to", "criteria");
+await client.Narrative.DeleteDecisionAsync("char-id", "from", "to", "criteria");
 
 // Manage triggers
-TriggerData trigger = await client.Narratives.CreateTriggerAsync(
+TriggerData trigger = await client.Narrative.CreateTriggerAsync(
     "char-id", "StartTrigger", "Player enters", destinationSection: "intro");
-List<TriggerData> triggers = await client.Narratives.ListTriggersAsync("char-id");
-await client.Narratives.UpdateTriggerAsync("char-id", "trigger-id", 
+List<TriggerData> triggers = await client.Narrative.ListTriggersAsync("char-id");
+await client.Narrative.UpdateTriggerAsync("char-id", "trigger-id", 
     new NarrativeTriggerUpdateData { TriggerName = "NewName" });
-await client.Narratives.DeleteTriggerAsync("char-id", "trigger-id");
+await client.Narrative.DeleteTriggerAsync("char-id", "trigger-id");
 ```
 
 ## Error Handling
@@ -200,16 +224,16 @@ catch (ConvaiRestException ex)
 {
     switch (ex.Category)
     {
-        case ErrorCategory.Authentication:
+        case ConvaiRestErrorCategory.Authentication:
             Console.WriteLine("Invalid API key");
             break;
-        case ErrorCategory.NotFound:
+        case ConvaiRestErrorCategory.NotFound:
             Console.WriteLine("Character not found");
             break;
-        case ErrorCategory.Transport:
+        case ConvaiRestErrorCategory.Transport:
             Console.WriteLine($"Network error: {ex.Message}");
             break;
-        case ErrorCategory.ParseError:
+        case ConvaiRestErrorCategory.ParseError:
             Console.WriteLine($"Invalid response: {ex.Message}");
             break;
         default:
@@ -278,7 +302,8 @@ convai-csharp-rest-main/
 │   ├── ConvaiServiceBase.cs    # Base class with helpers
 │   ├── CharacterService.cs     # Character operations
 │   ├── UserService.cs          # User operations
-│   ├── LtmService.cs           # Long-term memory operations
+│   ├── EndUsersService.cs      # End-user identity operations
+│   ├── MemoryService.cs        # Character-scoped memory operations
 │   ├── AnimationService.cs     # Animation operations
 │   ├── RoomService.cs          # Room connection
 │   └── NarrativeService.cs     # Narrative design CRUD

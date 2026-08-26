@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Generic;
-using LiveKit.Internal.FFIClients.Requests;
 using System.Linq;
-using System.Threading.Tasks;
 using LiveKit.Internal;
 using LiveKit.Proto;
 
@@ -53,79 +51,12 @@ namespace LiveKit
         {
             Id = id;
             Topic = topic;
-            Timestamp = DateTimeOffset.FromUnixTimeMilliseconds(timestamp).UtcDateTime;
+            Timestamp = DateTimeOffset.FromUnixTimeMilliseconds(timestamp).DateTime;
             TotalLength = totalLength;
             Attributes = attributes.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
             MimeType = mimeType;
         }
     }
-
-    /// <summary>
-    /// Information about a text data stream.
-    /// </summary>
-    public sealed class TextStreamInfo : StreamInfo
-    {
-        /// <summary>
-        /// Operation type for text streams.
-        /// </summary>
-        public enum OperationType
-        {
-            Create = 0,
-            Update = 1,
-            Delete = 2,
-            Reaction = 3
-        }
-
-        public OperationType Operation { get; }
-        public int Version { get; }
-        public string ReplyToStreamId { get; }
-        public IReadOnlyList<string> AttachedStreamIds { get; }
-        public bool Generated { get; }
-
-        internal TextStreamInfo(Proto.TextStreamInfo proto) : base(
-            proto.StreamId,
-            proto.Topic,
-            proto.Timestamp,
-            proto.TotalLength,
-            proto.Attributes,
-            proto.MimeType)
-        {
-            Operation = (OperationType)proto.OperationType;
-            Version = proto.Version;
-            ReplyToStreamId = proto.ReplyToStreamId;
-            AttachedStreamIds = proto.AttachedStreamIds;
-            Generated = proto.Generated;
-        }
-    }
-
-    /// <summary>
-    /// Information about a byte data stream.
-    /// </summary>
-    public sealed class ByteStreamInfo : StreamInfo
-    {
-        public string Name { get; }
-
-        internal ByteStreamInfo(Proto.ByteStreamInfo proto) : base(
-            proto.StreamId,
-            proto.Topic,
-            proto.Timestamp,
-            proto.TotalLength,
-            proto.Attributes,
-            proto.MimeType)
-        {
-            Name = proto.Name;
-        }
-    }
-
-    /// <summary>
-    /// Delegate for handling incoming text data streams.
-    /// </summary>
-    public delegate void TextStreamHandler(TextStreamReader reader, string identity);
-
-    /// <summary>
-    /// Delegate for handling incoming byte data streams.
-    /// </summary>
-    public delegate void ByteStreamHandler(ByteStreamReader reader, string identity);
 
     /// <summary>
     /// Error for data stream operations.
@@ -138,403 +69,96 @@ namespace LiveKit
     }
 
     /// <summary>
-    /// Reader for an incoming text data stream.
+    /// Shared state and helpers for incremental stream reader yield instructions.
+    /// Holds the latest chunk, end-of-stream flag, and error; subclasses own the
+    /// typed event subscription and convert raw event payloads via <see cref="OnChunk"/>
+    /// and <see cref="OnEos"/>.
     /// </summary>
-    public sealed class TextStreamReader
+    public abstract class ReadIncrementalInstructionBase<TContent> : StreamYieldInstruction
     {
-        private readonly FfiHandle _handle;
-        private readonly TextStreamInfo _info;
+        private readonly ulong _handleValue;
+        private readonly Queue<TContent> _pendingChunks = new();
+        private TContent _latestChunk;
 
-        internal TextStreamReader(OwnedTextStreamReader info)
-        {
-            _handle = FfiHandle.FromOwnedHandle(info.Handle);
-            _info = new TextStreamInfo(info.Info);
-        }
-
-        public TextStreamInfo Info => _info;
+        // Chunk events arrive on the FFI thread; Reset() and the LatestChunk getter
+        // run on the main-thread coroutine. _gate serializes mutations of the queue,
+        // _latestChunk, IsCurrentReadDone, IsEos, and Error across both sides.
+        private readonly object _gate = new();
 
         /// <summary>
-        /// Reads all incoming chunks from the stream, concatenating them into a single value
-        /// once the stream closes normally.
+        /// Error that occurred on the last read, if any.
         /// </summary>
-        /// <remarks>Calling this method consumes the stream reader.</remarks>
-        /// <returns>
-        /// A <see cref="ReadAllInstruction"/> that completes when the stream is complete or errors.
-        /// Check <see cref="ReadAllInstruction.IsError"/> and access <see cref="ReadAllInstruction.Text"/>
-        /// properties to handle the result.
-        /// </returns>
-        public ReadAllInstruction ReadAll()
-        {
-            using var request = FFIBridge.Instance.NewRequest<TextStreamReaderReadAllRequest>();
-            var readAllReq = request.request;
-            readAllReq.ReaderHandle = (ulong)_handle.DangerousGetHandle();
-
-            using var response = request.Send();
-            FfiResponse res = response;
-            return new ReadAllInstruction(res.TextReadAll.AsyncId);
-        }
+        public StreamError Error { get; private set; }
 
         /// <summary>
-        /// YieldInstruction for <see cref="ReadAll"/>.
+        /// True if an error occurred on the last read.
         /// </summary>
-        /// <remarks>
-        /// Access <see cref="Text"/> after checking <see cref="IsError"/>
-        /// </remarks>
-        public sealed class ReadAllInstruction : YieldInstruction
+        public bool IsError => Error != null;
+
+        protected TContent LatestChunk
         {
-            private ulong _asyncId;
-            private string _text;
-
-            internal ReadAllInstruction(ulong asyncId)
+            get
             {
-                _asyncId = asyncId;
-                FfiClient.Instance.TextStreamReaderReadAllReceived += OnReadAll;
-            }
-
-            internal void OnReadAll(TextStreamReaderReadAllCallback e)
-            {
-                if (e.AsyncId != _asyncId)
-                    return;
-
-                switch (e.ResultCase)
-                {
-                    case TextStreamReaderReadAllCallback.ResultOneofCase.Error:
-                        Error = new StreamError(e.Error);
-                        IsError = true;
-                        break;
-                    case TextStreamReaderReadAllCallback.ResultOneofCase.Content:
-                        _text = e.Content;
-                        break;
-                }
-                IsDone = true;
-                FfiClient.Instance.TextStreamReaderReadAllReceived -= OnReadAll;
-            }
-
-            public string Text
-            {
-                get
-                {
-                    if (IsError) throw Error;
-                    return _text;
-                }
-            }
-
-            public StreamError Error { get; private set; }
-        }
-
-        /// <summary>
-        /// Reads incoming chunks from the stream incrementally.
-        /// </summary>
-        /// <returns>
-        /// A <see cref="ReadIncrementalInstruction"/> that allows reading the stream incrementally.
-        /// </returns>
-        public ReadIncrementalInstruction ReadIncremental()
-        {
-            using var request = FFIBridge.Instance.NewRequest<TextStreamReaderReadIncrementalRequest>();
-            var readIncReq = request.request;
-            readIncReq.ReaderHandle = (ulong)_handle.DangerousGetHandle();
-            request.Send();
-
-            return new ReadIncrementalInstruction(_handle);
-        }
-
-        /// <summary>
-        /// YieldInstruction for <see cref="ReadIncremental"/>.
-        /// </summary>
-        /// <remarks>
-        /// Usage: while <see cref="IsEos"/> is false (i.e. the stream has not ended),
-        /// call <see cref="Reset"/>, yield the instruction, and then access <see cref="Text"/>.
-        /// </remarks>
-        public sealed class ReadIncrementalInstruction : StreamYieldInstruction
-        {
-            private readonly FfiHandle _handle;
-            private string _latestChunk;
-
-            internal ReadIncrementalInstruction(FfiHandle readerHandle)
-            {
-                _handle = readerHandle;
-                FfiClient.Instance.TextStreamReaderEventReceived += OnStreamEvent;
-            }
-
-            private void OnStreamEvent(TextStreamReaderEvent e)
-            {
-                if (e.ReaderHandle != (ulong)_handle.DangerousGetHandle())
-                    return;
-
-                switch (e.DetailCase)
-                {
-                    case TextStreamReaderEvent.DetailOneofCase.ChunkReceived:
-                        _latestChunk = e.ChunkReceived.Content;
-                        IsCurrentReadDone = true;
-                        break;
-                    case TextStreamReaderEvent.DetailOneofCase.Eos:
-                        IsEos = true;
-                        if (e.Eos.Error != null)
-                        {
-                            Error = new StreamError(e.Eos.Error);
-                        }
-                        FfiClient.Instance.TextStreamReaderEventReceived -= OnStreamEvent;
-                        break;
-                }
-            }
-
-            public string Text
-            {
-                get
+                lock (_gate)
                 {
                     if (Error != null) throw Error;
                     return _latestChunk;
                 }
             }
-
-            /// <summary>
-            /// True if an error occurred on the last read.
-            /// </summary>
-            public bool IsError => Error != null;
-
-            /// <summary>
-            /// Error that occurred on the last read, if any.
-            /// </summary>
-            public StreamError Error { get; private set; }
-        }
-    }
-
-    /// <summary>
-    /// Reader for an incoming byte data stream.
-    /// </summary>
-    public sealed class ByteStreamReader
-    {
-        private FfiHandle _handle;
-        private readonly ByteStreamInfo _info;
-
-        internal ByteStreamReader(OwnedByteStreamReader info)
-        {
-            _handle = FfiHandle.FromOwnedHandle(info.Handle);
-            _info = new ByteStreamInfo(info.Info);
         }
 
-        public ByteStreamInfo Info => _info;
-
-        /// <summary>
-        /// Reads all incoming chunks from the stream, concatenating them into a single value
-        /// once the stream closes normally.
-        /// </summary>
-        /// <remarks>Calling this method consumes the stream reader.</remarks>
-        /// <returns>
-        /// A <see cref="ReadAllInstruction"/> that completes when the stream is complete or errors.
-        /// Check <see cref="ReadAllInstruction.IsError"/> and access <see cref="ReadAllInstruction.Bytes"/>
-        /// properties to handle the result.
-        /// </returns>
-        public ReadAllInstruction ReadAll()
+        protected ReadIncrementalInstructionBase(FfiHandle readerHandle)
         {
-            using var request = FFIBridge.Instance.NewRequest<ByteStreamReaderReadAllRequest>();
-            var readAllReq = request.request;
-            readAllReq.ReaderHandle = (ulong)_handle.DangerousGetHandle();
-
-            using var response = request.Send();
-            FfiResponse res = response;
-            return new ReadAllInstruction(res.ByteReadAll.AsyncId);
+            _handleValue = (ulong)readerHandle.DangerousGetHandle();
         }
 
-        /// <summary>
-        /// Reads incoming chunks from the stream incrementally.
-        /// </summary>
-        /// <returns>
-        /// A <see cref="ReadIncrementalInstruction"/> that allows reading the stream incrementally.
-        /// </returns>
-        public ReadIncrementalInstruction ReadIncremental()
+        protected bool MatchesHandle(ulong eventHandle) => eventHandle == _handleValue;
+
+        protected void OnChunk(TContent content)
         {
-            using var request = FFIBridge.Instance.NewRequest<ByteStreamReaderReadIncrementalRequest>();
-            var readIncReq = request.request;
-            readIncReq.ReaderHandle = (ulong)_handle.DangerousGetHandle();
-            request.Send();
-
-            return new ReadIncrementalInstruction(_handle);
-        }
-
-        /// <summary>
-        /// Reads incoming chunks from the byte stream, writing them to a file as they are received.
-        /// </summary>
-        /// <param name="directory">The directory to write the file in. The system temporary directory is used if not specified.</param>
-        /// <param name="nameOverride">The name to use for the written file, overriding stream name.</param>
-        /// <remarks>
-        /// Calling this method consumes the stream reader.
-        /// </remarks>
-        /// <returns>
-        /// A <see cref="WriteToFileInstruction"/> that completes when the stream is complete or errors.
-        /// Check <see cref="WriteToFileInstruction.IsError"/> and access <see cref="WriteToFileInstruction.FilePath"/>
-        /// properties to handle the result.
-        /// </returns>
-        public WriteToFileInstruction WriteToFile(string directory = null, string nameOverride = null)
-        {
-            using var request = FFIBridge.Instance.NewRequest<ByteStreamReaderWriteToFileRequest>();
-            var writeToFileReq = request.request;
-            writeToFileReq.ReaderHandle = (ulong)_handle.DangerousGetHandle();
-            writeToFileReq.Directory = directory;
-            writeToFileReq.NameOverride = nameOverride;
-
-            using var response = request.Send();
-            FfiResponse res = response;
-            return new WriteToFileInstruction(res.ByteWriteToFile.AsyncId);
-        }
-
-        /// <summary>
-        /// YieldInstruction for <see cref="ReadAll"/>.
-        /// </summary>
-        /// <remarks>
-        /// Access <see cref="Bytes"/> after checking <see cref="IsError"/>
-        /// </remarks>
-        public sealed class ReadAllInstruction : YieldInstruction
-        {
-            private ulong _asyncId;
-            private byte[] _bytes;
-
-            internal ReadAllInstruction(ulong asyncId)
+            lock (_gate)
             {
-                _asyncId = asyncId;
-                FfiClient.Instance.ByteStreamReaderReadAllReceived += OnReadAll;
-            }
-
-            internal void OnReadAll(ByteStreamReaderReadAllCallback e)
-            {
-                if (e.AsyncId != _asyncId)
-                    return;
-
-                switch (e.ResultCase)
+                if (IsCurrentReadDone)
                 {
-                    case ByteStreamReaderReadAllCallback.ResultOneofCase.Error:
-                        Error = new StreamError(e.Error);
-                        IsError = true;
-                        break;
-                    case ByteStreamReaderReadAllCallback.ResultOneofCase.Content:
-                        _bytes = e.Content.ToArray();
-                        break;
+                    // Consumer hasn't yielded since the last chunk; buffer until Reset().
+                    _pendingChunks.Enqueue(content);
                 }
-                IsDone = true;
-                FfiClient.Instance.ByteStreamReaderReadAllReceived -= OnReadAll;
-            }
-
-            public byte[] Bytes
-            {
-                get
+                else
                 {
-                    if (IsError) throw Error;
-                    return _bytes;
+                    _latestChunk = content;
+                    IsCurrentReadDone = true;
                 }
             }
-
-            public StreamError Error { get; private set; }
         }
 
-        /// <summary>
-        /// YieldInstruction for <see cref="ReadIncremental"/>.
-        /// </summary>
-        /// <remarks>
-        /// Usage: while <see cref="IsEos"/> is false (i.e. the stream has not ended),
-        /// call <see cref="Reset"/>, yield the instruction, and then access <see cref="Bytes"/>.
-        /// </remarks>
-        public sealed class ReadIncrementalInstruction : StreamYieldInstruction
+        public override void Reset()
         {
-            private readonly FfiHandle _handle;
-            private byte[] _latestChunk;
-
-            internal ReadIncrementalInstruction(FfiHandle readerHandle)
+            // base.Reset() must run under the same lock as OnChunk, otherwise the
+            // window between IsCurrentReadDone=false (from base) and the dequeue
+            // below lets a producer race in, write _latestChunk, and have its
+            // chunk immediately overwritten by the dequeue. That race lost ~4% of
+            // chunks under stress before this fix.
+            lock (_gate)
             {
-                _handle = readerHandle;
-                FfiClient.Instance.ByteStreamReaderEventReceived += OnStreamEvent;
-            }
-
-            private void OnStreamEvent(ByteStreamReaderEvent e)
-            {
-                if (e.ReaderHandle != (ulong)_handle.DangerousGetHandle())
-                    return;
-
-                switch (e.DetailCase)
+                base.Reset();
+                if (_pendingChunks.Count > 0)
                 {
-                    case ByteStreamReaderEvent.DetailOneofCase.ChunkReceived:
-                        _latestChunk = e.ChunkReceived.Content.ToByteArray();
-                        IsCurrentReadDone = true;
-                        break;
-                    case ByteStreamReaderEvent.DetailOneofCase.Eos:
-                        IsEos = true;
-                        if (e.Eos.Error != null)
-                        {
-                            Error = new StreamError(e.Eos.Error);
-                        }
-                        FfiClient.Instance.ByteStreamReaderEventReceived -= OnStreamEvent;
-                        break;
+                    _latestChunk = _pendingChunks.Dequeue();
+                    IsCurrentReadDone = true;
                 }
             }
-
-            public byte[] Bytes
-            {
-                get
-                {
-                    if (Error != null) throw Error;
-                    return _latestChunk;
-                }
-            }
-
-            /// <summary>
-            /// True if an error occurred on the last read.
-            /// </summary>
-            public bool IsError => Error != null;
-
-            /// <summary>
-            /// Error that occurred on the last read, if any.
-            /// </summary>
-            public StreamError Error { get; private set; }
         }
 
-        /// <summary>
-        /// YieldInstruction for <see cref="WriteToFile"/>.
-        /// </summary>
-        /// <remarks>
-        /// Access <see cref="FilePath"/> after checking <see cref="IsError"/>
-        /// </remarks>
-        public sealed class WriteToFileInstruction : YieldInstruction
+        protected void OnEos(Proto.StreamError protoError)
         {
-            private ulong _asyncId;
-            private string _filePath;
-
-            internal WriteToFileInstruction(ulong asyncId)
+            lock (_gate)
             {
-                _asyncId = asyncId;
-                FfiClient.Instance.ByteStreamReaderWriteToFileReceived += OnWriteToFile;
-            }
-
-            internal void OnWriteToFile(ByteStreamReaderWriteToFileCallback e)
-            {
-                if (e.AsyncId != _asyncId)
-                    return;
-
-                switch (e.ResultCase)
+                IsEos = true;
+                if (protoError != null)
                 {
-                    case ByteStreamReaderWriteToFileCallback.ResultOneofCase.Error:
-                        Error = new StreamError(e.Error);
-                        IsError = true;
-                        break;
-                    case ByteStreamReaderWriteToFileCallback.ResultOneofCase.FilePath:
-                        _filePath = e.FilePath;
-                        break;
-                }
-                IsDone = true;
-                FfiClient.Instance.ByteStreamReaderWriteToFileReceived -= OnWriteToFile;
-            }
-
-            /// <summary>
-            /// Path to the file that was written.
-            /// </summary>
-            public string FilePath
-            {
-                get
-                {
-                    if (IsError) throw Error;
-                    return _filePath;
+                    Error = new StreamError(protoError);
                 }
             }
-
-            public StreamError Error { get; private set; }
         }
     }
 
@@ -547,308 +171,13 @@ namespace LiveKit
         public IDictionary<string, string> Attributes { get; set; } = new Dictionary<string, string>();
         public List<string> DestinationIdentities { get; set; } = new List<string>();
         public string Id { get; set; }
-    }
 
-    /// <summary>
-    /// Options used when opening an outgoing text data stream.
-    /// </summary>
-    public class StreamTextOptions : StreamOptions
-    {
-        public TextStreamInfo.OperationType? OperationType { get; set; }
-        public int? Version { get; set; }
-        public string ReplyToStreamId { get; set; }
-        public List<string> AttachedStreamIds { get; set; } = new List<string>();
-        public bool? Generated { get; set; }
-
-        internal Proto.StreamTextOptions ToProto()
+        protected void RequireTopic()
         {
-            var proto = new Proto.StreamTextOptions();
             if (Topic == null)
             {
                 throw new InvalidOperationException("Topic field is required");
             }
-            proto.Topic = Topic;
-            proto.Attributes.Add(Attributes);
-            proto.DestinationIdentities.AddRange(DestinationIdentities);
-
-            if (Id != null) proto.Id = Id;
-            if (OperationType != null) proto.OperationType = (Proto.TextStreamInfo.Types.OperationType)OperationType;
-            if (Version != null) proto.Version = Version.Value;
-            if (ReplyToStreamId != null) proto.ReplyToStreamId = ReplyToStreamId;
-            proto.AttachedStreamIds.AddRange(AttachedStreamIds);
-            if (Generated != null) proto.Generated = Generated.Value;
-            return proto;
-        }
-    }
-
-    /// <summary>
-    /// Options used when opening an outgoing byte data stream.
-    /// </summary>
-    public class StreamByteOptions : StreamOptions
-    {
-        public string MimeType { get; set; }
-        public string Name { get; set; }
-        public ulong? TotalLength { get; set; }
-
-        internal Proto.StreamByteOptions ToProto()
-        {
-            var proto = new Proto.StreamByteOptions();
-            if (Topic == null)
-            {
-                throw new InvalidOperationException("Topic field is required");
-            }
-            proto.Topic = Topic;
-            proto.Attributes.Add(Attributes);
-            proto.DestinationIdentities.AddRange(DestinationIdentities);
-            if (Id != null) proto.Id = Id;
-            if (MimeType != null) proto.MimeType = MimeType;
-            if (Name != null) proto.Name = Name;
-            if (TotalLength != null) proto.TotalLength = TotalLength.Value;
-            return proto;
-        }
-    }
-
-    /// <summary>
-    /// Writer for an outgoing text data stream.
-    /// </summary>
-    public class TextStreamWriter
-    {
-        private FfiHandle _handle;
-        private readonly TextStreamInfo _info;
-
-        internal TextStreamWriter(OwnedTextStreamWriter info)
-        {
-            _handle = FfiHandle.FromOwnedHandle(info.Handle);
-            _info = new TextStreamInfo(info.Info);
-        }
-
-        public TextStreamInfo Info => _info;
-
-        /// <summary>
-        /// Writes text to the stream.
-        /// </summary>
-        /// <param name="text">The text to write.</param>
-        /// <returns>
-        /// A <see cref="WriteInstruction"/> that completes when the write operation is complete or errors.
-        /// Check <see cref="WriteInstruction.Error"/> to see if the operation was successful.
-        /// </returns>
-        public WriteInstruction Write(string text)
-        {
-            using var request = FFIBridge.Instance.NewRequest<TextStreamWriterWriteRequest>();
-            var writeReq = request.request;
-            writeReq.WriterHandle = (ulong)_handle.DangerousGetHandle();
-            writeReq.Text = text;
-
-            using var response = request.Send();
-            FfiResponse res = response;
-            return new WriteInstruction(res.TextStreamWrite.AsyncId);
-        }
-
-        /// <summary>
-        /// Closes the stream.
-        /// </summary>
-        /// <param name="reason">A string specifying the reason for closure, if the stream is not being closed normally.</param>
-        /// <returns>
-        /// A <see cref="CloseInstruction"/> that completes when the close operation is complete or errors.
-        /// Check <see cref="CloseInstruction.Error"/> to see if the operation was successful.
-        /// </returns>
-        public CloseInstruction Close(string reason = null)
-        {
-            using var request = FFIBridge.Instance.NewRequest<TextStreamWriterCloseRequest>();
-            var closeReq = request.request;
-            closeReq.WriterHandle = (ulong)_handle.DangerousGetHandle();
-            closeReq.Reason = reason;
-
-            using var response = request.Send();
-            FfiResponse res = response;
-            return new CloseInstruction(res.TextStreamWrite.AsyncId);
-        }
-
-        /// <summary>
-        /// YieldInstruction for <see cref="Write"/>.
-        /// </summary>
-        /// <remarks>
-        /// Check if the operation was successful by accessing <see cref="Error"/>.
-        /// </remarks>
-        public sealed class WriteInstruction : YieldInstruction
-        {
-            private ulong _asyncId;
-
-            internal WriteInstruction(ulong asyncId)
-            {
-                _asyncId = asyncId;
-                FfiClient.Instance.ByteStreamWriterWriteReceived += OnWrite;
-            }
-
-            internal void OnWrite(ByteStreamWriterWriteCallback e)
-            {
-                if (e.AsyncId != _asyncId)
-                    return;
-
-                if (e.Error != null)
-                {
-                    Error = new StreamError(e.Error);
-                    IsError = true;
-                }
-                IsDone = true;
-                FfiClient.Instance.ByteStreamWriterWriteReceived -= OnWrite;
-            }
-
-            public StreamError Error { get; private set; }
-        }
-
-        /// <summary>
-        /// YieldInstruction for <see cref="Close"/>.
-        /// </summary>
-        /// <remarks>
-        /// Check if the operation was successful by accessing <see cref="Error"/>.
-        /// </remarks>
-        public sealed class CloseInstruction : YieldInstruction
-        {
-            private ulong _asyncId;
-
-            internal CloseInstruction(ulong asyncId)
-            {
-                _asyncId = asyncId;
-                FfiClient.Instance.ByteStreamWriterCloseReceived += OnClose;
-            }
-
-            internal void OnClose(ByteStreamWriterCloseCallback e)
-            {
-                if (e.AsyncId != _asyncId)
-                    return;
-
-                if (e.Error != null)
-                {
-                    Error = new StreamError(e.Error);
-                    IsError = true;
-                }
-                IsDone = true;
-                FfiClient.Instance.ByteStreamWriterCloseReceived -= OnClose;
-            }
-
-            public StreamError Error { get; private set; }
-        }
-    }
-
-    /// <summary>
-    /// Writer for an outgoing byte data stream.
-    /// </summary>
-    public class ByteStreamWriter
-    {
-        private FfiHandle _handle;
-        private readonly ByteStreamInfo _info;
-
-        internal ByteStreamWriter(OwnedByteStreamWriter info)
-        {
-            _handle = FfiHandle.FromOwnedHandle(info.Handle);
-            _info = new ByteStreamInfo(info.Info);
-        }
-
-        public ByteStreamInfo Info => _info;
-
-        /// <summary>
-        /// Writes bytes to the stream.
-        /// </summary>
-        /// <param name="bytes">The bytes to write.</param>
-        /// <returns>
-        /// A <see cref="WriteInstruction"/> that completes when the write operation is complete or errors.
-        /// </returns>
-        public WriteInstruction Write(byte[] bytes)
-        {
-            using var request = FFIBridge.Instance.NewRequest<ByteStreamWriterWriteRequest>();
-            var writeReq = request.request;
-            writeReq.WriterHandle = (ulong)_handle.DangerousGetHandle();
-            writeReq.Bytes = Google.Protobuf.ByteString.CopyFrom(bytes);
-
-            using var response = request.Send();
-            FfiResponse res = response;
-            return new WriteInstruction(res.ByteStreamWrite.AsyncId);
-        }
-
-        /// <summary>
-        /// Closes the stream.
-        /// </summary>
-        /// <param name="reason">A string specifying the reason for closure, if the stream is not being closed normally.</param>
-        /// <returns>
-        /// A <see cref="CloseInstruction"/> that completes when the close operation is complete or errors.
-        /// </returns>
-        public CloseInstruction Close(string reason = null)
-        {
-            using var request = FFIBridge.Instance.NewRequest<ByteStreamWriterCloseRequest>();
-            var closeReq = request.request;
-            closeReq.WriterHandle = (ulong)_handle.DangerousGetHandle();
-            closeReq.Reason = reason;
-
-            using var response = request.Send();
-            FfiResponse res = response;
-            return new CloseInstruction(res.ByteStreamWrite.AsyncId);
-        }
-
-        /// <summary>
-        /// YieldInstruction for <see cref="Write"/>.
-        /// </summary>
-        /// <remarks>
-        /// Check if the operation was successful by accessing <see cref="Error"/>.
-        /// </remarks>
-        public sealed class WriteInstruction : YieldInstruction
-        {
-            private ulong _asyncId;
-
-            internal WriteInstruction(ulong asyncId)
-            {
-                _asyncId = asyncId;
-                FfiClient.Instance.TextStreamWriterWriteReceived += OnWrite;
-            }
-
-            internal void OnWrite(TextStreamWriterWriteCallback e)
-            {
-                if (e.AsyncId != _asyncId)
-                    return;
-
-                if (e.Error != null)
-                {
-                    Error = new StreamError(e.Error);
-                    IsError = true;
-                }
-                IsDone = true;
-                FfiClient.Instance.TextStreamWriterWriteReceived -= OnWrite;
-            }
-
-            public StreamError Error { get; private set; }
-        }
-
-        /// <summary>
-        /// YieldInstruction for <see cref="Close"/>.
-        /// </summary>
-        /// <remarks>
-        /// Check if the operation was successful by accessing <see cref="Error"/>.
-        /// </remarks>
-        public sealed class CloseInstruction : YieldInstruction
-        {
-            private ulong _asyncId;
-
-            internal CloseInstruction(ulong asyncId)
-            {
-                _asyncId = asyncId;
-                FfiClient.Instance.TextStreamWriterCloseReceived += OnClose;
-            }
-
-            internal void OnClose(TextStreamWriterCloseCallback e)
-            {
-                if (e.AsyncId != _asyncId)
-                    return;
-
-                if (e.Error != null)
-                {
-                    Error = new StreamError(e.Error);
-                    IsError = true;
-                }
-                IsDone = true;
-                FfiClient.Instance.TextStreamWriterCloseReceived -= OnClose;
-            }
-
-            public StreamError Error { get; private set; }
         }
     }
 

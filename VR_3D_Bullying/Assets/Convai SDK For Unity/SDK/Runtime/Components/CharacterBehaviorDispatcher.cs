@@ -20,7 +20,7 @@ namespace Convai.Runtime.Components
     ///     - Supports interception pattern: if a behavior returns true, stops dispatch chain
     ///     Usage:
     ///     1. Add to the same GameObject as ConvaiCharacter
-    ///     2. Add IConvaiCharacterBehavior components (e.g., SpeechAnimationBehavior)
+    ///     2. Add IConvaiCharacterBehavior components that extend character-specific behavior
     ///     3. The dispatcher auto-discovers and invokes behaviors when character events occur
     /// </remarks>
     [AddComponentMenu("Convai/Character Behavior Dispatcher")]
@@ -44,7 +44,7 @@ namespace Convai.Runtime.Components
             if (_behaviors.Count == 0)
             {
                 ConvaiLogger.Debug(
-                    $"[CharacterBehaviorDispatcher] No IConvaiCharacterBehavior components found on {gameObject.name}. " +
+                    $"No IConvaiCharacterBehavior components found on {gameObject.name}. " +
                     "Add behavior components to extend character functionality.", LogCategory.Character);
             }
         }
@@ -82,7 +82,7 @@ namespace Convai.Runtime.Components
             if (_character == null)
             {
                 ConvaiLogger.Error(
-                    $"[CharacterBehaviorDispatcher] ConvaiCharacter component not found on {gameObject.name}",
+                    $"ConvaiCharacter component not found on {gameObject.name}",
                     LogCategory.Character);
                 enabled = false;
                 return;
@@ -158,7 +158,7 @@ namespace Convai.Runtime.Components
                 catch (Exception ex)
                 {
                     ConvaiLogger.Error(
-                        $"[CharacterBehaviorDispatcher] Error in OnCharacterInitialized for {behavior.GetType().Name}: {ex.Message}",
+                        $"Error in OnCharacterInitialized for {behavior.GetType().Name}: {ex.Message}",
                         LogCategory.Character);
                 }
             }
@@ -177,7 +177,7 @@ namespace Convai.Runtime.Components
                 catch (Exception ex)
                 {
                     ConvaiLogger.Error(
-                        $"[CharacterBehaviorDispatcher] Error in OnCharacterShutdown for {behavior.GetType().Name}: {ex.Message}",
+                        $"Error in OnCharacterShutdown for {behavior.GetType().Name}: {ex.Message}",
                         LogCategory.Character);
                 }
             }
@@ -197,7 +197,7 @@ namespace Convai.Runtime.Components
                 catch (Exception ex)
                 {
                     ConvaiLogger.Error(
-                        $"[CharacterBehaviorDispatcher] Error in OnSpeechStarted for {behavior.GetType().Name}: {ex.Message}",
+                        $"Error in OnSpeechStarted for {behavior.GetType().Name}: {ex.Message}",
                         LogCategory.Character);
                 }
             }
@@ -217,7 +217,7 @@ namespace Convai.Runtime.Components
                 catch (Exception ex)
                 {
                     ConvaiLogger.Error(
-                        $"[CharacterBehaviorDispatcher] Error in OnSpeechStopped for {behavior.GetType().Name}: {ex.Message}",
+                        $"Error in OnSpeechStopped for {behavior.GetType().Name}: {ex.Message}",
                         LogCategory.Character);
                 }
             }
@@ -237,7 +237,7 @@ namespace Convai.Runtime.Components
                 catch (Exception ex)
                 {
                     ConvaiLogger.Error(
-                        $"[CharacterBehaviorDispatcher] Error in OnTurnCompleted for {behavior.GetType().Name}: {ex.Message}",
+                        $"Error in OnTurnCompleted for {behavior.GetType().Name}: {ex.Message}",
                         LogCategory.Character);
                 }
             }
@@ -257,7 +257,7 @@ namespace Convai.Runtime.Components
                 catch (Exception ex)
                 {
                     ConvaiLogger.Error(
-                        $"[CharacterBehaviorDispatcher] Error in OnTranscriptReceived for {behavior.GetType().Name}: {ex.Message}",
+                        $"Error in OnTranscriptReceived for {behavior.GetType().Name}: {ex.Message}",
                         LogCategory.Character);
                 }
             }
@@ -276,7 +276,7 @@ namespace Convai.Runtime.Components
                 catch (Exception ex)
                 {
                     ConvaiLogger.Error(
-                        $"[CharacterBehaviorDispatcher] Error in OnCharacterReady for {behavior.GetType().Name}: {ex.Message}",
+                        $"Error in OnCharacterReady for {behavior.GetType().Name}: {ex.Message}",
                         LogCategory.Character);
                 }
             }

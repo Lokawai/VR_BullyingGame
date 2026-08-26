@@ -1,17 +1,17 @@
 using System;
 using System.Collections.Generic;
-using Convai.Application.Services;
 using Convai.Domain.DomainEvents.Runtime;
 using Convai.Domain.EventSystem;
 using Convai.Domain.Logging;
 using Convai.Runtime.Behaviors;
 using Convai.Runtime.Components;
+using Convai.Runtime.Core.DependencyInjection;
 using Convai.Tests.EditMode.Mocks;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.TestTools;
 using ILogger = Convai.Domain.Logging.ILogger;
 using Object = UnityEngine.Object;
-using TranscriptionPhase = Convai.Domain.Models.TranscriptionPhase;
 
 namespace Convai.Tests.EditMode
 {
@@ -24,7 +24,7 @@ namespace Convai.Tests.EditMode
         private MockRoomAudioService _audioService;
         private MockRoomConnectionService _connectionService;
         private EventHub _eventHub;
-        private MockCharacterLocatorService _locatorService;
+        private MockAgentRegistry _agentRegistry;
         private TestLogger _logger;
 
         [SetUp]
@@ -33,7 +33,7 @@ namespace Convai.Tests.EditMode
             _eventHub = new EventHub(new ImmediateScheduler());
             _connectionService = new MockRoomConnectionService();
             _audioService = new MockRoomAudioService();
-            _locatorService = new MockCharacterLocatorService();
+            _agentRegistry = new MockAgentRegistry();
             _logger = new TestLogger();
         }
 
@@ -55,7 +55,12 @@ namespace Convai.Tests.EditMode
 
             var character = go.AddComponent<ConvaiCharacter>();
             character.Configure(characterId, characterName);
-            character.Inject(_eventHub, _connectionService, _audioService, _locatorService, _logger);
+            character.InjectDependencies(new ConvaiCharacterDependencies(
+                _eventHub,
+                _connectionService,
+                _audioService,
+                _agentRegistry,
+                _logger));
 
             return character;
         }
@@ -94,6 +99,20 @@ namespace Convai.Tests.EditMode
         }
 
         [Test]
+        public void OnCharacterReady_IsRaisedWhenParticipantBindingMatches()
+        {
+            ConvaiCharacter character = CreateAndInjectCharacter();
+            _agentRegistry.SetParticipantId("test-char-id", "participant-123");
+            bool eventRaised = false;
+            character.OnCharacterReady += () => eventRaised = true;
+
+            _eventHub.Publish(CharacterReady.Create(string.Empty, "participant-123"));
+
+            Assert.IsTrue(eventRaised, "OnCharacterReady should be raised when participant binding matches");
+            Assert.IsTrue(character.IsCharacterReady, "IsCharacterReady should be true after participant-bound event");
+        }
+
+        [Test]
         public void OnCharacterReady_NotRaisedForDifferentCharacterId()
         {
             ConvaiCharacter character = CreateAndInjectCharacter();
@@ -117,6 +136,32 @@ namespace Convai.Tests.EditMode
             _connectionService.RaiseConnectionFailed();
 
             Assert.IsFalse(character.IsCharacterReady, "IsCharacterReady should be reset on disconnect");
+        }
+
+        [Test]
+        public void OnTurnCompleted_IsRaisedWhenParticipantBindingMatches()
+        {
+            ConvaiCharacter character = CreateAndInjectCharacter();
+            _agentRegistry.SetParticipantId("test-char-id", "participant-123");
+            bool eventRaised = false;
+            character.OnTurnCompleted += _ => eventRaised = true;
+
+            _eventHub.Publish(CharacterTurnCompleted.Create(string.Empty, "participant-123", false));
+
+            Assert.IsTrue(eventRaised, "OnTurnCompleted should be raised when participant binding matches");
+        }
+
+        [Test]
+        public void OnSpeechStarted_IsRaisedWhenSpeechStateUsesParticipantBinding()
+        {
+            ConvaiCharacter character = CreateAndInjectCharacter();
+            _agentRegistry.SetParticipantId("test-char-id", "participant-123");
+            bool speechStarted = false;
+            character.OnSpeechStarted += () => speechStarted = true;
+
+            _eventHub.Publish(CharacterSpeechStateChanged.StartedSpeaking("participant-123"));
+
+            Assert.IsTrue(speechStarted, "OnSpeechStarted should be raised when speech state uses participant binding");
         }
 
         private sealed class ImmediateScheduler : IUnityScheduler
@@ -170,25 +215,5 @@ namespace Convai.Tests.EditMode
             public bool IsEnabled(LogLevel level, LogCategory category) => true;
         }
 
-        private sealed class TestTranscriptService : IConvaiTranscriptService
-        {
-            public string LastCharacterId { get; private set; }
-            public string LastCharacterName { get; private set; }
-            public string LastMessage { get; private set; }
-            public bool? LastIsFinal { get; private set; }
-
-            public void BroadcastCharacterMessage(string charID, string charName, string message, bool isLastMessage)
-            {
-                LastCharacterId = charID;
-                LastCharacterName = charName;
-                LastMessage = message;
-                LastIsFinal = isLastMessage;
-            }
-
-            public void BroadcastPlayerMessage(string speakerID, string playerName, string transcript,
-                bool finalTranscript, TranscriptionPhase? phase = null)
-            {
-            }
-        }
     }
 }

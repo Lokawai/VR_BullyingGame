@@ -45,8 +45,8 @@ namespace Convai.Domain.Models
     /// TranscriptMessage playerMessage = TranscriptMessage.ForPlayer(
     ///     text: "Hi there!",
     ///     isFinal: true,
-    ///     speakerId: "speaker-456",
-    ///     speakerName: "John",
+    ///     playerId: "player-local",
+    ///     displayName: "John",
     ///     participantId: "PA_xyz123"
     /// );
     /// </code>
@@ -54,9 +54,9 @@ namespace Convai.Domain.Models
     public readonly struct TranscriptMessage
     {
         /// <summary>
-        ///     Unique identifier for the speaker (character ID or player/speaker ID).
+        ///     Unique identifier for the player or character (character ID, local player ID, or backend-attributed player ID).
         /// </summary>
-        public string SpeakerId { get; }
+        public string PlayerOrCharacterId { get; }
 
         /// <summary>
         ///     Human-readable name to display in UI.
@@ -97,7 +97,7 @@ namespace Convai.Domain.Models
         ///     Creates a new TranscriptMessage with all fields.
         /// </summary>
         public TranscriptMessage(
-            string speakerId,
+            string playerOrCharacterId,
             string displayName,
             string text,
             bool isFinal,
@@ -106,7 +106,7 @@ namespace Convai.Domain.Models
             string participantId = null,
             SpeakerType speakerType = SpeakerType.Unknown)
         {
-            SpeakerId = speakerId ?? string.Empty;
+            PlayerOrCharacterId = playerOrCharacterId ?? string.Empty;
             DisplayName = displayName ?? string.Empty;
             Text = text ?? string.Empty;
             IsFinal = isFinal;
@@ -119,7 +119,7 @@ namespace Convai.Domain.Models
         /// <summary>
         ///     Creates a TranscriptMessage with the current UTC timestamp.
         /// </summary>
-        /// <param name="speakerId">Unique identifier for the speaker</param>
+        /// <param name="playerOrCharacterId">Unique identifier for the player or character</param>
         /// <param name="displayName">Human-readable name to display in UI</param>
         /// <param name="text">The transcript text content</param>
         /// <param name="isFinal">Whether this is a final transcript</param>
@@ -128,7 +128,7 @@ namespace Convai.Domain.Models
         /// <param name="speakerType">Type of speaker</param>
         /// <returns>A new TranscriptMessage</returns>
         public static TranscriptMessage Create(
-            string speakerId,
+            string playerOrCharacterId,
             string displayName,
             string text,
             bool isFinal,
@@ -137,7 +137,7 @@ namespace Convai.Domain.Models
             SpeakerType speakerType = SpeakerType.Unknown)
         {
             return new TranscriptMessage(
-                speakerId,
+                playerOrCharacterId,
                 displayName,
                 text,
                 isFinal,
@@ -180,20 +180,20 @@ namespace Convai.Domain.Models
         /// </summary>
         /// <param name="text">The transcript text</param>
         /// <param name="isFinal">Whether this is a final transcript</param>
-        /// <param name="speakerId">Optional speaker ID from backend's speaker directory</param>
-        /// <param name="speakerName">Optional speaker display name</param>
+        /// <param name="playerId">Optional player ID for transcript attribution</param>
+        /// <param name="displayName">Optional display name for transcript attribution</param>
         /// <param name="participantId">Optional LiveKit participant ID</param>
         /// <returns>A new TranscriptMessage for a player</returns>
         public static TranscriptMessage ForPlayer(
             string text,
             bool isFinal,
-            string speakerId = null,
-            string speakerName = null,
+            string playerId = null,
+            string displayName = null,
             string participantId = null)
         {
             return new TranscriptMessage(
-                speakerId ?? "local-player",
-                speakerName ?? "You",
+                playerId ?? "local-player",
+                displayName ?? PlayerDisplayName.Default,
                 text,
                 isFinal,
                 DateTime.UtcNow,
@@ -243,7 +243,7 @@ namespace Convai.Domain.Models
             string finalityMarker = IsFinal ? "[FINAL]" : "[INTERIM]";
             string confidenceStr = Confidence.HasValue ? $" (confidence: {Confidence.Value:F2})" : "";
             string speakerTypeStr = SpeakerType != SpeakerType.Unknown ? $" [{SpeakerType}]" : "";
-            return $"{finalityMarker}{speakerTypeStr} {DisplayName} ({SpeakerId}): \"{Text}\"{confidenceStr}";
+            return $"{finalityMarker}{speakerTypeStr} {DisplayName} ({PlayerOrCharacterId}): \"{Text}\"{confidenceStr}";
         }
 
         /// <summary>
@@ -253,7 +253,7 @@ namespace Convai.Domain.Models
         public TranscriptMessage WithText(string newText, bool isFinal)
         {
             return new TranscriptMessage(
-                SpeakerId,
+                PlayerOrCharacterId,
                 DisplayName,
                 newText,
                 isFinal,
@@ -265,13 +265,14 @@ namespace Convai.Domain.Models
         }
 
         /// <summary>
-        ///     Creates a copy of this message with speaker info applied.
+        ///     Creates a copy of this message with updated player/character attribution.
         /// </summary>
-        public TranscriptMessage WithSpeakerInfo(string speakerId, string speakerName, string participantId)
+        public TranscriptMessage WithPlayerOrCharacterInfo(string playerOrCharacterId, string displayName,
+            string participantId)
         {
             return new TranscriptMessage(
-                speakerId ?? SpeakerId,
-                speakerName ?? DisplayName,
+                playerOrCharacterId ?? PlayerOrCharacterId,
+                displayName ?? DisplayName,
                 Text,
                 IsFinal,
                 Timestamp,

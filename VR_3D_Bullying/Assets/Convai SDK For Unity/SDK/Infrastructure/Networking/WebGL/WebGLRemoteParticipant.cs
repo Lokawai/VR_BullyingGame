@@ -27,10 +27,6 @@ namespace Convai.Infrastructure.Networking.WebGL
     {
         #region Constructor
 
-        /// <summary>
-        ///     Creates a new WebGL remote participant wrapper.
-        /// </summary>
-        /// <param name="participant">The LiveKit remote participant to wrap.</param>
         public WebGLRemoteParticipant(RemoteParticipant participant)
         {
             UnderlyingParticipant = participant ?? throw new ArgumentNullException(nameof(participant));
@@ -230,9 +226,6 @@ namespace Convai.Infrastructure.Networking.WebGL
             GC.SuppressFinalize(this);
         }
 
-        /// <summary>
-        ///     Gets the underlying LiveKit remote participant.
-        /// </summary>
         internal RemoteParticipant UnderlyingParticipant { get; }
 
         #endregion

@@ -3,6 +3,7 @@ using Convai.Domain.Abstractions;
 using Convai.Domain.EventSystem;
 using Convai.Domain.Logging;
 using Convai.Infrastructure.Networking.Transport;
+using Convai.Runtime.Behaviors;
 
 namespace Convai.Infrastructure.Networking.Native
 {
@@ -14,29 +15,39 @@ namespace Convai.Infrastructure.Networking.Native
     {
         private readonly Func<IRealtimeTransport> _createTransport;
 
-        internal NativeRoomControllerFactory(
-            Func<IRealtimeTransport> createTransport = null)
+        /// <summary>
+        ///     Creates a new factory instance with the specified transport factory.
+        /// </summary>
+        /// <param name="createTransport">
+        ///     Factory function that creates IRealtimeTransport instances.
+        ///     Must be provided by the caller (typically an ITransportProvider).
+        /// </param>
+        /// <exception cref="ArgumentNullException">Thrown if createTransport is null.</exception>
+        internal NativeRoomControllerFactory(Func<IRealtimeTransport> createTransport)
         {
-            _createTransport = createTransport ?? RealtimeTransportFactory.Create;
+            _createTransport = createTransport ?? throw new ArgumentNullException(nameof(createTransport));
         }
 
         /// <inheritdoc />
         public IConvaiRoomController Create(
-            ICharacterRegistry characterRegistry,
+            IAgentRegistry agentRegistry,
             IPlayerSession playerSession,
-            IConfigurationProvider config,
+            ITransportConfiguration transportConfiguration,
+            ISessionPersistence sessionPersistence,
             IMainThreadDispatcher dispatcher,
             ILogger logger,
             IEventHub eventHub,
             INarrativeSectionNameResolver sectionNameResolver = null)
         {
+            logger = logger.WithTag(nameof(NativeRoomControllerFactory));
             IRealtimeTransport transport = _createTransport.Invoke();
             LogTransportOnlyPath(logger);
 
             return new NativeRoomController(
-                characterRegistry,
+                agentRegistry,
                 playerSession,
-                config,
+                transportConfiguration,
+                sessionPersistence,
                 dispatcher,
                 logger,
                 eventHub,
@@ -49,7 +60,7 @@ namespace Convai.Infrastructure.Networking.Native
             if (logger == null) return;
 
             logger.Info(
-                "[NativeRoomControllerFactory] Native runtime uses the transport-backed room controller.",
+                "Native runtime uses the transport-backed room controller.",
                 LogCategory.Transport);
         }
     }

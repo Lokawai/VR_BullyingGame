@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using LiveKit.Proto;
 using UnityEngine;
 using Google.Protobuf;
@@ -22,52 +23,48 @@ namespace LiveKit.Internal
         private static bool initialized = false;
         private static readonly Lazy<FfiClient> instance = new(() => new FfiClient());
         public static FfiClient Instance => instance.Value;
+        internal const string FfiNotInitializedMessage = "LiveKit FFI is not initialized.";
+        internal static bool IsOperational => initialized && !_isDisposed;
 
         internal SynchronizationContext? _context;
 
         private static bool _isDisposed = false;
-#if UNITY_EDITOR
-        private const int EditorInitMaxRetries = 6000;
-        private static bool _editorInitRetryScheduled = false;
-        private static bool _editorInitGaveUpLogged = false;
-        private static int _editorInitRetryCount = 0;
-#endif
 
         private readonly IObjectPool<FfiResponse> ffiResponsePool;
         private readonly MessageParser<FfiResponse> responseParser;
         private readonly IMemoryPool memoryPool;
+        // One-shot async request completions keyed by the client-generated request_async_id.
+        //
+        // Thread-safety / race model:
+        // - registration happens before the request is sent to Rust
+        // - completion removes the pending entry exactly once
+        // - cancellation (send failure / dispose) also removes the same entry exactly once
+        // - the side that wins TryRemove is the only side allowed to invoke user completion
+        //
+        // Wire contract:
+        // - Unity writes the generated ID into request.RequestAsyncId
+        // - Rust echoes that same numeric value back through callback.AsyncId
+        // - the pending map stays keyed by the original request ID, and callback dispatch
+        //   extracts AsyncId from the completion event for lookup
+        //
+        // ConcurrentDictionary is sufficient here because we only need atomic add/remove
+        // semantics per request ID; there is no requirement for cross-entry transactions.
+        private readonly ConcurrentDictionary<ulong, PendingCallbackBase> pendingCallbacks = new();
 
-        public event PublishTrackDelegate? PublishTrackReceived;
-        public event UnpublishTrackDelegate? UnpublishTrackReceived;
-        public event ConnectReceivedDelegate? ConnectReceived;
         public event DisconnectReceivedDelegate? DisconnectReceived;
-        public event GetSessionStatsDelegate? GetSessionStatsReceived;
         public event RoomEventReceivedDelegate? RoomEventReceived;
         public event TrackEventReceivedDelegate? TrackEventReceived;
         public event RpcMethodInvocationReceivedDelegate? RpcMethodInvocationReceived;
-        public event SetLocalMetadataReceivedDelegate? SetLocalMetadataReceived;
-        public event SetLocalNameReceivedDelegate? SetLocalNameReceived;
-        public event SetLocalAttributesReceivedDelegate? SetLocalAttributesReceived;
 
+        // participant events are not allowed in the fii protocol public event ParticipantEventReceivedDelegate ParticipantEventReceived;
         public event VideoStreamEventReceivedDelegate? VideoStreamEventReceived;
         public event AudioStreamEventReceivedDelegate? AudioStreamEventReceived;
-        public event CaptureAudioFrameReceivedDelegate? CaptureAudioFrameReceived;
-
-        public event PerformRpcReceivedDelegate? PerformRpcReceived;
 
         public event ByteStreamReaderEventReceivedDelegate? ByteStreamReaderEventReceived;
-        public event ByteStreamReaderReadAllReceivedDelegate? ByteStreamReaderReadAllReceived;
-        public event ByteStreamReaderWriteToFileReceivedDelegate? ByteStreamReaderWriteToFileReceived;
-        public event ByteStreamOpenReceivedDelegate? ByteStreamOpenReceived;
-        public event ByteStreamWriterWriteReceivedDelegate? ByteStreamWriterWriteReceived;
-        public event ByteStreamWriterCloseReceivedDelegate? ByteStreamWriterCloseReceived;
-        public event SendFileReceivedDelegate? SendFileReceived;
         public event TextStreamReaderEventReceivedDelegate? TextStreamReaderEventReceived;
-        public event TextStreamReaderReadAllReceivedDelegate? TextStreamReaderReadAllReceived;
-        public event TextStreamOpenReceivedDelegate? TextStreamOpenReceived;
-        public event TextStreamWriterWriteReceivedDelegate? TextStreamWriterWriteReceived;
-        public event TextStreamWriterCloseReceivedDelegate? TextStreamWriterCloseReceived;
-        public event SendTextReceivedDelegate? SendTextReceived;
+
+        // Data Track
+        public event DataTrackStreamEventReceivedDelegate? DataTrackStreamEventReceived;
 
         public FfiClient() : this(Pools.NewFfiResponsePool(), new ArrayMemoryPool())
         {
@@ -98,23 +95,32 @@ namespace LiveKit.Internal
         {
             AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
             AssemblyReloadEvents.afterAssemblyReload += OnAfterAssemblyReload;
+            EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
             EditorApplication.quitting += Quit;
-            Application.quitting += Quit;
         }
 
-        private static void OnBeforeAssemblyReload()
+        static void OnBeforeAssemblyReload()
         {
             Instance.Dispose();
         }
 
-        private static void OnAfterAssemblyReload()
+        static void OnAfterAssemblyReload()
         {
             InitializeSdk();
+        }
+
+        static void OnPlayModeStateChanged(PlayModeStateChange state)
+        {
+            if (state == PlayModeStateChange.EnteredPlayMode)
+                InitializeSdk();
+            else if (state == PlayModeStateChange.ExitingPlayMode)
+                Instance.Dispose();
         }
 #else
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         static void Init()
         {
+            Application.quitting -= Quit;
             Application.quitting += Quit;
             InitializeSdk();
         }
@@ -125,17 +131,61 @@ namespace LiveKit.Internal
 #if UNITY_EDITOR
             AssemblyReloadEvents.beforeAssemblyReload -= OnBeforeAssemblyReload;
             AssemblyReloadEvents.afterAssemblyReload -= OnAfterAssemblyReload;
+            EditorApplication.playModeStateChanged -= OnPlayModeStateChanged;
 #endif
             Instance.Dispose();
 
         }
 
         [RuntimeInitializeOnLoadMethod]
-        private static void GetMainContext()
+        static void GetMainContext()
         {
+            // https://github.com/Unity-Technologies/UnityCsReference/blob/master/Runtime/Export/Scripting/UnitySynchronizationContext.cs
             Instance._context = SynchronizationContext.Current;
             Utils.Debug("Main Context created");
         }
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+        /// <summary>
+        /// Get the Android application context as a raw jobject pointer.
+        /// This is passed to the native library for WebRTC audio initialization.
+        /// </summary>
+        /// <returns>IntPtr to the application context jobject, or IntPtr.Zero on failure</returns>
+        private static IntPtr GetAndroidApplicationContext()
+        {
+            try
+            {
+                // Get the Unity activity
+                using var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+                using var currentActivity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
+
+                if (currentActivity == null)
+                {
+                    Utils.Error("FFIServer - Failed to get Unity currentActivity");
+                    return IntPtr.Zero;
+                }
+
+                // Get the application context from the activity
+                var applicationContext = currentActivity.Call<AndroidJavaObject>("getApplicationContext");
+
+                if (applicationContext == null)
+                {
+                    Utils.Error("FFIServer - Failed to get Android applicationContext");
+                    return IntPtr.Zero;
+                }
+
+                // Get the raw jobject pointer
+                // Note: We don't dispose the applicationContext here because we're passing
+                // the raw pointer to native code. The native code will create its own global ref.
+                return applicationContext.GetRawObject();
+            }
+            catch (System.Exception e)
+            {
+                Utils.Error($"FFIServer - Failed to get Android application context: {e.Message}");
+                return IntPtr.Zero;
+            }
+        }
+#endif
 
         private static void InitializeSdk()
         {
@@ -143,8 +193,10 @@ namespace LiveKit.Internal
             return;
 #endif
 
-            if (initialized)
+            if (IsOperational)
                 return;
+
+            _isDisposed = false;
 
 #if LK_VERBOSE
             const bool captureLogs = true;
@@ -152,43 +204,39 @@ namespace LiveKit.Internal
             const bool captureLogs = false;
 #endif
 
+#if UNITY_ANDROID && !UNITY_EDITOR
+            // Initialize Android WebRTC before the main FFI initialization.
+            // This initializes the JVM and ContextUtils (required for PlatformAudio).
             try
             {
-                NativeMethods.LiveKitInitialize(FFICallback, captureLogs, "unity", "");
-            }
-            catch (DllNotFoundException e)
-            {
-#if UNITY_EDITOR
-                _ = e;
-                if (_editorInitRetryCount < EditorInitMaxRetries)
-                {
-                    if (!_editorInitRetryScheduled)
-                    {
-                        _editorInitRetryScheduled = true;
-                        EditorApplication.delayCall += RetryEditorInitializeSdk;
-                    }
-                    return;
-                }
+                IntPtr javaVmPtr = AndroidJNI.GetJavaVM();
+                IntPtr contextPtr = GetAndroidApplicationContext();
 
-                if (!_editorInitGaveUpLogged)
+                if (javaVmPtr != IntPtr.Zero && contextPtr != IntPtr.Zero)
                 {
-                    _editorInitGaveUpLogged = true;
-                    Debug.LogWarning("[LiveKit] Could not initialize livekit_ffi in editor. Ensure FFI download/import has completed.");
+                    bool contextInitialized = NativeMethods.LiveKitInitializeAndroidContext(javaVmPtr, contextPtr);
+                    if (!contextInitialized)
+                    {
+                        // JVM init still succeeded; only PlatformAudio won't work
+                        Utils.Error("FFIServer - Android context init failed; PlatformAudio will not work");
+                    }
                 }
-                return;
-#else
-                Debug.LogError($"[LiveKit] DllNotFoundException: The native library is missing or could not be loaded. {e}");
-                throw;
-#endif
+                else
+                {
+                    Utils.Error("FFIServer - Failed to get JavaVM or context for Android init");
+                }
             }
+            catch (System.Exception e)
+            {
+                Utils.Error($"FFIServer - Android initialization failed: {e.Message}");
+            }
+#endif
+
+            var sdkVersion = PackageVersion.Get();
+            NativeMethods.LiveKitInitialize(FFICallback, captureLogs, "unity", sdkVersion);
 
             Utils.Debug("FFIServer - Initialized");
             initialized = true;
-#if UNITY_EDITOR
-            _editorInitRetryCount = 0;
-            _editorInitRetryScheduled = false;
-            _editorInitGaveUpLogged = false;
-#endif
         }
 
         public void Initialize()
@@ -198,7 +246,23 @@ namespace LiveKit.Internal
 
         public bool Initialized()
         {
-            return initialized;
+            return IsOperational;
+        }
+
+        internal static bool ShouldIgnoreShutdownException(Exception exception)
+        {
+            if (!_isDisposed)
+                return false;
+
+            if (exception is InvalidOperationException invalidOperation &&
+                string.Equals(invalidOperation.Message, FfiNotInitializedMessage, StringComparison.Ordinal))
+                return true;
+
+            if (exception.InnerException is InvalidOperationException innerInvalidOperation &&
+                string.Equals(innerInvalidOperation.Message, FfiNotInitializedMessage, StringComparison.Ordinal))
+                return true;
+
+            return false;
         }
 
         public void Dispose()
@@ -207,28 +271,95 @@ namespace LiveKit.Internal
             return;
 #endif
 
-            _isDisposed = true;
+            if (_isDisposed)
+                return;
 
-            SendRequest(
-                new FfiRequest
+            bool wasInitialized = initialized;
+            _isDisposed = true;
+            initialized = false;
+
+            // Stop all rooms synchronously
+            // The rust lk implementation should also correctly dispose WebRTC
+            if (wasInitialized)
+            {
+                try
                 {
-                    Dispose = new DisposeRequest()
+                    SendRequest(
+                        new FfiRequest
+                        {
+                            Dispose = new DisposeRequest()
+                        }
+                    );
                 }
-            );
+                catch (Exception ex)
+                {
+                    Utils.Warning($"FFIServer - Dispose request failed: {ex.Message}");
+                }
+                finally
+                {
+                    ClearPendingCallbacks();
+                }
+            }
+            else
+            {
+                ClearPendingCallbacks();
+            }
             Utils.Debug("FFIServer - Disposed");
         }
 
-#if UNITY_EDITOR
-        private static void RetryEditorInitializeSdk()
+        internal void RegisterPendingCallback<TCallback>(
+            ulong requestAsyncId,
+            Func<FfiEvent, TCallback?> selector,
+            Action<TCallback> onComplete,
+            Action? onCancel = null,
+            bool dispatchToMainThread = true
+        ) where TCallback : class
         {
-            _editorInitRetryScheduled = false;
-            if (initialized || _isDisposed || _editorInitRetryCount >= EditorInitMaxRetries)
-                return;
-
-            _editorInitRetryCount++;
-            InitializeSdk();
+            // Request registration must happen before the request is sent. That ordering is what
+            // removes the original race: Rust can no longer produce the callback before Unity has
+            // somewhere to store it.
+            //
+            // The request is registered under request.RequestAsyncId. The eventual callback comes
+            // back with callback.AsyncId carrying the same value.
+            //
+            // Duplicate IDs are treated as a hard error because they would allow two unrelated
+            // requests to compete for the same completion slot.
+            //
+            // dispatchToMainThread defaults to true: completion runs on Unity's main thread via
+            // SynchronizationContext.Post, which is safe for any onComplete that touches Unity
+            // APIs or fires user events. Pass false when the onComplete only mutates volatile
+            // YieldInstruction state — RouteFfiEvent will then run it inline on the FFI callback
+            // thread instead of paying a frame of latency for the post.
+            var pending = new PendingCallback<TCallback>(selector, onComplete, onCancel, dispatchToMainThread);
+            if (!pendingCallbacks.TryAdd(requestAsyncId, pending))
+            {
+                throw new InvalidOperationException($"Duplicate pending callback for request_async_id={requestAsyncId}");
+            }
         }
-#endif
+
+        internal bool CancelPendingCallback(ulong requestAsyncId)
+        {
+            // Cancellation is intentionally symmetric with completion: both paths try to remove the
+            // same entry. Only one side can win, which prevents double-complete / double-cancel.
+            if (pendingCallbacks.TryRemove(requestAsyncId, out var pending))
+            {
+                pending.Cancel();
+                return true;
+            }
+
+            return false;
+        }
+
+        private void ClearPendingCallbacks()
+        {
+            // Snapshot-style iteration over Keys is acceptable here. Dispose marks the client as
+            // disposed first, so no new native callbacks will be enqueued, and each cancellation
+            // still re-validates ownership with TryRemove before running OnCanceled.
+            foreach (var requestAsyncId in pendingCallbacks.Keys)
+            {
+                CancelPendingCallback(requestAsyncId);
+            }
+        }
 
         public void Release(FfiResponse response)
         {
@@ -261,13 +392,15 @@ namespace LiveKit.Internal
             }
             catch (Exception e)
             {
+                // Since we are in a thread I want to make sure we catch and log
                 Utils.Error(e);
+                // But we aren't actually handling this exception so we should re-throw here
                 throw new Exception("Cannot send request", e);
             }
         }
 
         [AOT.MonoPInvokeCallback(typeof(FFICallbackDelegate))]
-        private static unsafe void FFICallback(UIntPtr data, UIntPtr size)
+        static unsafe void FFICallback(UIntPtr data, UIntPtr size)
         {
 #if NO_LIVEKIT_MODE
             return;
@@ -277,112 +410,253 @@ namespace LiveKit.Internal
 
             var respData = new Span<byte>(data.ToPointer()!, (int)size.ToUInt64());
             var response = FfiEvent.Parser!.ParseFrom(respData);
+            RouteFfiEvent(response);
+        }
 
-            Instance._context?.Post((resp) =>
+        // Routing logic split out from FFICallback so tests can drive it from a
+        // chosen thread without going through the P/Invoke entry point. Running
+        // production traffic still always lands here via FFICallback above.
+        internal static void RouteFfiEvent(FfiEvent response)
+        {
+            if (_isDisposed) return;
+
+            // Audio stream events are handled directly on the FFI callback thread
+            // to bypass the main thread, since the audio thread consumes the data
+            if (response.MessageCase == FfiEvent.MessageOneofCase.AudioStreamEvent)
+            {
+                Instance.AudioStreamEventReceived?.Invoke(response.AudioStreamEvent!);
+                return;
+            }
+
+            // Log batches are forwarded directly. UnityEngine.Debug.unityLogger is
+            // documented thread-safe; Unity's logger queues to its console drain
+            // internally. Skipping the main-thread post means logs reach the
+            // console without a one-frame delay — useful during error storms,
+            // panics, or LK_VERBOSE noise where the post queue could otherwise
+            // back up.
+            if (response.MessageCase == FfiEvent.MessageOneofCase.Logs)
+            {
+                Utils.HandleLogBatch(response.Logs);
+                return;
+            }
+
+            // Byte stream reader events feed an internal incremental-read buffer that
+            // already serializes mutations under its own lock. Skipping the main-thread
+            // post lets chunks land in the buffer immediately rather than waiting for
+            // the next frame drain.
+            if (response.MessageCase == FfiEvent.MessageOneofCase.ByteStreamReaderEvent)
+            {
+                Instance.ByteStreamReaderEventReceived?.Invoke(response.ByteStreamReaderEvent!);
+                return;
+            }
+
+            // Same treatment for text stream readers — they share
+            // ReadIncrementalInstructionBase<TContent> with the byte path, so the
+            // lock added there already protects all state mutations.
+            if (response.MessageCase == FfiEvent.MessageOneofCase.TextStreamReaderEvent)
+            {
+                Instance.TextStreamReaderEventReceived?.Invoke(response.TextStreamReaderEvent!);
+                return;
+            }
+
+            // One-shot completions registered with dispatchToMainThread:false also bypass the
+            // main thread. The pending callback's onComplete only mutates volatile
+            // YieldInstruction fields, so resolving it here saves up to one frame of latency
+            // on async ops like SetMetadata / UnpublishTrack / stream Read/Write/Close.
+            var requestAsyncId = ExtractRequestAsyncId(response);
+            if (requestAsyncId.HasValue && Instance.TrySkipDispatch(requestAsyncId.Value, response))
+            {
+                return;
+            }
+
+            // Run on the main thread, the order of execution is guaranteed by Unity
+            // It uses a Queue internally
+            Instance._context?.Post(static (resp) =>
             {
                 var r = resp as FfiEvent;
-#if LK_VERBOSE
-                if (r?.MessageCase != FfiEvent.MessageOneofCase.Logs)
-                    Utils.Debug("Callback: " + r?.MessageCase);
-#endif
-                switch (r?.MessageCase)
+                if (r == null)
                 {
-                    case FfiEvent.MessageOneofCase.Logs:
-                        break;
-                    case FfiEvent.MessageOneofCase.PublishData:
-                        break;
-                    case FfiEvent.MessageOneofCase.Connect:
-                        Instance.ConnectReceived?.Invoke(r.Connect!);
-                        break;
-                    case FfiEvent.MessageOneofCase.PublishTrack:
-                        Instance.PublishTrackReceived?.Invoke(r.PublishTrack!);
-                        break;
-                    case FfiEvent.MessageOneofCase.UnpublishTrack:
-                        Instance.UnpublishTrackReceived?.Invoke(r.UnpublishTrack!);
-                        break;
-                    case FfiEvent.MessageOneofCase.RoomEvent:
-                        Instance.RoomEventReceived?.Invoke(r.RoomEvent);
-                        break;
-                    case FfiEvent.MessageOneofCase.SetLocalName:
-                        Instance.SetLocalNameReceived?.Invoke(r.SetLocalName!);
-                        break;
-                    case FfiEvent.MessageOneofCase.SetLocalMetadata:
-                        Instance.SetLocalMetadataReceived?.Invoke(r.SetLocalMetadata!);
-                        break;
-                    case FfiEvent.MessageOneofCase.SetLocalAttributes:
-                        Instance.SetLocalAttributesReceived?.Invoke(r.SetLocalAttributes!);
-                        break;
-                    case FfiEvent.MessageOneofCase.TrackEvent:
-                        Instance.TrackEventReceived?.Invoke(r.TrackEvent!);
-                        break;
-                    case FfiEvent.MessageOneofCase.RpcMethodInvocation:
-                        Instance.RpcMethodInvocationReceived?.Invoke(r.RpcMethodInvocation);
-                        break;
-                    case FfiEvent.MessageOneofCase.Disconnect:
-                        Instance.DisconnectReceived?.Invoke(r.Disconnect!);
-                        break;
-                    case FfiEvent.MessageOneofCase.GetStats:
-                        Instance.GetSessionStatsReceived?.Invoke(r.GetStats);
-                        break;
-                    case FfiEvent.MessageOneofCase.PublishTranscription:
-                        break;
-                    case FfiEvent.MessageOneofCase.VideoStreamEvent:
-                        Instance.VideoStreamEventReceived?.Invoke(r.VideoStreamEvent!);
-                        break;
-                    case FfiEvent.MessageOneofCase.AudioStreamEvent:
-                        Instance.AudioStreamEventReceived?.Invoke(r.AudioStreamEvent!);
-                        break;
-                    case FfiEvent.MessageOneofCase.CaptureAudioFrame:
-                         Instance.CaptureAudioFrameReceived?.Invoke(r.CaptureAudioFrame!);
-                        break;
-                    case FfiEvent.MessageOneofCase.PerformRpc:
-                        Instance.PerformRpcReceived?.Invoke(r.PerformRpc!);
-                        break;
-                    case FfiEvent.MessageOneofCase.ByteStreamReaderEvent:
-                        Instance.ByteStreamReaderEventReceived?.Invoke(r.ByteStreamReaderEvent!);
-                        break;
-                    case FfiEvent.MessageOneofCase.ByteStreamReaderReadAll:
-                        Instance.ByteStreamReaderReadAllReceived?.Invoke(r.ByteStreamReaderReadAll!);
-                        break;
-                    case FfiEvent.MessageOneofCase.ByteStreamReaderWriteToFile:
-                        Instance.ByteStreamReaderWriteToFileReceived?.Invoke(r.ByteStreamReaderWriteToFile!);
-                        break;
-                    case FfiEvent.MessageOneofCase.ByteStreamOpen:
-                        Instance.ByteStreamOpenReceived?.Invoke(r.ByteStreamOpen!);
-                        break;
-                    case FfiEvent.MessageOneofCase.ByteStreamWriterWrite:
-                        Instance.ByteStreamWriterWriteReceived?.Invoke(r.ByteStreamWriterWrite!);
-                        break;
-                    case FfiEvent.MessageOneofCase.ByteStreamWriterClose:
-                        Instance.ByteStreamWriterCloseReceived?.Invoke(r.ByteStreamWriterClose!);
-                        break;
-                    case FfiEvent.MessageOneofCase.SendFile:
-                        Instance.SendFileReceived?.Invoke(r.SendFile!);
-                        break;
-                    case FfiEvent.MessageOneofCase.TextStreamReaderEvent:
-                        Instance.TextStreamReaderEventReceived?.Invoke(r.TextStreamReaderEvent!);
-                        break;
-                    case FfiEvent.MessageOneofCase.TextStreamReaderReadAll:
-                        Instance.TextStreamReaderReadAllReceived?.Invoke(r.TextStreamReaderReadAll!);
-                        break;
-                    case FfiEvent.MessageOneofCase.TextStreamOpen:
-                        Instance.TextStreamOpenReceived?.Invoke(r.TextStreamOpen!);
-                        break;
-                    case FfiEvent.MessageOneofCase.TextStreamWriterWrite:
-                        Instance.TextStreamWriterWriteReceived?.Invoke(r.TextStreamWriterWrite!);
-                        break;
-                    case FfiEvent.MessageOneofCase.TextStreamWriterClose:
-                        Instance.TextStreamWriterCloseReceived?.Invoke(r.TextStreamWriterClose!);
-                        break;
-                    case FfiEvent.MessageOneofCase.SendText:
-                        Instance.SendTextReceived?.Invoke(r.SendText!);
-                        break;
-                    case FfiEvent.MessageOneofCase.Panic:
-                        break;
-                    default:
-                        throw new ArgumentOutOfRangeException($"Unknown message type: {r?.MessageCase.ToString() ?? "null"}");
+                    return;
                 }
+                DispatchEvent(r);
             }, response);
+        }
+
+        private static void DispatchEvent(FfiEvent ffiEvent)
+        {
+#if LK_VERBOSE
+            if (ffiEvent.MessageCase != FfiEvent.MessageOneofCase.Logs)
+                Utils.Debug("Callback: " + ffiEvent.MessageCase);
+#endif
+            var requestAsyncId = ExtractRequestAsyncId(ffiEvent);
+            if (requestAsyncId.HasValue && Instance.TryDispatchPendingCallback(requestAsyncId.Value, ffiEvent))
+            {
+                // Async request/response callbacks are one-shot. Once matched, they should not
+                // also flow through the general event switch below.
+                return;
+            }
+
+            switch (ffiEvent.MessageCase)
+            {
+                case FfiEvent.MessageOneofCase.PublishData:
+                    break;
+                case FfiEvent.MessageOneofCase.RoomEvent:
+                    Instance.RoomEventReceived?.Invoke(ffiEvent.RoomEvent);
+                    break;
+                case FfiEvent.MessageOneofCase.TrackEvent:
+                    Instance.TrackEventReceived?.Invoke(ffiEvent.TrackEvent!);
+                    break;
+                case FfiEvent.MessageOneofCase.RpcMethodInvocation:
+                    Instance.RpcMethodInvocationReceived?.Invoke(ffiEvent.RpcMethodInvocation);
+                    break;
+                case FfiEvent.MessageOneofCase.Disconnect:
+                    Instance.DisconnectReceived?.Invoke(ffiEvent.Disconnect!);
+                    break;
+                case FfiEvent.MessageOneofCase.PublishTranscription:
+                    break;
+                case FfiEvent.MessageOneofCase.VideoStreamEvent:
+                    Instance.VideoStreamEventReceived?.Invoke(ffiEvent.VideoStreamEvent!);
+                    break;
+                case FfiEvent.MessageOneofCase.DataTrackStreamEvent:
+                    Instance.DataTrackStreamEventReceived?.Invoke(ffiEvent.DataTrackStreamEvent!);
+                    break;
+                case FfiEvent.MessageOneofCase.Panic:
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        internal bool TryDispatchPendingCallback(ulong requestAsyncId, FfiEvent ffiEvent)
+        {
+            // Remove-first dispatch is the key race-proofing step.
+            //
+            // If cancellation wins first, TryRemove here fails and the callback is ignored.
+            // If completion wins first, cancellation later sees no entry and becomes a no-op.
+            // That guarantees at-most-once completion for each request_async_id.
+            if (!pendingCallbacks.TryRemove(requestAsyncId, out var pending))
+            {
+                return false;
+            }
+
+            if (pending.TryComplete(ffiEvent))
+            {
+                return true;
+            }
+
+            // This branch is defensive. In normal operation ExtractRequestAsyncId and the caller's
+            // selector should agree on the callback type, so TryComplete should succeed. If they do
+            // not, we reinsert the entry rather than losing it.
+            if (!pendingCallbacks.TryAdd(requestAsyncId, pending))
+            {
+                pending.Cancel();
+            }
+
+            return false;
+        }
+
+        // Inline-completion fast path for one-shot callbacks whose onComplete only
+        // mutates volatile YieldInstruction state (no Unity APIs, no user-event
+        // invocations). Returning true means the caller has been fully handled here
+        // — no further dispatch needed. Returning false means the caller should fall
+        // through to its normal main-thread post path. Same race model as
+        // TryDispatchPendingCallback: the side that wins TryRemove is the only side
+        // that may invoke the completion.
+        internal bool TrySkipDispatch(ulong requestAsyncId, FfiEvent ffiEvent)
+        {
+            if (!pendingCallbacks.TryGetValue(requestAsyncId, out var pending))
+            {
+                return false;
+            }
+            if (pending.DispatchToMainThread)
+            {
+                return false;
+            }
+            return TryDispatchPendingCallback(requestAsyncId, ffiEvent);
+        }
+
+        private static ulong? ExtractRequestAsyncId(FfiEvent ffiEvent)
+        {
+            // This switch is only concerned with one-shot async completion callbacks that echo
+            // request.RequestAsyncId back through callback.AsyncId. Streaming/incremental events
+            // such as RoomEvent or TextStreamReaderEvent are intentionally excluded because they
+            // are not modeled as pending one-shot completions.
+            return ffiEvent.MessageCase switch
+            {
+                FfiEvent.MessageOneofCase.Connect => ffiEvent.Connect?.AsyncId,
+                FfiEvent.MessageOneofCase.PublishTrack => ffiEvent.PublishTrack?.AsyncId,
+                FfiEvent.MessageOneofCase.PublishData => ffiEvent.PublishData?.AsyncId,
+                FfiEvent.MessageOneofCase.UnpublishTrack => ffiEvent.UnpublishTrack?.AsyncId,
+                FfiEvent.MessageOneofCase.SetLocalName => ffiEvent.SetLocalName?.AsyncId,
+                FfiEvent.MessageOneofCase.SetLocalMetadata => ffiEvent.SetLocalMetadata?.AsyncId,
+                FfiEvent.MessageOneofCase.SetLocalAttributes => ffiEvent.SetLocalAttributes?.AsyncId,
+                FfiEvent.MessageOneofCase.GetStats => ffiEvent.GetStats?.AsyncId,
+                FfiEvent.MessageOneofCase.CaptureAudioFrame => ffiEvent.CaptureAudioFrame?.AsyncId,
+                FfiEvent.MessageOneofCase.PerformRpc => ffiEvent.PerformRpc?.AsyncId,
+                FfiEvent.MessageOneofCase.ByteStreamReaderReadAll => ffiEvent.ByteStreamReaderReadAll?.AsyncId,
+                FfiEvent.MessageOneofCase.ByteStreamReaderWriteToFile => ffiEvent.ByteStreamReaderWriteToFile?.AsyncId,
+                FfiEvent.MessageOneofCase.ByteStreamOpen => ffiEvent.ByteStreamOpen?.AsyncId,
+                FfiEvent.MessageOneofCase.ByteStreamWriterWrite => ffiEvent.ByteStreamWriterWrite?.AsyncId,
+                FfiEvent.MessageOneofCase.ByteStreamWriterClose => ffiEvent.ByteStreamWriterClose?.AsyncId,
+                FfiEvent.MessageOneofCase.SendFile => ffiEvent.SendFile?.AsyncId,
+                FfiEvent.MessageOneofCase.TextStreamReaderReadAll => ffiEvent.TextStreamReaderReadAll?.AsyncId,
+                FfiEvent.MessageOneofCase.TextStreamOpen => ffiEvent.TextStreamOpen?.AsyncId,
+                FfiEvent.MessageOneofCase.TextStreamWriterWrite => ffiEvent.TextStreamWriterWrite?.AsyncId,
+                FfiEvent.MessageOneofCase.TextStreamWriterClose => ffiEvent.TextStreamWriterClose?.AsyncId,
+                FfiEvent.MessageOneofCase.SendText => ffiEvent.SendText?.AsyncId,
+                FfiEvent.MessageOneofCase.PublishDataTrack => ffiEvent.PublishDataTrack?.AsyncId,
+                _ => null,
+            };
+        }
+
+        private abstract class PendingCallbackBase
+        {
+            public abstract bool DispatchToMainThread { get; }
+            public abstract bool TryComplete(FfiEvent ffiEvent);
+            public abstract void Cancel();
+        }
+
+        private sealed class PendingCallback<TCallback> : PendingCallbackBase where TCallback : class
+        {
+            private readonly Func<FfiEvent, TCallback?> selector;
+            private readonly Action<TCallback> onComplete;
+            private readonly Action? onCancel;
+            private readonly bool dispatchToMainThread;
+
+            public override bool DispatchToMainThread => dispatchToMainThread;
+
+            public PendingCallback(
+                Func<FfiEvent, TCallback?> selector,
+                Action<TCallback> onComplete,
+                Action? onCancel,
+                bool dispatchToMainThread
+            )
+            {
+                this.selector = selector;
+                this.onComplete = onComplete;
+                this.onCancel = onCancel;
+                this.dispatchToMainThread = dispatchToMainThread;
+            }
+
+            public override bool TryComplete(FfiEvent ffiEvent)
+            {
+                var callback = selector(ffiEvent);
+                if (callback == null)
+                {
+                    return false;
+                }
+
+                // onComplete executes on Unity's main-thread SynchronizationContext because
+                // FFICallback posts the FfiEvent before dispatch. That keeps completion behavior
+                // aligned with the pre-refactor implementation.
+                onComplete(callback);
+                return true;
+            }
+
+            public override void Cancel()
+            {
+                onCancel?.Invoke();
+            }
         }
     }
 }

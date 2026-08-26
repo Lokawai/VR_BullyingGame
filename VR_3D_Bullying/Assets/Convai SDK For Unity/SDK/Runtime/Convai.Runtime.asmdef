@@ -2,14 +2,13 @@
     "name": "Convai.Runtime",
     "rootNamespace": "Convai.Runtime",
     "references": [
-        "Convai.Application",
         "Convai.Domain",
-        "Convai.Infrastructure.Protocol",
-        "Convai.Infrastructure.Networking.Abstractions",
-        "Convai.Infrastructure",
-        "Convai.Shared",
-        "Convai.Runtime.Behaviors",
-        "Unity.TextMeshPro"
+        "Convai.Domain.Embodiment",
+        "Convai.RestAPI",
+        "Convai.Shared.Unity",
+        "Newtonsoft.Json",
+        "Unity.TextMeshPro",
+        "UnityEngine.XRModule"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

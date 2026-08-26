@@ -16,6 +16,12 @@ namespace Convai.Modules.LipSync
 
         public void StartClock() => _core.Start(Time.realtimeSinceStartupAsDouble);
 
+        public void StartClock(double initialElapsedSeconds) =>
+            _core.Start(Time.realtimeSinceStartupAsDouble, initialElapsedSeconds);
+
+        public void Rebase(double elapsedSeconds) =>
+            _core.Rebase(Time.realtimeSinceStartupAsDouble, elapsedSeconds);
+
         public void Pause() => _core.Pause(Time.realtimeSinceStartupAsDouble);
 
         public void Resume() => _core.Resume(Time.realtimeSinceStartupAsDouble);

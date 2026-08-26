@@ -1,6 +1,6 @@
 /*
  *  This file is distributed as part of CC_Unity_Tools <https://github.com/soupday/CC_Unity_Tools>
- * 
+ *
  *  MIT No Attribution (https://github.com/aws/mit-0)
  *
  *  Copyright 2025 Victor Soupday
@@ -19,8 +19,8 @@
  *  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-using UnityEngine;
 using UnityEditor;
+using UnityEngine;
 
 namespace Reallusion.Runtime
 {
@@ -31,12 +31,10 @@ namespace Reallusion.Runtime
         {
             base.OnInspectorGUI(); // Draw the default inspector
 
-            WrinkleManager wrinkleManager = (WrinkleManager)target;
+            var wrinkleManager = (WrinkleManager)target;
 
             if (GUILayout.Button("Update BlendShape Indices"))
-            {
                 wrinkleManager.UpdateBlendShapeIndices(); // Assuming this is a public method
-            }
         }
     }
 }

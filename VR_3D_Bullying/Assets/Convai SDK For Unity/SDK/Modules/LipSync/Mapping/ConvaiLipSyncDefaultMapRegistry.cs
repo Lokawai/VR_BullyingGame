@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using Convai.Domain.Models.LipSync;
+using Convai.Modules.LipSync.Profiles;
+using Convai.Shared.Compatibility;
 using UnityEngine;
 
 namespace Convai.Modules.LipSync
@@ -12,14 +15,14 @@ namespace Convai.Modules.LipSync
     {
         [SerializeField] private List<ProfileDefaultMapEntry> _entries = new();
 
-        private readonly Dictionary<string, ConvaiLipSyncMapAsset> _cache = new(StringComparer.Ordinal);
+        private readonly Dictionary<(string Profile, string Rig), ConvaiLipSyncMapAsset> _cache = new();
         private readonly List<string> _validationIssues = new();
-#if UNITY_EDITOR
         private int _cacheFingerprint;
-#endif
         private bool _isCacheValid;
+        private ReadOnlyCollection<ProfileDefaultMapEntry> _readOnlyEntries;
 
-        public IReadOnlyList<ProfileDefaultMapEntry> Entries => _entries;
+        public IReadOnlyList<ProfileDefaultMapEntry> Entries =>
+            _readOnlyEntries ??= (_entries ??= new List<ProfileDefaultMapEntry>()).AsReadOnly();
 
         public IReadOnlyList<string> ValidationIssues
         {
@@ -43,46 +46,75 @@ namespace Convai.Modules.LipSync
                 }
             }
 
+            _readOnlyEntries = null;
             InvalidateCache();
         }
 
-        public ConvaiLipSyncMapAsset GetForProfile(LipSyncProfileId profileId)
+        /// <summary>
+        ///     The default map for a transport, for a character whose rig speaks that transport's own
+        ///     blendshape vocabulary. Unchanged in meaning and result from before rig keys existed.
+        /// </summary>
+        public ConvaiLipSyncMapAsset GetForProfile(LipSyncProfileId profileId) =>
+            GetForProfile(profileId, default);
+
+        /// <summary>
+        ///     The default map for a transport on a character whose mesh uses
+        ///     <paramref name="rigProfileId" />'s blendshape vocabulary, falling back to the
+        ///     transport's plain default when no rig-specific entry exists.
+        /// </summary>
+        /// <remarks>
+        ///     Both arguments matter: a backend sending ARKit to a Character Creator 4 rig needs a
+        ///     different map from one sending ARKit to an ARKit-named rig, and the two entries share
+        ///     a transport. Passing an invalid <paramref name="rigProfileId" /> asks for the plain
+        ///     default, which is what every caller written before rig keys did.
+        /// </remarks>
+        public ConvaiLipSyncMapAsset GetForProfile(LipSyncProfileId profileId, LipSyncProfileId rigProfileId)
         {
             EnsureCache();
-            return _cache.TryGetValue(profileId.Value, out ConvaiLipSyncMapAsset map) ? map : null;
+
+            if (TryResolve(profileId, rigProfileId, out ConvaiLipSyncMapAsset map)) return map;
+
+            LipSyncProfileId canonical = LipSyncProfileCatalog.CanonicalizeProfileId(profileId);
+            return canonical != profileId && TryResolve(canonical, rigProfileId, out ConvaiLipSyncMapAsset aliased)
+                ? aliased
+                : null;
         }
+
+        private bool TryResolve(
+            LipSyncProfileId profileId, LipSyncProfileId rigProfileId, out ConvaiLipSyncMapAsset map)
+        {
+            // A rig-specific entry wins; otherwise the transport's plain default answers.
+            if (rigProfileId.IsValid &&
+                _cache.TryGetValue(BuildKey(profileId, rigProfileId), out map)) return true;
+
+            return _cache.TryGetValue(BuildKey(profileId, default), out map);
+        }
+
+        /// <summary>
+        ///     Cache key for a (transport, rig) pair. A tuple rather than a joined string: no
+        ///     separator character has to be assumed absent from a profile id, so two distinct pairs
+        ///     cannot collide on one key.
+        /// </summary>
+        private static (string Profile, string Rig) BuildKey(
+            LipSyncProfileId profileId, LipSyncProfileId rigProfileId) =>
+            (profileId.Value, rigProfileId.IsValid ? rigProfileId.Value : string.Empty);
 
         private void EnsureCache()
         {
-#if UNITY_EDITOR
             int nextFingerprint = ComputeCacheFingerprint();
             if (_isCacheValid && nextFingerprint == _cacheFingerprint) return;
 
             RebuildCache(nextFingerprint);
-#else
-            if (_isCacheValid)
-            {
-                return;
-            }
-
-            RebuildCache();
-#endif
         }
 
-#if UNITY_EDITOR
         private void RebuildCache(int nextFingerprint)
-#else
-        private void RebuildCache()
-#endif
         {
             _cache.Clear();
             _validationIssues.Clear();
 
             if (_entries == null)
             {
-#if UNITY_EDITOR
                 _cacheFingerprint = nextFingerprint;
-#endif
                 _isCacheValid = true;
                 return;
             }
@@ -112,11 +144,17 @@ namespace Convai.Modules.LipSync
                     continue;
                 }
 
-                if (_cache.TryGetValue(resolvedProfileId.Value, out ConvaiLipSyncMapAsset existing))
+                LipSyncProfileId rigProfileId = entry.RigProfileId;
+                (string Profile, string Rig) cacheKey = BuildKey(resolvedProfileId, rigProfileId);
+
+                if (_cache.TryGetValue(cacheKey, out ConvaiLipSyncMapAsset existing))
                 {
                     string existingName = existing != null ? existing.name : "(null)";
+                    string where = rigProfileId.IsValid
+                        ? $"profile '{resolvedProfileId.Value}' on a '{rigProfileId.Value}' rig"
+                        : $"profile '{resolvedProfileId.Value}'";
                     _validationIssues.Add(
-                        $"Duplicate default map for profile '{resolvedProfileId.Value}': '{existingName}' was overridden by '{map.name}'.");
+                        $"Duplicate default map for {where}: '{existingName}' was overridden by '{map.name}'.");
                 }
 
                 if (!entry.UsesMapTargetProfile)
@@ -125,16 +163,13 @@ namespace Convai.Modules.LipSync
                         $"Entry #{i + 1} map '{map.name}' has invalid target profile; using fallback entry id '{resolvedProfileId.Value}'.");
                 }
 
-                _cache[resolvedProfileId.Value] = map;
+                _cache[cacheKey] = map;
             }
 
-#if UNITY_EDITOR
             _cacheFingerprint = nextFingerprint;
-#endif
             _isCacheValid = true;
         }
 
-#if UNITY_EDITOR
         private int ComputeCacheFingerprint()
         {
             unchecked
@@ -154,7 +189,6 @@ namespace Convai.Modules.LipSync
                 return hash;
             }
         }
-#endif
 
         private void InvalidateCache() => _isCacheValid = false;
 
@@ -164,15 +198,45 @@ namespace Convai.Modules.LipSync
             [SerializeField] private string _profileId = string.Empty;
             [SerializeField] private ConvaiLipSyncMapAsset _defaultMap;
 
+            /// <summary>
+            ///     Which blendshape vocabulary the character's mesh uses, when that differs from the
+            ///     transport's own. Empty — the normal case, and what every entry authored before
+            ///     this field existed deserializes to — means "the rig speaks the same vocabulary as
+            ///     the transport", which is the default for that transport.
+            /// </summary>
+            /// <remarks>
+            ///     The transport a character receives and the blendshape names on its mesh are two
+            ///     independent facts, and the right map depends on both. A backend sending ARKit to
+            ///     an ARKit-named rig and one sending ARKit to a Character Creator 4 rig need
+            ///     different maps while sharing a transport, so keying entries by transport alone
+            ///     could only ever express one of them.
+            /// </remarks>
+            [SerializeField] private string _rigProfileId = string.Empty;
+
             public LipSyncProfileId ProfileId => ResolveProfileId();
             public ConvaiLipSyncMapAsset DefaultMap => _defaultMap;
             public bool UsesMapTargetProfile => ResolveMapTargetProfileId().IsValid;
+
+            /// <summary>
+            ///     The rig vocabulary this entry is for, or an invalid id when it is the transport's
+            ///     default entry.
+            /// </summary>
+            public LipSyncProfileId RigProfileId => new(_rigProfileId);
+
+            /// <summary>True when this entry is the plain default for its transport.</summary>
+            public bool IsTransportDefault => !RigProfileId.IsValid;
 
             public void NormalizeProfileId()
             {
                 _profileId = LipSyncProfileId.Normalize(_profileId);
                 LipSyncProfileId mapTargetProfile = ResolveMapTargetProfileId();
                 if (mapTargetProfile.IsValid) _profileId = mapTargetProfile.Value;
+
+                _rigProfileId = LipSyncProfileId.Normalize(_rigProfileId);
+
+                // A rig key equal to the transport says nothing; it is the default entry.
+                if (string.Equals(_rigProfileId, _profileId, StringComparison.Ordinal))
+                    _rigProfileId = string.Empty;
             }
 
             public LipSyncProfileId ResolveProfileId()
@@ -188,9 +252,10 @@ namespace Convai.Modules.LipSync
                 unchecked
                 {
                     int hash = 17;
-                    hash = (hash * 31) + (_defaultMap != null ? _defaultMap.GetInstanceID() : 0);
+                    hash = (hash * 31) + (_defaultMap != null ? ConvaiObjectId.Of(_defaultMap).GetHashCode() : 0);
                     hash = (hash * 31) + StringComparer.Ordinal.GetHashCode(ResolveProfileId().Value);
                     hash = (hash * 31) + StringComparer.Ordinal.GetHashCode(LipSyncProfileId.Normalize(_profileId));
+                    hash = (hash * 31) + StringComparer.Ordinal.GetHashCode(LipSyncProfileId.Normalize(_rigProfileId));
                     return hash;
                 }
             }

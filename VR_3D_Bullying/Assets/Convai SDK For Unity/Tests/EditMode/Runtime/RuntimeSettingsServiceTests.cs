@@ -27,8 +27,7 @@ namespace Convai.Tests.EditMode.Runtime
                         PlayerDisplayName = "Risha",
                         TranscriptEnabled = false,
                         NotificationsEnabled = true,
-                        PreferredMicrophoneDeviceId = "Mic-B",
-                        TranscriptMode = ConvaiTranscriptMode.Chat
+                        PreferredMicrophoneDeviceId = "Mic-B"
                     }
                 };
 
@@ -42,7 +41,6 @@ namespace Convai.Tests.EditMode.Runtime
                 Assert.IsFalse(service.Current.TranscriptEnabled);
                 Assert.IsTrue(service.Current.NotificationsEnabled);
                 Assert.AreEqual("Mic-B", service.Current.PreferredMicrophoneDeviceId);
-                Assert.AreEqual(ConvaiTranscriptMode.Chat, service.Current.TranscriptMode);
             }
             finally
             {
@@ -77,8 +75,7 @@ namespace Convai.Tests.EditMode.Runtime
                     PlayerDisplayName = "Updated Name",
                     TranscriptEnabled = false,
                     NotificationsEnabled = true,
-                    PreferredMicrophoneDeviceId = "Mic-B",
-                    TranscriptMode = ConvaiTranscriptMode.Chat
+                    PreferredMicrophoneDeviceId = "Mic-B"
                 });
 
                 Assert.IsTrue(result.Success);
@@ -101,7 +98,7 @@ namespace Convai.Tests.EditMode.Runtime
             var defaults = ScriptableObject.CreateInstance<ConvaiSettings>();
             try
             {
-                SetPrivateField(defaults, "_defaultMicrophoneIndex", 1);
+                SetPrivateField(defaults, "_defaultMicrophoneDeviceId", "Mic-B");
 
                 var store = new InMemoryRuntimeSettingsStore
                 {
@@ -179,8 +176,7 @@ namespace Convai.Tests.EditMode.Runtime
                     PlayerDisplayName = source.PlayerDisplayName,
                     TranscriptEnabled = source.TranscriptEnabled,
                     NotificationsEnabled = source.NotificationsEnabled,
-                    PreferredMicrophoneDeviceId = source.PreferredMicrophoneDeviceId,
-                    TranscriptMode = source.TranscriptMode
+                    PreferredMicrophoneDeviceId = source.PreferredMicrophoneDeviceId
                 };
             }
         }

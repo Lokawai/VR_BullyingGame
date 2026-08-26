@@ -10,25 +10,7 @@ namespace Convai.Domain.DomainEvents.Vision
     ///     This event is published via EventHub whenever a video track is successfully
     ///     published to the LiveKit room. It indicates that visual context is now being
     ///     sent to the Convai server.
-    ///     Integration Example:
-    ///     <code>
-    /// 
-    /// private readonly IEventHub _eventHub;
-    /// 
-    /// private async Task OnTrackPublished(string trackSid, string trackName)
-    /// {
-    ///     _eventHub.Publish(VideoTrackPublished.Create(trackSid, trackName));
-    /// }
-    /// 
-    /// 
-    /// _eventHub.Subscribe&lt;VideoTrackPublished&gt;(this, e =>
-    /// {
-    ///     Debug.Log($"Video track '{e.TrackName}' published with SID: {e.TrackSid}");
-    ///     EnableVisionIndicator();
-    /// });
-    /// </code>
-    ///     Delivery Policy:
-    ///     - Use EventDeliveryPolicy.MainThread for UI updates
+    ///     Use EventDeliveryPolicy.MainThread for UI updates.
     /// </remarks>
     public readonly struct VideoTrackPublished
     {

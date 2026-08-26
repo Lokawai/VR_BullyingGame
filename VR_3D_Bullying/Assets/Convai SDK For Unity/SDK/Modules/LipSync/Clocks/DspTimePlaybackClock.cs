@@ -36,6 +36,18 @@ namespace Convai.Modules.LipSync
             _realtimeCore.Start(Time.realtimeSinceStartupAsDouble);
         }
 
+        public void StartClock(double initialElapsedSeconds)
+        {
+            _dspCore.Start(AudioSettings.dspTime, initialElapsedSeconds);
+            _realtimeCore.Start(Time.realtimeSinceStartupAsDouble, initialElapsedSeconds);
+        }
+
+        public void Rebase(double elapsedSeconds)
+        {
+            _dspCore.Rebase(AudioSettings.dspTime, elapsedSeconds);
+            _realtimeCore.Rebase(Time.realtimeSinceStartupAsDouble, elapsedSeconds);
+        }
+
         public void Pause()
         {
             _dspCore.Pause(AudioSettings.dspTime);

@@ -27,8 +27,8 @@ namespace Convai.Tests.EditMode.Architecture
             Assembly runtime = FindAssemblyByName(RuntimeAssembly);
             if (runtime == null)
             {
-                Assert.Inconclusive($"Assembly '{RuntimeAssembly}' not loaded. Skipping test.");
-                return;
+                Assert.Fail(
+                    $"Required assembly '{RuntimeAssembly}' is not loaded; runtime-layer architecture guard cannot run.");
             }
 
             HashSet<string> references = GetReferencedAssemblyNames(runtime);
@@ -109,8 +109,8 @@ namespace Convai.Tests.EditMode.Architecture
         {
             if (assembly == null)
             {
-                Assert.Inconclusive($"Assembly '{layerName}' not loaded. Skipping test.");
-                return;
+                Assert.Fail(
+                    $"Required assembly '{layerName}' is not loaded; layer-dependency architecture guard cannot run.");
             }
 
             HashSet<string> actualReferences = GetReferencedAssemblyNames(assembly);
@@ -142,8 +142,8 @@ namespace Convai.Tests.EditMode.Architecture
             Assembly domain = FindAssemblyByName(DomainAssembly);
             if (domain == null)
             {
-                Assert.Inconclusive($"Assembly '{DomainAssembly}' not loaded. Skipping test.");
-                return;
+                Assert.Fail(
+                    $"Required assembly '{DomainAssembly}' is not loaded; Unity-reference architecture guard cannot run.");
             }
 
             HashSet<string> references = GetReferencedAssemblyNames(domain);
@@ -158,125 +158,7 @@ namespace Convai.Tests.EditMode.Architecture
 
         #endregion
 
-        #region Shared Layer Tests
-
-        [Test]
-        [Category("Architecture")]
-        public void Shared_OnlyReferencesDomain()
-        {
-            Assembly shared = FindAssemblyByName(SharedAssembly);
-            AssertNoForbiddenReferences(SharedAssembly, shared, SharedForbiddenReferences);
-        }
-
-        [Test]
-        [Category("Architecture")]
-        public void Shared_HasNoUnityEngineReferences()
-        {
-            Assembly shared = FindAssemblyByName(SharedAssembly);
-            if (shared == null)
-            {
-                Assert.Inconclusive($"Assembly '{SharedAssembly}' not loaded. Skipping test.");
-                return;
-            }
-
-            HashSet<string> references = GetReferencedAssemblyNames(shared);
-
-            List<string> unityReferences = references
-                .Where(r => r.StartsWith("UnityEngine", StringComparison.Ordinal))
-                .ToList();
-
-            Assert.IsEmpty(unityReferences,
-                $"Shared layer should not reference Unity assemblies. Found: [{string.Join(", ", unityReferences)}]");
-        }
-
-        #endregion
-
-        #region Infrastructure Layer Tests
-
-        [Test]
-        [Category("Architecture")]
-        public void Infrastructure_DoesNotReferenceApplicationOrRuntime()
-        {
-            Assembly infrastructure = FindAssemblyByName(InfrastructureAssembly);
-            AssertNoForbiddenReferences(InfrastructureAssembly, infrastructure, InfrastructureForbiddenReferences);
-        }
-
-        [Test]
-        [Category("Architecture")]
-        public void InfrastructureNetworking_DoesNotReferenceApplicationOrRuntime()
-        {
-            Assembly infraNetworking = FindAssemblyByName(InfrastructureNetworkingAssembly);
-            AssertNoForbiddenReferences(InfrastructureNetworkingAssembly, infraNetworking,
-                InfrastructureForbiddenReferences);
-        }
-
-        [Test]
-        [Category("Architecture")]
-        public void InfrastructureProtocol_DoesNotReferenceApplicationOrRuntime()
-        {
-            Assembly infraProtocol = FindAssemblyByName(InfrastructureProtocolAssembly);
-            AssertNoForbiddenReferences(InfrastructureProtocolAssembly, infraProtocol,
-                InfrastructureForbiddenReferences);
-        }
-
-        #endregion
-
-        #region Application Layer Tests
-
-        [Test]
-        [Category("Architecture")]
-        public void Application_DoesNotReferenceInfrastructureOrRuntime()
-        {
-            Assembly application = FindAssemblyByName(ApplicationAssembly);
-            AssertNoForbiddenReferences(ApplicationAssembly, application, ApplicationForbiddenReferences);
-        }
-
-        [Test]
-        [Category("Architecture")]
-        public void Application_HasNoUnityEngineReferences()
-        {
-            Assembly application = FindAssemblyByName(ApplicationAssembly);
-            if (application == null)
-            {
-                Assert.Inconclusive($"Assembly '{ApplicationAssembly}' not loaded. Skipping test.");
-                return;
-            }
-
-            HashSet<string> references = GetReferencedAssemblyNames(application);
-
-            List<string> unityReferences = references
-                .Where(r => r.StartsWith("UnityEngine", StringComparison.Ordinal))
-                .ToList();
-
-            Assert.IsEmpty(unityReferences,
-                $"Application layer should not reference Unity assemblies. Found: [{string.Join(", ", unityReferences)}]");
-        }
-
-        #endregion
-
         #region Cross-Layer Validation
-
-        [Test]
-        [Category("Architecture")]
-        public void AllCoreLayers_AreLoadedInTestEnvironment()
-        {
-            string[] coreLayerAssemblies =
-            {
-                DomainAssembly, SharedAssembly, InfrastructureAssembly, ApplicationAssembly, RuntimeAssembly
-            };
-
-            List<string> missingAssemblies = coreLayerAssemblies
-                .Where(name => FindAssemblyByName(name) == null)
-                .ToList();
-
-            if (missingAssemblies.Count > 0)
-            {
-                Assert.Inconclusive($"Some core assemblies are not loaded: [{string.Join(", ", missingAssemblies)}]. " +
-                                    "Architecture tests for these layers will be skipped.");
-            }
-
-            Assert.Pass("All core layer assemblies are loaded.");
-        }
 
         [Test]
         [Category("Architecture")]
@@ -304,10 +186,7 @@ namespace Convai.Tests.EditMode.Architecture
             }
 
             Assembly application = FindAssemblyByName(ApplicationAssembly);
-            if (application != null)
-            {
-                AssertNoForbiddenReferences("Application", application, new[] { RuntimeAssembly });
-            }
+            if (application != null) AssertNoForbiddenReferences("Application", application, new[] { RuntimeAssembly });
         }
 
         #endregion

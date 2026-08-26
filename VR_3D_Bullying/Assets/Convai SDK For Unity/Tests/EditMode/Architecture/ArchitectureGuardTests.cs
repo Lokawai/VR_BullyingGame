@@ -3,18 +3,12 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
-using System.Text;
 using System.Text.RegularExpressions;
-using System.Threading;
-using System.Threading.Tasks;
 using NUnit.Framework;
 
 namespace Convai.Tests.EditMode.Architecture
 {
-    /// <summary>
-    ///     Architectural guardrails for API exposure, namespace conventions, and error-code ownership.
-    /// </summary>
-    public class ArchitectureGuardTests
+    public sealed class ArchitectureGuardTests
     {
         private static readonly Dictionary<string, string> ArchitecturePrefixes = new(StringComparer.Ordinal)
         {
@@ -27,20 +21,241 @@ namespace Convai.Tests.EditMode.Architecture
             ["Editor"] = "Convai.Editor"
         };
 
-        private static string PackageRoot => Path.Combine(Directory.GetCurrentDirectory(), "Packages",
-            "com.convai.convai-sdk-for-unity");
+        private static readonly Regex MetaGuidPattern = new(
+            @"^guid:\s*([0-9a-f]{32})\s*$",
+            RegexOptions.Multiline | RegexOptions.CultureInvariant);
+
+        private static readonly Regex ReferenceGuidPattern = new(
+            @"guid:\s*([0-9a-f]{32})",
+            RegexOptions.Multiline | RegexOptions.CultureInvariant);
+
+        private static readonly string[] SerializedAssetExtensions =
+        {
+            ".unity", ".prefab", ".asset", ".mat", ".controller", ".anim", ".overrideController"
+        };
+
+        private static string PackageRoot => Path.GetFullPath(Path.Combine(
+            UnityEngine.Application.dataPath,
+            "..",
+            "Packages",
+            "com.convai.convai-sdk-for-unity"));
 
         private static string SdkRoot => Path.Combine(PackageRoot, "SDK");
 
-        private static string ToRelativePath(string fullPath) =>
-            Path.GetRelativePath(PackageRoot, fullPath).Replace('\\', '/');
+        [Test]
+        [Category("Architecture")]
+        public void Namespaces_FollowOwnedArchitectureRoots()
+        {
+            var violations = new List<string>();
+            var namespacePattern = new Regex(@"^\s*namespace\s+([A-Za-z_][A-Za-z0-9_.]*)", RegexOptions.Multiline);
+
+            foreach (string filePath in Directory.EnumerateFiles(SdkRoot, "*.cs", SearchOption.AllDirectories))
+            {
+                if (Path.GetFileName(filePath) == "AssemblyInfo.cs") continue;
+
+                string relativePath = Path.GetRelativePath(SdkRoot, filePath).Replace('\\', '/');
+                string[] segments = relativePath.Split('/');
+                string[] expected = segments
+                    .Take(segments.Length - 1)
+                    .Where(ArchitecturePrefixes.ContainsKey)
+                    .Select(segment => ArchitecturePrefixes[segment])
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
+                if (expected.Length == 0) continue;
+
+                Match match = namespacePattern.Match(PackageFiles.ReadAllText(filePath));
+                if (!match.Success) continue;
+
+                string declared = match.Groups[1].Value;
+                bool valid = expected.Any(prefix => declared == prefix || declared.StartsWith(prefix + "."));
+                if (!valid && segments[0] == "Editor")
+                    valid = declared == "Convai.Editor" || declared.Contains(".Editor.") || declared.EndsWith(".Editor");
+                if (!valid) violations.Add($"{relativePath}: {declared}");
+            }
+
+            Assert.That(violations, Is.Empty);
+        }
+
+        [Test]
+        [Category("Architecture")]
+        public void DomainAssembly_DoesNotReferenceOuterLayers()
+        {
+            Assembly domain = FindOrLoadAssembly("Convai.Domain");
+            Assert.That(domain, Is.Not.Null);
+
+            string[] forbidden =
+            {
+                "Convai.Application", "Convai.Infrastructure", "Convai.Runtime",
+                "Convai.Modules.Vision", "Convai.Modules.Narrative", "Convai.Editor"
+            };
+            HashSet<string> references = domain.GetReferencedAssemblies()
+                .Select(assembly => assembly.Name)
+                .ToHashSet(StringComparer.Ordinal);
+
+            Assert.That(forbidden.Where(references.Contains), Is.Empty);
+        }
+
+        [Test]
+        [Category("Architecture")]
+        public void Infrastructure_DoesNotRedeclareCanonicalSessionErrorCodes()
+        {
+            string networkingRoot = Path.Combine(SdkRoot, "Infrastructure", "Networking");
+            var codePattern = new Regex(
+                @"const\s+string\s+\w+\s*=\s*""([a-z][a-z0-9_]*\.[a-z0-9_.]+)""",
+                RegexOptions.Multiline);
+            var violations = Directory
+                .EnumerateFiles(networkingRoot, "*.cs", SearchOption.AllDirectories)
+                .SelectMany(path => codePattern.Matches(PackageFiles.ReadAllText(path))
+                    .Select(match => $"{ToRelativePath(path)}: {match.Groups[1].Value}"))
+                .ToArray();
+
+            Assert.That(violations, Is.Empty);
+        }
+
+        [Test]
+        [Category("Architecture")]
+        public void InternalRuntimeSeams_RemainInternal()
+        {
+            string[] typeNames =
+            {
+                "Convai.Runtime.Networking.Media.IAudioTrackManager",
+                "Convai.Infrastructure.Networking.IRemotePlayerRegistry",
+                "Convai.Runtime.Networking.Media.AudioTrackManager",
+                "Convai.Runtime.Vision.Transport.VideoTrackManager",
+                "Convai.Runtime.Adapters.Networking.PlayerSessionAdapter",
+                "Convai.Runtime.Adapters.Vision.VideoTrackUnpublisherAdapter",
+                "Convai.Runtime.Adapters.Platform.ConvaiPermissionService"
+            };
+
+            Type[] types = typeNames.Select(FindType).ToArray();
+            Assert.That(types.All(type => type != null), Is.True);
+            Assert.That(types.Where(type => type != null && type.IsPublic), Is.Empty);
+        }
+
+        [Test]
+        [Category("Architecture")]
+        public void Samples_DoNotCrossReferenceEachOther()
+        {
+            string basicRoot = Path.Combine(PackageRoot, "Samples", "BasicSample");
+            string lipSyncRoot = Path.Combine(PackageRoot, "Samples", "LipSyncSample");
+            Dictionary<string, string> pathsByGuid = BuildGuidPathMap();
+            var violations = new List<string>();
+
+            CollectCrossSampleReferences(basicRoot, "Samples/LipSyncSample/", pathsByGuid, violations);
+            CollectCrossSampleReferences(lipSyncRoot, "Samples/BasicSample/", pathsByGuid, violations);
+
+            Assert.That(violations, Is.Empty);
+        }
+
+        [Test]
+        [Category("Architecture")]
+        public void AssetsSharedBySampleScenes_LiveOutsideIndividualSamples()
+        {
+            string basicScene = Path.Combine(PackageRoot, "Samples", "BasicSample", "Scenes", "Basic Sample.unity");
+            string lipSyncScene = Path.Combine(PackageRoot, "Samples", "LipSyncSample", "Scenes", "LipSync Sample.unity");
+            Dictionary<string, string> pathsByGuid = BuildGuidPathMap();
+
+            string[] misplaced = GetResolvedAssetReferences(basicScene, pathsByGuid)
+                .Intersect(GetResolvedAssetReferences(lipSyncScene, pathsByGuid), StringComparer.Ordinal)
+                .Where(path => path.StartsWith("Samples/") && !path.StartsWith("SamplesShared/"))
+                .ToArray();
+
+            Assert.That(misplaced, Is.Empty);
+        }
+
+        [Test]
+        [Category("Architecture")]
+        public void SampleAssets_DoNotReferenceEditorContent()
+        {
+            string[] roots =
+            {
+                Path.Combine(PackageRoot, "SamplesShared"),
+                Path.Combine(PackageRoot, "Samples", "BasicSample"),
+                Path.Combine(PackageRoot, "Samples", "LipSyncSample")
+            };
+            Dictionary<string, string> pathsByGuid = BuildGuidPathMap();
+            var violations = new List<string>();
+
+            foreach (string root in roots)
+            foreach (string asset in EnumerateSerializedAssetFiles(root))
+            foreach (string reference in GetResolvedAssetReferences(asset, pathsByGuid))
+                if (reference.StartsWith("SDK/Editor/") &&
+                    !reference.StartsWith("SDK/Editor/Art/UI/Branding"))
+                    violations.Add($"{ToRelativePath(asset)} -> {reference}");
+
+            Assert.That(violations, Is.Empty);
+        }
+
+        [Test]
+        [Category("Architecture")]
+        public void NonSamplePackageContent_DoesNotOwnRenderPipelineDependencies()
+        {
+            string[] roots =
+            {
+                Path.Combine(PackageRoot, "SDK"), Path.Combine(PackageRoot, "Prefabs"),
+                Path.Combine(PackageRoot, "Resources"), Path.Combine(PackageRoot, "Tests")
+            };
+            string[] extensions = { ".cs", ".asmdef", ".unity", ".prefab", ".asset", ".mat", ".controller" };
+            string[] forbidden = { "Unity.RenderPipelines.", "com.unity.render-pipelines." };
+            var violations = new List<string>();
+
+            foreach (string root in roots)
+            foreach (string file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+            {
+                if (Path.GetFileName(file) == nameof(ArchitectureGuardTests) + ".cs" ||
+                    !extensions.Contains(Path.GetExtension(file), StringComparer.OrdinalIgnoreCase))
+                    continue;
+                string content = PackageFiles.ReadAllText(file);
+                if (forbidden.Any(token => content.Contains(token, StringComparison.Ordinal)))
+                    violations.Add(ToRelativePath(file));
+            }
+
+            Assert.That(violations, Is.Empty);
+        }
+
+        private static void CollectCrossSampleReferences(
+            string root,
+            string forbiddenPrefix,
+            IReadOnlyDictionary<string, string> pathsByGuid,
+            ICollection<string> violations)
+        {
+            foreach (string asset in EnumerateSerializedAssetFiles(root))
+            foreach (string reference in GetResolvedAssetReferences(asset, pathsByGuid))
+                if (reference.StartsWith(forbiddenPrefix))
+                    violations.Add($"{ToRelativePath(asset)} -> {reference}");
+        }
+
+        private static Dictionary<string, string> BuildGuidPathMap() => Directory
+            .EnumerateFiles(PackageRoot, "*.meta", SearchOption.AllDirectories)
+            .Select(path => new { Path = path, Match = MetaGuidPattern.Match(PackageFiles.ReadAllText(path)) })
+            .Where(entry => entry.Match.Success)
+            .ToDictionary(
+                entry => entry.Match.Groups[1].Value,
+                entry => Path.ChangeExtension(entry.Path, null),
+                StringComparer.Ordinal);
+
+        private static IEnumerable<string> EnumerateSerializedAssetFiles(string root) => Directory
+            .EnumerateFiles(root, "*", SearchOption.AllDirectories)
+            .Where(path => SerializedAssetExtensions.Contains(
+                Path.GetExtension(path),
+                StringComparer.OrdinalIgnoreCase));
+
+        private static IEnumerable<string> GetResolvedAssetReferences(
+            string asset,
+            IReadOnlyDictionary<string, string> pathsByGuid) => ReferenceGuidPattern
+            .Matches(PackageFiles.ReadAllText(asset))
+            .Select(match => match.Groups[1].Value)
+            .Distinct(StringComparer.Ordinal)
+            .Select(guid => pathsByGuid.TryGetValue(guid, out string path) ? ToRelativePath(path) : null)
+            .Where(path => !string.IsNullOrEmpty(path));
+
+        private static string ToRelativePath(string path) =>
+            Path.GetRelativePath(PackageRoot, path).Replace('\\', '/');
 
         private static Assembly FindOrLoadAssembly(string name)
         {
-            Assembly loaded = AppDomain.CurrentDomain
-                .GetAssemblies()
-                .FirstOrDefault(a => string.Equals(a.GetName().Name, name, StringComparison.Ordinal));
-
+            Assembly loaded = AppDomain.CurrentDomain.GetAssemblies()
+                .FirstOrDefault(assembly => assembly.GetName().Name == name);
             if (loaded != null) return loaded;
 
             try
@@ -53,18 +268,8 @@ namespace Convai.Tests.EditMode.Architecture
             }
         }
 
-        private static Type FindType(string fullName, params string[] preferredAssemblies)
+        private static Type FindType(string fullName)
         {
-            if (preferredAssemblies != null)
-            {
-                foreach (string assemblyName in preferredAssemblies)
-                {
-                    Assembly assembly = FindOrLoadAssembly(assemblyName);
-                    Type preferredType = assembly?.GetType(fullName, false);
-                    if (preferredType != null) return preferredType;
-                }
-            }
-
             foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
             {
                 Type type = assembly.GetType(fullName, false);
@@ -72,313 +277,6 @@ namespace Convai.Tests.EditMode.Architecture
             }
 
             return null;
-        }
-
-        private static string FormatViolations(string header, IReadOnlyList<string> violations)
-        {
-            const int maxToPrint = 20;
-            var sb = new StringBuilder();
-            sb.AppendLine(header);
-
-            for (int i = 0; i < violations.Count && i < maxToPrint; i++) sb.AppendLine($"- {violations[i]}");
-
-            if (violations.Count > maxToPrint) sb.AppendLine($"... and {violations.Count - maxToPrint} more");
-
-            return sb.ToString();
-        }
-
-        [Test]
-        [Category("Architecture")]
-        public void Namespaces_Use_ArchitectureLayer_Prefixes()
-        {
-            Assert.IsTrue(Directory.Exists(SdkRoot), $"SDK root not found: {SdkRoot}");
-
-            var violations = new List<string>();
-            var namespacePattern = new Regex(@"^\s*namespace\s+([A-Za-z_][A-Za-z0-9_.]*)", RegexOptions.Multiline);
-
-            foreach (string filePath in Directory.EnumerateFiles(SdkRoot, "*.cs", SearchOption.AllDirectories))
-            {
-                if (string.Equals(Path.GetFileName(filePath), "AssemblyInfo.cs", StringComparison.Ordinal)) continue;
-
-                string relativeToSdk = Path.GetRelativePath(SdkRoot, filePath).Replace('\\', '/');
-                if (relativeToSdk.StartsWith("Runtime/SampleCommon/", StringComparison.Ordinal)) continue;
-
-                string rootFolder = relativeToSdk.Split('/')[0];
-
-                if (!ArchitecturePrefixes.TryGetValue(rootFolder, out string expectedPrefix)) continue;
-
-                string source = File.ReadAllText(filePath);
-                Match nsMatch = namespacePattern.Match(source);
-                if (!nsMatch.Success) continue;
-
-                string declaredNamespace = nsMatch.Groups[1].Value;
-                bool valid = declaredNamespace.Equals(expectedPrefix, StringComparison.Ordinal) ||
-                             declaredNamespace.StartsWith(expectedPrefix + ".", StringComparison.Ordinal);
-
-                if (!valid)
-                    violations.Add(
-                        $"{ToRelativePath(filePath)} declares '{declaredNamespace}' (expected prefix '{expectedPrefix}')");
-            }
-
-            Assert.IsEmpty(violations, FormatViolations("Architecture namespace prefix violations:", violations));
-        }
-
-        [Test]
-        [Category("Architecture")]
-        public void Domain_Layer_Must_Not_Reference_Outer_Layers()
-        {
-            Assembly domainAssembly = FindOrLoadAssembly("Convai.Domain");
-            if (domainAssembly == null)
-            {
-                Assert.Inconclusive("Convai.Domain assembly is not loaded.");
-                return;
-            }
-
-            string[] forbidden =
-            {
-                "Convai.Application", "Convai.Infrastructure", "Convai.Infrastructure.Networking",
-                "Convai.Infrastructure.Protocol", "Convai.Runtime", "Convai.Runtime.Behaviors",
-                "Convai.Modules.Vision", "Convai.Modules.Narrative", "Convai.Editor"
-            };
-
-            HashSet<string> referencedNames = domainAssembly
-                .GetReferencedAssemblies()
-                .Select(a => a.Name)
-                .ToHashSet(StringComparer.Ordinal);
-
-            List<string> violations = forbidden
-                .Where(referencedNames.Contains)
-                .ToList();
-
-            Assert.IsEmpty(violations,
-                $"Convai.Domain has forbidden outer-layer dependencies: [{string.Join(", ", violations)}]");
-        }
-
-        [Test]
-        [Category("Architecture")]
-        public void Canonical_Errors_Are_Single_Source_Of_Truth()
-        {
-            Type canonicalErrorCodesType = FindType(
-                "Convai.Domain.Errors.SessionErrorCodes",
-                "Convai.Domain");
-
-            Assert.NotNull(canonicalErrorCodesType, "Could not locate SessionErrorCodes.");
-
-            FieldInfo[] canonicalFields = canonicalErrorCodesType.GetFields(
-                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance |
-                BindingFlags.DeclaredOnly);
-
-            List<string> localConstStringFields = canonicalFields
-                .Where(f => f.FieldType == typeof(string) && f.IsLiteral && !f.IsInitOnly)
-                .Select(f => f.Name)
-                .ToList();
-
-            Assert.IsNotEmpty(localConstStringFields,
-                "SessionErrorCodes should expose canonical string constants.");
-
-            string infraNetworkingRoot = Path.Combine(SdkRoot, "Infrastructure", "Networking");
-            Assert.IsTrue(Directory.Exists(infraNetworkingRoot),
-                $"Infrastructure networking path not found: {infraNetworkingRoot}");
-
-            var canonicalCodeConstPattern = new Regex(
-                @"const\s+string\s+\w+\s*=\s*""([a-z][a-z0-9_]*\.[a-z0-9_.]+)""",
-                RegexOptions.Multiline);
-
-            var infraViolations = new List<string>();
-
-            foreach (string filePath in Directory.EnumerateFiles(infraNetworkingRoot, "*.cs",
-                         SearchOption.AllDirectories))
-            {
-                string source = File.ReadAllText(filePath);
-                MatchCollection matches = canonicalCodeConstPattern.Matches(source);
-
-                foreach (Match match in matches)
-                    if (match.Success)
-                        infraViolations.Add($"{ToRelativePath(filePath)} => \"{match.Groups[1].Value}\"");
-            }
-
-            Assert.IsEmpty(infraViolations,
-                FormatViolations("Infrastructure networking declares canonical-style const error codes:",
-                    infraViolations));
-        }
-
-        [Test]
-        [Category("Architecture")]
-        public void LegacyConnectionStrategyLayer_Is_Removed()
-        {
-            Type strategyInterface = FindType(
-                "Convai.Runtime.Strategies.IConvaiConnectionStrategy",
-                "Convai.Runtime");
-            Type strategyImplementation = FindType(
-                "Convai.Runtime.Strategies.DefaultConnectionStrategy",
-                "Convai.Runtime");
-
-            Assert.IsNull(strategyInterface,
-                "IConvaiConnectionStrategy should not exist once connection retry logic lives in the runtime orchestration path.");
-            Assert.IsNull(strategyImplementation,
-                "DefaultConnectionStrategy should not exist once connection retry logic lives in the runtime orchestration path.");
-
-            Type legacyResumable = FindType(
-                "Convai.Runtime.Strategies.IConvaiResumableConnectionStrategy",
-                "Convai.Runtime");
-            Type legacyReconnectable = FindType(
-                "Convai.Runtime.Strategies.IConvaiReconnectableConnectionStrategy",
-                "Convai.Runtime");
-
-            Assert.IsNull(legacyResumable, "IConvaiResumableConnectionStrategy should not exist.");
-            Assert.IsNull(legacyReconnectable, "IConvaiReconnectableConnectionStrategy should not exist.");
-        }
-
-        [Test]
-        [Category("Architecture")]
-        public void LegacyRoomOrchestrationLayer_Is_Removed()
-        {
-            Type orchestrationAdapter = FindType(
-                "Convai.Runtime.Adapters.Networking.ConnectionOrchestrationAdapter",
-                "Convai.Runtime");
-            Type reconnectionServiceInterface = FindType(
-                "Convai.Infrastructure.Networking.Services.IReconnectionService",
-                "Convai.Infrastructure.Networking.Abstractions",
-                "Convai.Infrastructure.Networking");
-            Type reconnectionService = FindType(
-                "Convai.Infrastructure.Networking.Services.ReconnectionService",
-                "Convai.Infrastructure.Networking.Abstractions",
-                "Convai.Infrastructure.Networking");
-
-            Assert.IsNull(orchestrationAdapter,
-                "ConnectionOrchestrationAdapter should not exist once ConvaiRoomManager owns the connection lifecycle.");
-            Assert.IsNull(reconnectionServiceInterface,
-                "IReconnectionService should not exist once reconnect state is represented by ConnectionContext and ReconnectPolicy.");
-            Assert.IsNull(reconnectionService,
-                "ReconnectionService should not exist once reconnect state is represented by ConnectionContext and ReconnectPolicy.");
-
-            var legacyFiles = Directory
-                .EnumerateFiles(PackageRoot, "*.cs", SearchOption.AllDirectories)
-                .Where(path =>
-                {
-                    string fileName = Path.GetFileName(path);
-                    return fileName == "ConnectionOrchestrationAdapter.cs" ||
-                           fileName == "IReconnectionService.cs" ||
-                           fileName == "ReconnectionService.cs";
-                })
-                .Select(ToRelativePath)
-                .ToList();
-
-            Assert.IsEmpty(legacyFiles,
-                FormatViolations("Legacy room orchestration files should be deleted:", legacyFiles));
-        }
-
-        [Test]
-        [Category("Architecture")]
-        public void SessionResume_Is_PerCharacter_Not_Global()
-        {
-            Type legacyCapability = FindType(
-                "Convai.Runtime.Behaviors.ISessionResumable",
-                "Convai.Runtime.Behaviors",
-                "Convai.Runtime");
-            Assert.IsNull(legacyCapability, "ISessionResumable should not exist.");
-
-            Type characterAgentType = FindType(
-                "Convai.Runtime.Behaviors.IConvaiCharacterAgent",
-                "Convai.Runtime.Behaviors",
-                "Convai.Runtime");
-            Assert.NotNull(characterAgentType, "Could not locate IConvaiCharacterAgent.");
-
-            PropertyInfo resumeProperty =
-                characterAgentType.GetProperty("EnableSessionResume", BindingFlags.Public | BindingFlags.Instance);
-            Assert.NotNull(resumeProperty, "IConvaiCharacterAgent must expose EnableSessionResume.");
-            Assert.AreEqual(typeof(bool), resumeProperty.PropertyType, "EnableSessionResume must be a bool.");
-
-            Type settingsType = FindType(
-                "Convai.Runtime.ConvaiSettings",
-                "Convai.Runtime");
-            Assert.NotNull(settingsType, "Could not locate ConvaiSettings.");
-
-            PropertyInfo legacyGlobalProperty =
-                settingsType.GetProperty("SessionResumeEnabled", BindingFlags.Public | BindingFlags.Instance);
-            Assert.IsNull(legacyGlobalProperty, "ConvaiSettings.SessionResumeEnabled should not exist.");
-
-            string runtimeRoot = Path.Combine(SdkRoot, "Runtime");
-            Assert.IsTrue(Directory.Exists(runtimeRoot), $"Runtime path not found: {runtimeRoot}");
-
-            List<string> legacyReferences = Directory
-                .EnumerateFiles(runtimeRoot, "*.cs", SearchOption.AllDirectories)
-                .Where(path => File.ReadAllText(path).Contains("ISessionResumable", StringComparison.Ordinal))
-                .Select(ToRelativePath)
-                .ToList();
-
-            Assert.IsEmpty(legacyReferences,
-                FormatViolations("Runtime still references ISessionResumable:", legacyReferences));
-        }
-
-        [Test]
-        [Category("Architecture")]
-        public void FutureMultiplayer_Seams_Are_Internal()
-        {
-            var targets = new Dictionary<string, string[]>(StringComparer.Ordinal)
-            {
-                ["Convai.Runtime.Networking.Media.IAudioTrackManager"] = new[] { "Convai.Runtime" },
-                ["Convai.Infrastructure.Networking.ITranscriptBroadcaster"] =
-                    new[] { "Convai.Infrastructure.Networking.Abstractions", "Convai.Infrastructure.Networking" },
-                ["Convai.Infrastructure.Networking.IRemotePlayerRegistry"] =
-                    new[] { "Convai.Infrastructure.Networking.Abstractions", "Convai.Infrastructure.Networking" }
-            };
-
-            var missing = new List<string>();
-            var publicTypes = new List<string>();
-
-            foreach (KeyValuePair<string, string[]> target in targets)
-            {
-                Type type = FindType(target.Key, target.Value);
-                if (type == null)
-                {
-                    missing.Add(target.Key);
-                    continue;
-                }
-
-                if (type.IsPublic) publicTypes.Add(target.Key);
-            }
-
-            Assert.IsEmpty(missing, $"Could not find expected seam types: [{string.Join(", ", missing)}]");
-            Assert.IsEmpty(publicTypes, $"Future seam types must be internal: [{string.Join(", ", publicTypes)}]");
-        }
-
-        [Test]
-        [Category("Architecture")]
-        public void Internal_Implementations_Are_Not_Public()
-        {
-            var targets = new Dictionary<string, string>(StringComparer.Ordinal)
-            {
-                ["Convai.Runtime.Networking.Media.AudioTrackManager"] = "Convai.Runtime",
-                ["Convai.Runtime.Vision.VideoTrackManager"] = "Convai.Runtime",
-                ["Convai.Runtime.Adapters.Networking.PlayerSessionAdapter"] = "Convai.Runtime",
-                ["Convai.Runtime.Adapters.Networking.CharacterRegistryAdapter"] = "Convai.Runtime",
-                ["Convai.Runtime.Adapters.Networking.ConfigurationProviderAdapter"] = "Convai.Runtime",
-                ["Convai.Runtime.Adapters.Vision.VideoTrackUnpublisherAdapter"] = "Convai.Runtime",
-                ["Convai.Runtime.Adapters.Platform.ConvaiPermissionService"] = "Convai.Runtime"
-            };
-
-            var missing = new List<string>();
-            var publicTypes = new List<string>();
-
-            foreach (KeyValuePair<string, string> target in targets)
-            {
-                string fullName = target.Key;
-                string assemblyName = target.Value;
-                Type type = FindType(fullName, assemblyName);
-                if (type == null)
-                {
-                    missing.Add(fullName);
-                    continue;
-                }
-
-                if (type.IsPublic) publicTypes.Add(fullName);
-            }
-
-            Assert.IsEmpty(missing,
-                $"Could not find target internal implementation types: [{string.Join(", ", missing)}]");
-            Assert.IsEmpty(publicTypes,
-                $"Internal implementation types must not be public: [{string.Join(", ", publicTypes)}]");
         }
     }
 }

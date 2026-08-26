@@ -1,9 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Convai.Domain.Abstractions;
 using Convai.Domain.DomainEvents.Participant;
+using Convai.Domain.DomainEvents.Session;
+using Convai.Domain.Errors;
 using Convai.Domain.EventSystem;
 using Convai.Domain.Logging;
 using Convai.Infrastructure.Networking.Models;
@@ -12,7 +15,11 @@ using Convai.Infrastructure.Protocol;
 using Convai.RestAPI;
 using Convai.RestAPI.Internal;
 using Convai.RestAPI.Services;
-using Newtonsoft.Json;
+using Convai.Runtime.Adapters.Networking;
+using Convai.Runtime.Behaviors;
+using Convai.Runtime;
+using ILogger = Convai.Domain.Logging.ILogger;
+using LogCategory = Convai.Domain.Logging.LogCategory;
 // Type aliases to disambiguate between LiveKit.Proto and Transport types
 using TransportParticipantInfo = Convai.Infrastructure.Networking.Transport.TransportParticipantInfo;
 using TransportTrackInfo = Convai.Infrastructure.Networking.Transport.TrackInfo;
@@ -24,11 +31,11 @@ namespace Convai.Infrastructure.Networking.Native
     ///     Native (non-WebGL) room controller that implements <see cref="IConvaiRoomController" /> directly.
     ///     Manages native room connections through the transport abstraction layer.
     /// </summary>
-    internal sealed class NativeRoomController : IConvaiRoomController
+    internal sealed class NativeRoomController : IConvaiRoomController, IRoomDetailsStateTarget
     {
-        private readonly ICharacterRegistry _characterRegistry;
-        private readonly IConfigurationProvider _config;
+        private readonly IAgentRegistry _agentRegistry;
         private readonly IMainThreadDispatcher _dispatcher;
+        private readonly NativeRoomEventBridge _eventBridge;
         private readonly IEventHub _eventHub;
         private readonly ILogger _logger;
 
@@ -38,6 +45,7 @@ namespace Convai.Infrastructure.Networking.Native
         private readonly IPlayerSession _playerSession;
         private readonly ProtocolGateway _protocolGateway;
         private readonly INarrativeSectionNameResolver _sectionNameResolver;
+        private readonly ISessionPersistence _sessionPersistence;
 
         /// <summary>
         ///     Lock object for thread-safe access to public state properties.
@@ -46,6 +54,7 @@ namespace Convai.Infrastructure.Networking.Native
         private readonly object _stateLock = new();
 
         private readonly IRealtimeTransport _transport;
+        private readonly ITransportConfiguration _transportConfiguration;
 
         private Func<string, bool> _audioSubscriptionPolicy;
         private string _characterSessionId;
@@ -55,6 +64,9 @@ namespace Convai.Infrastructure.Networking.Native
         private bool _isConnectedToRoom;
         private bool _isMicMuted;
         private IRemoteAudioControl _remoteAudioControl;
+        private string _requestTraceId;
+        private string _resolvedEndUserId;
+        private IReadOnlyDictionary<string, object> _resolvedEndUserMetadata;
         private string _resolvedSpeakerId;
         private string _roomName;
         private string _roomUrl;
@@ -65,40 +77,45 @@ namespace Convai.Infrastructure.Networking.Native
         /// <summary>
         ///     Initializes a new instance of the <see cref="NativeRoomController" /> class.
         /// </summary>
-        /// <param name="characterRegistry">Character registry for resolving participants to characters.</param>
+        /// <param name="agentRegistry">Agent registry for resolving participants to characters.</param>
         /// <param name="playerSession">Player session abstraction.</param>
-        /// <param name="config">Configuration provider for settings and stored session IDs.</param>
+        /// <param name="transportConfiguration">Read-only transport/session configuration.</param>
+        /// <param name="sessionPersistence">Character-session persistence adapter.</param>
         /// <param name="dispatcher">Dispatcher used to marshal work to the main thread.</param>
         /// <param name="logger">Logger.</param>
         /// <param name="eventHub">Optional event hub used for domain events.</param>
         /// <param name="sectionNameResolver">Optional resolver for human-readable narrative section names.</param>
         /// <param name="transport">Realtime transport abstraction backing the native room controller.</param>
         public NativeRoomController(
-            ICharacterRegistry characterRegistry,
+            IAgentRegistry agentRegistry,
             IPlayerSession playerSession,
-            IConfigurationProvider config,
+            ITransportConfiguration transportConfiguration,
+            ISessionPersistence sessionPersistence,
             IMainThreadDispatcher dispatcher,
             ILogger logger,
             IEventHub eventHub = null,
             INarrativeSectionNameResolver sectionNameResolver = null,
             IRealtimeTransport transport = null)
         {
-            _characterRegistry = characterRegistry ?? throw new ArgumentNullException(nameof(characterRegistry));
+            _agentRegistry = agentRegistry ?? throw new ArgumentNullException(nameof(agentRegistry));
             _playerSession = playerSession ?? throw new ArgumentNullException(nameof(playerSession));
-            _config = config ?? throw new ArgumentNullException(nameof(config));
+            _transportConfiguration =
+                transportConfiguration ?? throw new ArgumentNullException(nameof(transportConfiguration));
+            _sessionPersistence = sessionPersistence ?? throw new ArgumentNullException(nameof(sessionPersistence));
             _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _logger = (logger ?? throw new ArgumentNullException(nameof(logger))).WithTag(nameof(NativeRoomController));
             _eventHub = eventHub;
             _sectionNameResolver = sectionNameResolver;
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
+            _eventBridge = new NativeRoomEventBridge(this);
 
             _transport.StateChanged += HandleConnectionStateChanged;
             _transport.ConnectionFailed += HandleConnectionFailed;
             _transport.DataReceived += HandleDataPacketReceived;
             _transport.ParticipantConnected += OnTransportParticipantConnected;
             _transport.ParticipantDisconnected += OnTransportParticipantDisconnected;
-            _transport.TrackSubscribed += OnTransportTrackSubscribed;
-            _transport.TrackUnsubscribed += OnTransportTrackUnsubscribed;
+            _transport.TrackSubscribed += _eventBridge.HandleTransportTrackSubscribed;
+            _transport.TrackUnsubscribed += _eventBridge.HandleTransportTrackUnsubscribed;
             _transport.Disconnected += HandleTransportDisconnected;
             _transport.Reconnecting += HandleTransportReconnecting;
             _transport.Reconnected += HandleTransportReconnected;
@@ -107,7 +124,7 @@ namespace Convai.Infrastructure.Networking.Native
                 logDebug: message => _logger.Debug(message, LogCategory.Transport),
                 logError: message => _logger.Error(message, LogCategory.Transport));
 
-            RefreshRoomFacadeAudioBridge();
+            _eventBridge.RefreshRoomFacadeAudioBridge();
         }
 
         /// <inheritdoc />
@@ -245,14 +262,14 @@ namespace Convai.Infrastructure.Networking.Native
         }
 
         /// <summary>
-        ///     The server-generated speaker ID (UUID) returned after speaker resolution.
-        ///     This ID is used for Long-Term Memory (LTM) and interaction tracking.
+        ///     Optional backend-resolved speaker ID for the local participant.
+        ///     This is diagnostics/state carried through when the backend includes it.
         ///     Thread-safe property.
         /// </summary>
         /// <remarks>
         ///     This is NOT the same as the end_user_id sent during connection.
-        ///     The server creates/resolves a Speaker record from the end_user_id and returns this speaker_id.
-        ///     LTM uses the key format: speaker_id:character_id
+        ///     The backend may resolve <c>end_user_id</c> to an internal <c>speaker_id</c> for persistence and
+        ///     memory storage, but current WebRTC connect responses may omit this field entirely.
         /// </remarks>
         public string ResolvedSpeakerId
         {
@@ -263,6 +280,45 @@ namespace Convai.Infrastructure.Networking.Native
             private set
             {
                 lock (_stateLock) _resolvedSpeakerId = value;
+            }
+        }
+
+        /// <inheritdoc />
+        public string RequestTraceId
+        {
+            get
+            {
+                lock (_stateLock) return _requestTraceId;
+            }
+            private set
+            {
+                lock (_stateLock) _requestTraceId = value;
+            }
+        }
+
+        /// <inheritdoc />
+        public string ResolvedEndUserId
+        {
+            get
+            {
+                lock (_stateLock) return _resolvedEndUserId;
+            }
+            private set
+            {
+                lock (_stateLock) _resolvedEndUserId = value;
+            }
+        }
+
+        /// <inheritdoc />
+        public IReadOnlyDictionary<string, object> ResolvedEndUserMetadata
+        {
+            get
+            {
+                lock (_stateLock) return _resolvedEndUserMetadata;
+            }
+            private set
+            {
+                lock (_stateLock) _resolvedEndUserMetadata = value;
             }
         }
 
@@ -291,65 +347,87 @@ namespace Convai.Infrastructure.Networking.Native
         public event Action<string, string> OnRemoteAudioTrackUnsubscribed;
 
         /// <inheritdoc />
-        public Task<bool> InitializeAsync(string connectionType, string llmProvider, string coreServerUrl,
-            string characterId, string storedSessionId, bool enableSessionResume) => InitializeAsync(connectionType,
-            llmProvider, coreServerUrl, characterId, storedSessionId, enableSessionResume, null,
-            CancellationToken.None);
-
-        /// <inheritdoc />
-        public async Task<bool> InitializeAsync(
+        public Task<RoomConnectionAttemptResult> InitializeAsync(
             string connectionType,
-            string llmProvider,
             string coreServerUrl,
             string characterId,
             string storedSessionId,
             bool enableSessionResume,
+            string dynamicInfoText,
+            bool keepDynamicInfoInContext) =>
+            InitializeAsync(
+                connectionType,
+                coreServerUrl,
+                characterId,
+                storedSessionId,
+                enableSessionResume,
+                dynamicInfoText,
+                keepDynamicInfoInContext,
+                null,
+                CancellationToken.None);
+
+        /// <inheritdoc />
+        public async Task<RoomConnectionAttemptResult> InitializeAsync(
+            string connectionType,
+            string coreServerUrl,
+            string characterId,
+            string storedSessionId,
+            bool enableSessionResume,
+            string dynamicInfoText,
+            bool keepDynamicInfoInContext,
             RoomJoinOptions joinOptions,
             CancellationToken cancellationToken = default)
         {
             HasRoomDetails = false;
+            RoomEmotionConfig emotionConfig = joinOptions?.ResolvedEmotionConfig;
+            string requestEndUserId = joinOptions?.ResolvedEndUserId ?? _transportConfiguration.EndUserId;
+            IReadOnlyDictionary<string, object> requestEndUserMetadata =
+                joinOptions?.ResolvedEndUserMetadata ?? _transportConfiguration.EndUserMetadata;
+            string playerNameForRequest = joinOptions?.ResolvedEndUserMetadata != null
+                ? null
+                : _playerSession?.PlayerName;
 
-            string endUserId = string.IsNullOrWhiteSpace(_config.EndUserId) ? null : _config.EndUserId;
-
-            string sessionId = joinOptions?.CharacterSessionId ?? storedSessionId;
-            RoomEmotionConfig emotionConfig = await ResolveEmotionConfigAsync(
-                characterId,
-                cancellationToken);
-
-            RoomConnectionRequest roomRequest = RoomConnectionRequestFactory.Create(
+            RoomSessionStartupPlan startupPlan = RoomSessionStartupKernel.Prepare(
                 characterId,
                 connectionType,
-                llmProvider,
                 coreServerUrl,
-                sessionId,
-                endUserId,
-                _config.VideoTrackName,
-                emotionConfig,
+                storedSessionId,
+                enableSessionResume,
                 joinOptions,
-                _config.LipSyncTransportOptions);
+                requestEndUserId,
+                requestEndUserMetadata,
+                _transportConfiguration.VideoTrackName,
+                emotionConfig,
+                joinOptions?.ResolvedTurnTakingOptions ?? ResolvedTurnTakingOptions.DefaultHandsFree,
+                _transportConfiguration.LipSyncTransportOptions,
+                StoredSessionFallbackPolicy.NativeCompatibility,
+                InvalidStoredSessionRecoveryPolicy.RetryWithoutStoredSessionAllowed,
+                dynamicInfoText,
+                keepDynamicInfoInContext,
+                _transportConfiguration.Debug,
+                playerNameForRequest,
+                joinOptions?.ResolvedUserVadSettings,
+                joinOptions?.ResolvedVisionInputConfig,
+                joinOptions?.ResolvedRespondModes);
 
-            if (joinOptions != null && joinOptions.IsJoinRequest)
+            _logger.Debug(startupPlan.FormatModeLogMessage(), LogCategory.Transport);
+
+            RoomConnectionAttemptResult attemptResult = await ConnectToConvai(startupPlan, characterId);
+            HasRoomDetails = attemptResult.Succeeded;
+            IsConnectedToRoom = attemptResult.Succeeded;
+
+            if (!attemptResult.Succeeded)
             {
-                _logger.Debug($"Room join mode: room={joinOptions.RoomName}, spawnAgent={joinOptions.SpawnAgent}",
+                _logger.Error(
+                    $"Failed to connect to Convai and LiveKit room: {attemptResult.Failure.Message}",
                     LogCategory.Transport);
-            }
-            else
-                _logger.Debug("Room create mode (new room)", LogCategory.Transport);
-
-            bool connected = await ConnectToConvai(roomRequest, characterId, enableSessionResume);
-            HasRoomDetails = connected;
-            IsConnectedToRoom = connected;
-
-            if (!connected)
-            {
-                _logger.Error("Failed to connect to Convai and LiveKit room", LogCategory.Transport);
                 OnRoomConnectionFailed?.Invoke();
-                return false;
+                return attemptResult;
             }
 
             _logger.Info("Connected to Convai and LiveKit room successfully", LogCategory.Transport);
             OnRoomConnectionSuccessful?.Invoke();
-            return true;
+            return RoomConnectionAttemptResult.Success();
         }
 
 
@@ -393,7 +471,7 @@ namespace Convai.Infrastructure.Networking.Native
                 catch (Exception ex)
                 {
                     _logger.Warning(
-                        $"[NativeRoomController] Failed to apply local participant mic mute state: {ex.Message}",
+                        $"Failed to apply local participant mic mute state: {ex.Message}",
                         LogCategory.Audio);
                 }
             }
@@ -416,14 +494,14 @@ namespace Convai.Infrastructure.Networking.Native
                 return false;
             }
 
-            if (!_characterRegistry.TryGetCharacter(characterId, out CharacterDescriptor _))
+            if (!_agentRegistry.TryGetCharacter(characterId, out IConvaiCharacterAgent _))
             {
                 _logger.Debug($"Character '{characterId}' is not registered; cannot update mute state.",
                     LogCategory.Character);
                 return false;
             }
 
-            _characterRegistry.SetCharacterMuted(characterId, mute);
+            _agentRegistry.SetCharacterMuted(characterId, mute);
             return true;
         }
 
@@ -444,8 +522,8 @@ namespace Convai.Infrastructure.Networking.Native
         {
             if (string.IsNullOrEmpty(characterId)) return false;
 
-            return _characterRegistry.TryGetCharacter(characterId, out CharacterDescriptor descriptor) &&
-                   descriptor.IsMuted;
+            return _agentRegistry.TryGetCharacter(characterId, out IConvaiCharacterAgent _) &&
+                   _agentRegistry.IsCharacterMuted(characterId);
         }
 
         /// <summary>
@@ -457,7 +535,7 @@ namespace Convai.Infrastructure.Networking.Native
         {
             _audioSubscriptionPolicy = policy;
 
-            _logger.Debug("[NativeRoomController] Audio subscription policy configured", LogCategory.Audio);
+            _logger.Debug("Audio subscription policy configured", LogCategory.Audio);
         }
 
         /// <summary>
@@ -470,16 +548,16 @@ namespace Convai.Infrastructure.Networking.Native
         {
             if (string.IsNullOrEmpty(characterId)) return;
 
-            CharacterDescriptor descriptor = default;
-            string participantIdentity = ResolveParticipantIdentity(characterId, ref descriptor);
-            string participantSid = descriptor.ParticipantId ?? string.Empty;
+            string participantIdentity = ResolveParticipantIdentity(characterId);
+            _agentRegistry.TryGetParticipantId(characterId, out string participantSid);
+            participantSid ??= string.Empty;
 
             bool applied = ResolveRemoteAudioControl()
-                .Apply(characterId, participantIdentity, participantSid, enabled, descriptor);
+                .Apply(characterId, participantIdentity, participantSid, enabled);
             if (!applied)
             {
                 _logger.Debug(
-                    $"[NativeRoomController] No cached remote-audio control target for character: {characterId} (identity: {participantIdentity})",
+                    $"No cached remote-audio control target for character: {characterId} (identity: {participantIdentity})",
                     LogCategory.Audio);
             }
         }
@@ -496,153 +574,240 @@ namespace Convai.Infrastructure.Networking.Native
             _transport.DataReceived -= HandleDataPacketReceived;
             _transport.ParticipantConnected -= OnTransportParticipantConnected;
             _transport.ParticipantDisconnected -= OnTransportParticipantDisconnected;
-            _transport.TrackSubscribed -= OnTransportTrackSubscribed;
-            _transport.TrackUnsubscribed -= OnTransportTrackUnsubscribed;
+            _transport.TrackSubscribed -= _eventBridge.HandleTransportTrackSubscribed;
+            _transport.TrackUnsubscribed -= _eventBridge.HandleTransportTrackUnsubscribed;
             _transport.Disconnected -= HandleTransportDisconnected;
             _transport.Reconnecting -= HandleTransportReconnecting;
             _transport.Reconnected -= HandleTransportReconnected;
-            DetachRoomFacadeAudioBridge();
+            _eventBridge.DetachRoomFacadeAudioBridge();
             _disposed = true;
         }
 
         #endregion
 
+        string IRoomDetailsStateTarget.Token
+        {
+            get => Token;
+            set => Token = value;
+        }
+
+        string IRoomDetailsStateTarget.RoomName
+        {
+            get => RoomName;
+            set => RoomName = value;
+        }
+
+        string IRoomDetailsStateTarget.RoomURL
+        {
+            get => RoomURL;
+            set => RoomURL = value;
+        }
+
+        string IRoomDetailsStateTarget.SessionID
+        {
+            get => SessionID;
+            set => SessionID = value;
+        }
+
+        string IRoomDetailsStateTarget.CharacterSessionID
+        {
+            get => CharacterSessionID;
+            set => CharacterSessionID = value;
+        }
+
+        string IRoomDetailsStateTarget.ResolvedSpeakerId
+        {
+            get => ResolvedSpeakerId;
+            set => ResolvedSpeakerId = value;
+        }
+
+        string IRoomDetailsStateTarget.RequestTraceId
+        {
+            get => RequestTraceId;
+            set => RequestTraceId = value;
+        }
+
+        string IRoomDetailsStateTarget.ResolvedEndUserId
+        {
+            get => ResolvedEndUserId;
+            set => ResolvedEndUserId = value;
+        }
+
+        IReadOnlyDictionary<string, object> IRoomDetailsStateTarget.ResolvedEndUserMetadata
+        {
+            get => ResolvedEndUserMetadata;
+            set => ResolvedEndUserMetadata = value;
+        }
+
+        bool IRoomDetailsStateTarget.HasRoomDetails
+        {
+            get => HasRoomDetails;
+            set => HasRoomDetails = value;
+        }
+
         /// <summary>
         ///     Connects to a Convai room using the specified room request and character ID, with optional session resume.
         /// </summary>
-        public async Task<bool> ConnectToConvai(RoomConnectionRequest roomRequest, string characterId,
-            bool enableSessionResume)
-        {
-            Task<(bool success, RoomDetails details, string error)> roomDetailsTask =
-                TryGetRoomDetailsAsync(roomRequest);
-            bool hasSessionId = enableSessionResume && !string.IsNullOrEmpty(roomRequest.CharacterSessionId);
+        public async Task<RoomConnectionAttemptResult> ConnectToConvai(RoomSessionStartupPlan startupPlan,
+            string characterId)
+            => await ConnectToConvai(new NativeRoomConnectionSession(startupPlan, characterId));
 
-            (bool success, RoomDetails details, string error) attemptWithSessionId = await roomDetailsTask;
+        private async Task<RoomConnectionAttemptResult> ConnectToConvai(NativeRoomConnectionSession session)
+        {
+            RoomConnectionRequest roomRequest = session.Request;
+            Task<(bool success, RoomDetails details, Exception error)> roomDetailsTask =
+                TryGetRoomDetailsAsync(roomRequest);
+
+            (bool success, RoomDetails details, Exception error) attemptWithSessionId = await roomDetailsTask;
             if (attemptWithSessionId.success)
             {
-                ApplyRoomDetails(attemptWithSessionId.details);
-                if (enableSessionResume && !string.IsNullOrEmpty(CharacterSessionID))
+                if (attemptWithSessionId.details == null || string.IsNullOrEmpty(attemptWithSessionId.details.Token))
                 {
-                    _config.StoreCharacterSessionId(characterId, CharacterSessionID);
-                    _logger.Debug($"Stored character session ID for character {characterId}: {CharacterSessionID}",
-                        LogCategory.Transport);
+                    RoomSessionStartupDecision invalidDetailsDecision = RoomSessionStartupKernel.FromInvalidRoomDetails(
+                        session.StartupPlan,
+                        "Failed to get room details");
+                    _logger.Debug(invalidDetailsDecision.FormatDiagnosticsLogMessage(), LogCategory.Transport);
+                    return RoomConnectionAttemptResult.Fail(invalidDetailsDecision.FailureOutcome.Failure);
                 }
+
+                RoomSessionStartupDecision acceptedDecision = RoomSessionStartupKernel.AcceptRoomDetails(
+                    session.StartupPlan,
+                    attemptWithSessionId.details);
+                _logger.Debug(acceptedDecision.FormatDiagnosticsLogMessage(), LogCategory.Transport);
+                ApplyRoomDetails(acceptedDecision.AppliedRoomDetailsState);
+                RoomInitializationRecoverySupport.TryPersistCharacterSession(
+                    _sessionPersistence,
+                    _logger,
+                    session.CharacterId,
+                    CharacterSessionID,
+                    acceptedDecision.InitializationOutcome);
 
                 return await ConnectToRoomAndInitialize();
             }
 
-            bool invalidSession = hasSessionId &&
-                                  !string.IsNullOrEmpty(attemptWithSessionId.error) &&
-                                  attemptWithSessionId.error.Contains("Invalid character_session_id");
-            if (invalidSession)
-            {
-                _logger.Warning("Invalid stored character_session_id. Clearing and retrying without session.",
-                    LogCategory.Transport);
-                _config.ClearCharacterSessionId(characterId);
-                roomRequest.CharacterSessionId = null;
+            RoomSessionStartupDecision failureDecision = RoomSessionStartupKernel.FromRequestException(
+                session.StartupPlan,
+                attemptWithSessionId.error);
+            _logger.Debug(failureDecision.FormatDiagnosticsLogMessage(), LogCategory.Transport);
 
-                (bool success, RoomDetails details, string error) attemptWithoutSessionId =
+            if (failureDecision.InitializationOutcome.ShouldRetryWithoutStoredSession)
+            {
+                RoomInitializationRecoverySupport.TryClearStoredSessionForRecovery(
+                    _sessionPersistence,
+                    _logger,
+                    session.CharacterId,
+                    roomRequest,
+                    failureDecision.InitializationOutcome);
+
+                (bool success, RoomDetails details, Exception error) attemptWithoutSessionId =
                     await TryGetRoomDetailsAsync(roomRequest);
                 if (attemptWithoutSessionId.success)
                 {
-                    ApplyRoomDetails(attemptWithoutSessionId.details);
+                    if (attemptWithoutSessionId.details == null ||
+                        string.IsNullOrEmpty(attemptWithoutSessionId.details.Token))
+                    {
+                        RoomSessionStartupDecision invalidDetailsDecision =
+                            RoomSessionStartupKernel.FromInvalidRoomDetails(
+                                session.StartupPlan,
+                                "Failed to get room details");
+                        _logger.Debug(invalidDetailsDecision.FormatDiagnosticsLogMessage(), LogCategory.Transport);
+                        return RoomConnectionAttemptResult.Fail(invalidDetailsDecision.FailureOutcome.Failure);
+                    }
+
+                    RoomSessionStartupDecision retryAcceptedDecision = RoomSessionStartupKernel.AcceptRoomDetails(
+                        session.StartupPlan,
+                        attemptWithoutSessionId.details);
+                    _logger.Debug(retryAcceptedDecision.FormatDiagnosticsLogMessage(), LogCategory.Transport);
+                    ApplyRoomDetails(retryAcceptedDecision.AppliedRoomDetailsState);
+                    RoomInitializationRecoverySupport.TryPersistCharacterSession(
+                        _sessionPersistence,
+                        _logger,
+                        session.CharacterId,
+                        CharacterSessionID,
+                        retryAcceptedDecision.InitializationOutcome);
                     return await ConnectToRoomAndInitialize();
                 }
 
-                _logger.Error($"Error: {attemptWithoutSessionId.error}", LogCategory.Transport);
-                return false;
+                RoomSessionStartupDecision retryFailureDecision = RoomSessionStartupKernel.FromRequestException(
+                    session.StartupPlan,
+                    attemptWithoutSessionId.error);
+                _logger.Debug(retryFailureDecision.FormatDiagnosticsLogMessage(), LogCategory.Transport);
+
+                _logger.Error($"Error: {attemptWithoutSessionId.error.Message}", LogCategory.Transport);
+                return RoomConnectionAttemptResult.Fail(retryFailureDecision.FailureOutcome.Failure);
             }
 
-            _logger.Error($"Error: {attemptWithSessionId.error}", LogCategory.Transport);
-            return false;
+            _logger.Error($"Error: {attemptWithSessionId.error.Message}", LogCategory.Transport);
+            return RoomConnectionAttemptResult.Fail(failureDecision.FailureOutcome.Failure);
         }
 
-        private async Task<(bool success, RoomDetails details, string error)> TryGetRoomDetailsAsync(
+        private async Task<(bool success, RoomDetails details, Exception error)> TryGetRoomDetailsAsync(
             RoomConnectionRequest roomRequest)
         {
             try
             {
-                var options = new ConvaiRestClientOptions(_config.ApiKey);
+                // Capture the resolved credential to avoid repeated provider resolution.
+                string credential = _transportConfiguration.ApiKey;
+                bool usesAuthToken = TransportAuthenticationSupport.UsesAuthToken(_transportConfiguration);
+                var options = ConvaiRestOptionsFactory.CreateForRuntimeCredential(credential, usesAuthToken);
                 using var client = new ConvaiRestClient(options);
                 RoomDetails details = await client.Rooms.ConnectAsync(roomRequest).ConfigureAwait(false);
                 return (true, details, null);
             }
-            catch (Exception ex)
+            catch (ConvaiRestException ex)
             {
-                return (false, null, ex.Message);
-            }
-        }
-
-        private async Task<RoomEmotionConfig> ResolveEmotionConfigAsync(
-            string characterId,
-            CancellationToken cancellationToken)
-        {
-            try
-            {
-                var options = new ConvaiRestClientOptions(_config.ApiKey);
-                using var client = new ConvaiRestClient(options);
-                CharacterDetails details = await client.Characters
-                    .GetDetailsAsync(characterId, cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (details != null && details.TryGetConnectEmotionConfig(out RoomEmotionConfig emotionConfig))
-                {
-                    _logger.Debug(
-                        $"Emotion config enabled for character {characterId} with provider: {emotionConfig.Provider}",
-                        LogCategory.Transport);
-                    return emotionConfig;
-                }
-
-                _logger.Debug($"Emotion config disabled for character {characterId}", LogCategory.Transport);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
+                return (false, null,
+                    new RoomInitializationFetchException(
+                        ex.Message,
+                        ex.Message,
+                        ex.StatusCodeInt,
+                        ex.ResponseBody,
+                        ex));
             }
             catch (Exception ex)
             {
-                _logger.Warning(
-                    $"Failed to resolve emotion config for character {characterId}: {ex.Message}. Continuing without emotion_config.",
-                    LogCategory.Transport);
+                return (false, null, ex);
             }
-
-            return null;
         }
 
-        private void ApplyRoomDetails(RoomDetails roomDetails)
-        {
-            string result = JsonConvert.SerializeObject(roomDetails);
-            _logger.Debug($"Room details received: {result}", LogCategory.Transport);
-            Token = roomDetails.Token;
-            RoomName = roomDetails.RoomName;
-            SessionID = roomDetails.SessionId;
-            RoomURL = roomDetails.RoomURL;
-            CharacterSessionID = roomDetails.CharacterSessionId;
-            ResolvedSpeakerId = roomDetails.SpeakerId;
-            _logger.Debug(
-                $"Token: {Token}; Room Name: {RoomName}; Room URL: {RoomURL}; Session ID: {SessionID}; Character Session ID: {CharacterSessionID}; Resolved Speaker ID: {ResolvedSpeakerId}",
-                LogCategory.Transport);
-        }
+        private void ApplyRoomDetails(in AppliedRoomDetailsState roomDetailsState) =>
+            RoomDetailsStateApplier.Apply(this, roomDetailsState, _logger);
 
         /// <summary>
         ///     Connects to the LiveKit room and initializes the RTVI handler.
         /// </summary>
-        private async Task<bool> ConnectToRoomAndInitialize()
+        private async Task<RoomConnectionAttemptResult> ConnectToRoomAndInitialize()
         {
-            bool roomConnected = await ConnectToRoom();
-            if (roomConnected)
-            {
-                _logger.Debug("Connected to Convai and LiveKit room successfully", LogCategory.Transport);
+            PreparedRtviHandlerDependencies rtviHandlerDependencies =
+                RoomTransportConnectSupport.PrepareRtviHandlerDependencies(
+                    _protocolGateway,
+                    _transport,
+                    _agentRegistry,
+                    _playerSession,
+                    _dispatcher,
+                    _logger,
+                    _eventHub,
+                    _sectionNameResolver,
+                    _transportConfiguration.LipSyncTransportOptions);
 
-                RTVIHandler = new RTVIHandler(_protocolGateway, _transport, _characterRegistry, _playerSession,
-                    _dispatcher, _logger, _eventHub, _sectionNameResolver, _config.LipSyncTransportOptions);
-                return true;
+            RTVIHandler = rtviHandlerDependencies.CreateHandler();
+
+            TransportConnectOutcome roomConnected = await ConnectToRoom();
+            if (!roomConnected.Connected)
+            {
+                RTVIHandler = null;
+                return RoomConnectionAttemptResult.Fail(ConnectionFailure.Create(
+                    SessionErrorCodes.TransportLivekitError,
+                    roomConnected.FailureMessage,
+                    SessionErrorStage.Transport,
+                    true));
             }
 
-            return false;
+            _logger.Debug("Connected to Convai and LiveKit room successfully", LogCategory.Transport);
+            return RoomConnectionAttemptResult.Success();
         }
 
-        private async Task<bool> ConnectToRoom()
+        private async Task<TransportConnectOutcome> ConnectToRoom()
         {
             _logger.Debug("Connecting to Room...", LogCategory.Transport);
 
@@ -652,32 +817,39 @@ namespace Convai.Infrastructure.Networking.Native
         /// <summary>
         ///     Connects to room using the IRealtimeTransport abstraction layer.
         /// </summary>
-        private async Task<bool> ConnectToRoomViaTransport()
+        private async Task<TransportConnectOutcome> ConnectToRoomViaTransport()
         {
             _logger.Debug("Connecting to Room via Transport abstraction...", LogCategory.Transport);
 
             try
             {
+                _pendingTransportAudioSubscriptions.Clear();
                 var transportOptions = new TransportConnectOptions { AutoSubscribe = true };
 
                 bool connected = await _transport.ConnectAsync(RoomURL, Token, transportOptions);
+                TransportConnectOutcome connectOutcome = RoomTransportConnectSupport.FromConnectResult(
+                    connected,
+                    "Failed to connect via transport: Connection returned false");
 
-                if (connected)
+                if (connectOutcome.Connected)
                 {
-                    RefreshRoomFacadeAudioBridge();
+                    _eventBridge.RefreshRoomFacadeAudioBridge();
                     _logger.Debug("Connected to room (via transport): " + RoomName, LogCategory.Transport);
                     _logger.Debug("Session ID: " + SessionID, LogCategory.Transport);
                     _logger.Debug($"Transport state: {_transport.State}", LogCategory.Transport);
-                    return true;
+                    return connectOutcome;
                 }
 
-                _logger.Error("Failed to connect via transport: Connection returned false", LogCategory.Transport);
-                return false;
+                _logger.Error(connectOutcome.FailureLogMessage, LogCategory.Transport);
+                return connectOutcome;
             }
             catch (Exception ex)
             {
-                _logger.Error($"Failed to connect via transport: {ex.Message}", LogCategory.Transport);
-                return false;
+                TransportConnectOutcome connectOutcome = RoomTransportConnectSupport.FromException(
+                    ex,
+                    "Failed to connect via transport");
+                _logger.Error(connectOutcome.FailureLogMessage, LogCategory.Transport);
+                return connectOutcome;
             }
         }
 
@@ -688,7 +860,7 @@ namespace Convai.Infrastructure.Networking.Native
         {
             _logger.Debug("Disconnecting via Transport...", LogCategory.Transport);
 
-            DetachRoomFacadeAudioBridge();
+            _eventBridge.DetachRoomFacadeAudioBridge();
 
             await _transport.DisconnectAsync(DisconnectReason.ClientInitiated, cancellationToken);
         }
@@ -703,30 +875,33 @@ namespace Convai.Infrastructure.Networking.Native
             SessionID = null;
             CharacterSessionID = null;
             ResolvedSpeakerId = null;
+            RequestTraceId = null;
+            ResolvedEndUserId = null;
+            ResolvedEndUserMetadata = null;
             HasRoomDetails = false;
             IsConnectedToRoom = false;
             IsMicMuted = false;
             _playerSession.SetMicMuted(false);
-            _characterRegistry.Clear();
+            _agentRegistry.ClearTransportBindings();
         }
 
         private void HandleUnsolicitedDisconnectCleanup(string pathLabel)
         {
-            _logger.Debug($"[NativeRoomController] Running unsolicited disconnect cleanup via {pathLabel}",
+            _logger.Debug($"Running unsolicited disconnect cleanup via {pathLabel}",
                 LogCategory.Transport);
             ResetControllerOwnedDisconnectState();
             OnUnexpectedRoomDisconnected?.Invoke();
         }
 
-        private string ResolveParticipantIdentity(string characterId, ref CharacterDescriptor descriptor)
+        private string ResolveParticipantIdentity(string characterId)
         {
             string participantIdentity = characterId;
-            if (!_characterRegistry.TryGetCharacter(characterId, out descriptor) ||
-                string.IsNullOrEmpty(descriptor.ParticipantId)) return participantIdentity;
+            if (!_agentRegistry.TryGetParticipantId(characterId, out string participantId) ||
+                string.IsNullOrEmpty(participantId)) return participantIdentity;
 
             IRoomFacade currentRoom = CurrentRoom;
             if (currentRoom != null &&
-                currentRoom.TryGetParticipantBySid(descriptor.ParticipantId, out IRemoteParticipant participant) &&
+                currentRoom.TryGetParticipantBySid(participantId, out IRemoteParticipant participant) &&
                 !string.IsNullOrEmpty(participant.Identity))
                 participantIdentity = participant.Identity;
 
@@ -742,51 +917,75 @@ namespace Convai.Infrastructure.Networking.Native
         private string ResolveCharacterIdFromParticipant(string participantSid, string participantIdentity = null)
         {
             if (!string.IsNullOrEmpty(participantSid) &&
-                _characterRegistry.TryGetCharacterByParticipantId(participantSid,
-                    out CharacterDescriptor byParticipant))
+                _agentRegistry.TryGetCharacterByParticipantId(participantSid, out IConvaiCharacterAgent byParticipant))
                 return byParticipant.CharacterId;
 
             if (!string.IsNullOrEmpty(participantIdentity) &&
-                _characterRegistry.TryGetCharacter(participantIdentity, out CharacterDescriptor byIdentity))
+                _agentRegistry.TryGetCharacter(participantIdentity, out IConvaiCharacterAgent byIdentity))
                 return byIdentity.CharacterId;
 
-            IReadOnlyList<CharacterDescriptor> allCharacters = _characterRegistry.GetAllCharacters();
+            IReadOnlyList<IConvaiCharacterAgent> allCharacters = _agentRegistry.Characters;
             return allCharacters != null && allCharacters.Count == 1 ? allCharacters[0].CharacterId : null;
         }
 
-        private void RefreshRoomFacadeAudioBridge()
+        private void RefreshRoomFacadeAudioBridgeCore()
         {
             IRoomFacade currentRoom = CurrentRoom;
-            if (ReferenceEquals(_subscribedRoomFacade, currentRoom)) return;
+            if (ReferenceEquals(_subscribedRoomFacade, currentRoom))
+            {
+                ReconcilePendingTransportAudioSubscriptionsCore();
+                return;
+            }
 
-            DetachRoomFacadeAudioBridge();
+            bool hadSubscribedRoomFacade = _subscribedRoomFacade != null;
+            DetachRoomFacadeAudioBridgeCore(clearPendingSubscriptions: hadSubscribedRoomFacade);
             if (currentRoom == null) return;
 
-            currentRoom.AudioTrackSubscribed += OnRoomFacadeAudioTrackSubscribed;
+            currentRoom.AudioTrackSubscribed += _eventBridge.HandleRoomFacadeAudioTrackSubscribed;
             _subscribedRoomFacade = currentRoom;
+            ReconcilePendingTransportAudioSubscriptionsCore();
         }
 
-        private void DetachRoomFacadeAudioBridge()
+        private void DetachRoomFacadeAudioBridgeCore(bool clearPendingSubscriptions = true)
         {
             if (_subscribedRoomFacade != null)
-                _subscribedRoomFacade.AudioTrackSubscribed -= OnRoomFacadeAudioTrackSubscribed;
+                _subscribedRoomFacade.AudioTrackSubscribed -= _eventBridge.HandleRoomFacadeAudioTrackSubscribed;
 
             _subscribedRoomFacade = null;
-            _pendingTransportAudioSubscriptions.Clear();
+            if (clearPendingSubscriptions)
+                _pendingTransportAudioSubscriptions.Clear();
         }
 
-        private bool QueuePendingTransportAudioSubscription(TransportTrackInfo track)
+        private bool QueuePendingTransportAudioSubscriptionCore(TransportTrackInfo track)
         {
             if (string.IsNullOrEmpty(track.TrackSid)) return false;
-
-            RefreshRoomFacadeAudioBridge();
-            if (_subscribedRoomFacade == null) return false;
 
             _pendingTransportAudioSubscriptions[track.TrackSid] = track;
             return true;
         }
 
-        private void OnRoomFacadeAudioTrackSubscribed(IRemoteAudioTrack audioTrack, IRemoteParticipant participant)
+        private void ReconcilePendingTransportAudioSubscriptionsCore()
+        {
+            if (_pendingTransportAudioSubscriptions.Count == 0) return;
+
+            foreach (TransportTrackInfo track in _pendingTransportAudioSubscriptions.Values.ToArray())
+            {
+                if (track.Kind != TransportTrackKind.Audio) continue;
+
+                if (!TryResolveTransportRemoteAudioTrack(track.ParticipantIdentity, track.ParticipantId, track.TrackSid,
+                        out IRemoteParticipant participant, out IRemoteAudioTrack audioTrack))
+                    continue;
+
+                _pendingTransportAudioSubscriptions.Remove(track.TrackSid);
+                string participantIdentity = track.ParticipantIdentity ?? participant.Identity;
+                bool shouldSubscribe = _audioSubscriptionPolicy?.Invoke(participantIdentity) ?? true;
+                HandleResolvedTransportAudioSubscription(track, participant, audioTrack, shouldSubscribe,
+                    "pending-transport");
+            }
+        }
+
+        private void HandleRoomFacadeAudioTrackSubscribedCore(IRemoteAudioTrack audioTrack,
+            IRemoteParticipant participant)
         {
             if (audioTrack == null || participant == null || string.IsNullOrEmpty(audioTrack.Sid)) return;
             if (!_pendingTransportAudioSubscriptions.TryGetValue(audioTrack.Sid, out TransportTrackInfo track)) return;
@@ -816,7 +1015,7 @@ namespace Convai.Infrastructure.Networking.Native
             if (!shouldSubscribe)
             {
                 _logger.Debug(
-                    $"[NativeRoomController] Remote audio disabled for participant: {participantIdentity}; disabling audio track via {resolutionPath} resolution seam.",
+                    $"Remote audio disabled for participant: {participantIdentity}; disabling audio track via {resolutionPath} resolution seam.",
                     LogCategory.Audio);
 
                 if (audioTrack is IRemoteAudioControlTrack controllableTrack)
@@ -826,9 +1025,15 @@ namespace Convai.Infrastructure.Networking.Native
             }
 
             _logger.Debug(
-                $"[NativeRoomController] Audio track detected via {resolutionPath}: Name={track.Name}, Sid={track.TrackSid}",
+                $"Audio track detected via {resolutionPath}: Name={track.Name}, Sid={track.TrackSid}",
                 LogCategory.Audio);
-            OnRemoteAudioTrackSubscribed?.Invoke(audioTrack, participantSid, characterId);
+            RemoteTrackSessionNotificationSupport.NotifyAudioTrackSubscribed(
+                OnRemoteAudioTrackSubscribed,
+                audioTrack,
+                participantSid,
+                characterId,
+                _logger,
+                nameof(NativeRoomController));
         }
 
         private IRemoteAudioControl CreateRemoteAudioControl() => new RoomFacadeRemoteAudioControl(this);
@@ -840,20 +1045,53 @@ namespace Convai.Infrastructure.Networking.Native
             _logger.Error($"Transport connection failed: {error.Message}", LogCategory.Transport);
 
         private void HandleDataPacketReceived(DataPacket packet)
-        {
-            ProtocolPacket protocolPacket = new(packet.Payload, packet.ParticipantId, packet.Topic,
-                packet.Kind == DataPacketKind.Reliable);
-            // Fast-path: intercept LipSync packets before JSON deserialization in the gateway.
-            if (RTVIHandler != null && RTVIHandler.TryHandleLipSyncServerMessage(in protocolPacket)) return;
+            => ProtocolPacketDispatchSupport.DispatchIncoming(packet, _protocolGateway, RTVIHandler);
 
-            _protocolGateway.ProcessIncoming(protocolPacket);
+        private sealed class NativeRoomConnectionSession
+        {
+            public NativeRoomConnectionSession(RoomSessionStartupPlan startupPlan, string characterId)
+            {
+                StartupPlan = startupPlan;
+                CharacterId = characterId ?? string.Empty;
+            }
+
+            public RoomSessionStartupPlan StartupPlan { get; }
+            public string CharacterId { get; }
+            public RoomConnectionRequest Request => StartupPlan.Request;
+        }
+
+        private sealed class NativeRoomEventBridge
+        {
+            private readonly NativeRoomController _owner;
+
+            public NativeRoomEventBridge(NativeRoomController owner)
+            {
+                _owner = owner ?? throw new ArgumentNullException(nameof(owner));
+            }
+
+            public void RefreshRoomFacadeAudioBridge() => _owner.RefreshRoomFacadeAudioBridgeCore();
+
+            public void DetachRoomFacadeAudioBridge() => _owner.DetachRoomFacadeAudioBridgeCore();
+
+            public bool QueuePendingTransportAudioSubscription(TransportTrackInfo track) =>
+                _owner.QueuePendingTransportAudioSubscriptionCore(track);
+
+            public void HandleRoomFacadeAudioTrackSubscribed(IRemoteAudioTrack audioTrack,
+                IRemoteParticipant participant) =>
+                _owner.HandleRoomFacadeAudioTrackSubscribedCore(audioTrack, participant);
+
+            public void HandleTransportTrackSubscribed(TransportTrackInfo track) =>
+                _owner.HandleTransportTrackSubscribedCore(track);
+
+            public void HandleTransportTrackUnsubscribed(TransportTrackInfo track) =>
+                _owner.HandleTransportTrackUnsubscribedCore(track);
         }
 
         #region Transport Event Handlers
 
         private void HandleTransportDisconnected(DisconnectReason reason)
         {
-            _logger.Debug($"[NativeRoomController] Transport disconnected with reason: {reason}",
+            _logger.Debug($"Transport disconnected with reason: {reason}",
                 LogCategory.Transport);
 
             if (reason == DisconnectReason.ClientInitiated) return;
@@ -867,50 +1105,61 @@ namespace Convai.Infrastructure.Networking.Native
             _logger.Debug($"Participant SID: {participant.ParticipantId}", LogCategory.Transport);
 
             bool matchedRegistry =
-                _characterRegistry.TryGetCharacter(participant.Identity, out CharacterDescriptor descriptor);
+                _agentRegistry.TryGetCharacter(participant.Identity, out IConvaiCharacterAgent agent);
+            string characterId;
             if (!matchedRegistry)
             {
-                IReadOnlyList<CharacterDescriptor> allCharacters = _characterRegistry.GetAllCharacters();
+                IReadOnlyList<IConvaiCharacterAgent> allCharacters = _agentRegistry.Characters;
                 if (allCharacters.Count == 0)
                 {
                     _logger.Debug("Cannot map participant: No Characters in registry", LogCategory.Character);
                     return;
                 }
 
-                descriptor = allCharacters[0];
+                agent = allCharacters[0];
+                characterId = agent.CharacterId;
                 _logger.Debug(
-                    $"No Character matched identity '{participant.Identity}'. Using default Character: {descriptor.CharacterId}",
+                    $"No Character matched identity '{participant.Identity}'. Using default Character: {characterId}",
                     LogCategory.Character);
             }
+            else
+                characterId = agent.CharacterId;
 
-            CharacterDescriptor updated = descriptor.WithParticipantId(participant.ParticipantId);
-            _characterRegistry.RegisterCharacter(updated);
+            _agentRegistry.SetParticipantId(characterId, participant.ParticipantId);
             _logger.Debug(
-                $"Mapped participant {participant.Identity} (SID: {participant.ParticipantId}) to Character: {updated.CharacterId}",
+                $"Mapped participant {participant.Identity} (SID: {participant.ParticipantId}) to Character: {characterId}",
                 LogCategory.Character);
 
-            PublishParticipantConnectedEvent(participant.ParticipantId, participant.Identity, participant.Identity);
+            ParticipantEventPublicationSupport.PublishConnected(
+                _eventHub,
+                _logger,
+                ParticipantInfo.ForCharacter(participant.ParticipantId, participant.Identity, participant.Identity),
+                nameof(NativeRoomController));
         }
 
         private void OnTransportParticipantDisconnected(TransportParticipantInfo participant)
         {
             _logger.Debug($"Participant disconnected (via transport): {participant.Identity}", LogCategory.Transport);
 
-            if (_characterRegistry.TryGetCharacterByParticipantId(participant.ParticipantId,
-                    out CharacterDescriptor descriptor))
+            if (_agentRegistry.TryGetCharacterByParticipantId(participant.ParticipantId,
+                    out IConvaiCharacterAgent agent))
             {
-                _characterRegistry.RegisterCharacter(descriptor.WithParticipantId(string.Empty));
-                _logger.Debug($"Cleared participant mapping for Character: {descriptor.CharacterId}",
+                _agentRegistry.SetParticipantId(agent.CharacterId, null);
+                _logger.Debug($"Cleared participant mapping for Character: {agent.CharacterId}",
                     LogCategory.Character);
             }
 
-            PublishParticipantDisconnectedEvent(participant.ParticipantId, participant.Identity, participant.Identity);
+            ParticipantEventPublicationSupport.PublishDisconnected(
+                _eventHub,
+                _logger,
+                ParticipantInfo.ForCharacter(participant.ParticipantId, participant.Identity, participant.Identity),
+                nameof(NativeRoomController));
         }
 
-        private void OnTransportTrackSubscribed(TransportTrackInfo track)
+        private void HandleTransportTrackSubscribedCore(TransportTrackInfo track)
         {
             _logger.Debug(
-                $"[NativeRoomController] Track subscribed (via transport): {track.Name} from participant: {track.ParticipantIdentity}",
+                $"Track subscribed (via transport): {track.Name} from participant: {track.ParticipantIdentity}",
                 LogCategory.Transport);
 
             if (track.Kind == TransportTrackKind.Audio)
@@ -920,16 +1169,16 @@ namespace Convai.Infrastructure.Networking.Native
                 if (!TryResolveTransportRemoteAudioTrack(track.ParticipantIdentity, track.ParticipantId, track.TrackSid,
                         out IRemoteParticipant participant, out IRemoteAudioTrack audioTrack))
                 {
-                    if (QueuePendingTransportAudioSubscription(track))
+                    if (_eventBridge.QueuePendingTransportAudioSubscription(track))
                     {
                         _logger.Debug(
-                            $"[NativeRoomController] Transport audio track not yet available in room facade; awaiting track wrapper for participant: {track.ParticipantIdentity} ({track.ParticipantId})",
+                            $"Transport audio track not yet available in room facade; awaiting track wrapper for participant: {track.ParticipantIdentity} ({track.ParticipantId})",
                             LogCategory.Audio);
                         return;
                     }
 
                     _logger.Debug(
-                        $"[NativeRoomController] Unable to resolve transport audio track for participant: {track.ParticipantIdentity} ({track.ParticipantId})",
+                        $"Unable to resolve transport audio track for participant: {track.ParticipantIdentity} ({track.ParticipantId})",
                         LogCategory.Audio);
                     return;
                 }
@@ -938,7 +1187,7 @@ namespace Convai.Infrastructure.Networking.Native
             }
         }
 
-        private void OnTransportTrackUnsubscribed(TransportTrackInfo track)
+        private void HandleTransportTrackUnsubscribedCore(TransportTrackInfo track)
         {
             _logger.Debug(
                 $"Track unsubscribed (via transport): {track.Name} from participant: {track.ParticipantIdentity}",
@@ -951,7 +1200,12 @@ namespace Convai.Infrastructure.Networking.Native
 
                 _logger.Debug($"Audio track unsubscribed for participant: {track.ParticipantIdentity}",
                     LogCategory.Audio);
-                OnRemoteAudioTrackUnsubscribed?.Invoke(track.ParticipantId, null);
+                RemoteTrackSessionNotificationSupport.NotifyAudioTrackUnsubscribed(
+                    OnRemoteAudioTrackUnsubscribed,
+                    track.ParticipantId,
+                    null,
+                    _logger,
+                    nameof(NativeRoomController));
             }
         }
 
@@ -990,96 +1244,15 @@ namespace Convai.Infrastructure.Networking.Native
 
         private void HandleTransportReconnecting()
         {
-            _logger.Debug("[NativeRoomController] Room reconnecting (via transport)", LogCategory.Transport);
+            _logger.Debug("Room reconnecting (via transport)", LogCategory.Transport);
             OnRoomReconnecting?.Invoke();
         }
 
         private void HandleTransportReconnected()
         {
-            RefreshRoomFacadeAudioBridge();
-            _logger.Debug("[NativeRoomController] Room reconnected (via transport)", LogCategory.Transport);
+            _eventBridge.RefreshRoomFacadeAudioBridge();
+            _logger.Debug("Room reconnected (via transport)", LogCategory.Transport);
             OnRoomReconnected?.Invoke();
-        }
-
-        #endregion
-
-        #region Session Management
-
-        /// <summary>Gets the stored session identifier for the given character, if available.</summary>
-        /// <param name="characterId">Character identifier.</param>
-        /// <returns>Stored session identifier, or null if not set.</returns>
-        public string GetStoredSessionId(string characterId) => _config?.GetCharacterSessionId(characterId);
-
-        /// <summary>Clears the stored session identifier for the given character.</summary>
-        /// <param name="characterId">Character identifier.</param>
-        public void ClearStoredSessionId(string characterId)
-        {
-            _config?.ClearCharacterSessionId(characterId);
-            _logger.Debug($"Cleared stored session ID for character: {characterId}", LogCategory.Transport);
-        }
-
-        /// <summary>Clears all stored character session identifiers.</summary>
-        public void ClearAllStoredSessionIds()
-        {
-            _config?.ClearAllCharacterSessionIds();
-            _logger.Debug("Cleared all stored session IDs", LogCategory.Transport);
-        }
-
-        /// <summary>Gets the current character session identifier for the active room connection.</summary>
-        /// <returns>Character session identifier.</returns>
-        public string GetCurrentCharacterSessionId() => CharacterSessionID;
-
-        #endregion
-
-        #region SDK Event Bridge (Domain Events)
-
-        /// <summary>
-        ///     Publishes a <see cref="Domain.DomainEvents.Participant.ParticipantConnected" /> event via EventHub.
-        /// </summary>
-        private void PublishParticipantConnectedEvent(string participantId, string identity, string displayName)
-        {
-            if (_eventHub == null)
-            {
-                _logger?.Debug("[NativeRoomController] EventHub unavailable; skipping ParticipantConnected event.");
-                return;
-            }
-
-            try
-            {
-                ParticipantConnected evt = ParticipantConnected.ForCharacter(participantId, identity, displayName);
-                _eventHub.Publish(evt);
-                _logger?.Debug(
-                    $"[NativeRoomController] Published ParticipantConnected via EventHub: {displayName} ({participantId})");
-            }
-            catch (Exception ex)
-            {
-                _logger?.Debug($"[NativeRoomController] Failed to publish ParticipantConnected event: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        ///     Publishes a <see cref="Domain.DomainEvents.Participant.ParticipantDisconnected" /> event via EventHub.
-        /// </summary>
-        private void PublishParticipantDisconnectedEvent(string participantId, string identity, string displayName)
-        {
-            if (_eventHub == null)
-            {
-                _logger?.Debug("[NativeRoomController] EventHub unavailable; skipping ParticipantDisconnected event.");
-                return;
-            }
-
-            try
-            {
-                ParticipantDisconnected
-                    evt = ParticipantDisconnected.ForCharacter(participantId, identity, displayName);
-                _eventHub.Publish(evt);
-                _logger?.Debug(
-                    $"[NativeRoomController] Published ParticipantDisconnected via EventHub: {displayName} ({participantId})");
-            }
-            catch (Exception ex)
-            {
-                _logger?.Debug($"[NativeRoomController] Failed to publish ParticipantDisconnected event: {ex.Message}");
-            }
         }
 
         #endregion
@@ -1090,8 +1263,7 @@ namespace Convai.Infrastructure.Networking.Native
         {
             public string PathName { get; }
 
-            public bool Apply(string characterId, string participantIdentity, string participantSid, bool enabled,
-                CharacterDescriptor descriptor);
+            public bool Apply(string characterId, string participantIdentity, string participantSid, bool enabled);
         }
 
         private sealed class RoomFacadeRemoteAudioControl : IRemoteAudioControl
@@ -1105,8 +1277,7 @@ namespace Convai.Infrastructure.Networking.Native
 
             public string PathName => "room-facade";
 
-            public bool Apply(string characterId, string participantIdentity, string participantSid, bool enabled,
-                CharacterDescriptor descriptor)
+            public bool Apply(string characterId, string participantIdentity, string participantSid, bool enabled)
             {
                 if (!_owner.TryResolveTransportRemoteAudioTrack(participantIdentity, participantSid, null,
                         out IRemoteParticipant participant, out IRemoteAudioTrack audioTrack) ||
@@ -1114,7 +1285,7 @@ namespace Convai.Infrastructure.Networking.Native
                     return false;
 
                 _owner._logger.Debug(
-                    $"[NativeRoomController] {(enabled ? "Enabling" : "Disabling")} remote audio for character: {characterId} via room facade control seam.",
+                    $"{(enabled ? "Enabling" : "Disabling")} remote audio for character: {characterId} via room facade control seam.",
                     LogCategory.Audio);
 
                 controllableTrack.SetRemoteAudioEnabled(enabled);
@@ -1127,9 +1298,24 @@ namespace Convai.Infrastructure.Networking.Native
                     : participantIdentity;
 
                 if (enabled)
-                    _owner.OnRemoteAudioTrackSubscribed?.Invoke(audioTrack, resolvedParticipantSid, characterId);
+                {
+                    RemoteTrackSessionNotificationSupport.NotifyAudioTrackSubscribed(
+                        _owner.OnRemoteAudioTrackSubscribed,
+                        audioTrack,
+                        resolvedParticipantSid,
+                        characterId,
+                        _owner._logger,
+                        nameof(NativeRoomController));
+                }
                 else if (!string.IsNullOrEmpty(resolvedParticipantSid))
-                    _owner.OnRemoteAudioTrackUnsubscribed?.Invoke(resolvedParticipantSid, characterId);
+                {
+                    RemoteTrackSessionNotificationSupport.NotifyAudioTrackUnsubscribed(
+                        _owner.OnRemoteAudioTrackUnsubscribed,
+                        resolvedParticipantSid,
+                        characterId,
+                        _owner._logger,
+                        nameof(NativeRoomController));
+                }
 
                 return true;
             }

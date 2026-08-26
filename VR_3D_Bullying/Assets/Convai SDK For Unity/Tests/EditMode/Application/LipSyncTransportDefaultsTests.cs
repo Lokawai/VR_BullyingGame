@@ -32,7 +32,7 @@ namespace Convai.Tests.EditMode.Application
         public void TryBuildForProfile_WithUnknownProfile_ReturnsFalseAndDisabledOptions()
         {
             // Arrange
-            LipSyncProfileCatalog.SetRegistryOverridesForTests(null, new ConvaiLipSyncProfileRegistryAsset[0]);
+            LipSyncProfileCatalog.SetRegistryOverridesForTests(null, new ConvaiLipSyncProfileRegistry[0]);
 
             // Act
             bool built = LipSyncTransportDefaults.TryBuildForProfile(
@@ -49,12 +49,12 @@ namespace Convai.Tests.EditMode.Application
         public void TryBuildForProfile_WithKnownBuiltInProfile_UsesCanonicalSourceChannelOrder()
         {
             // Arrange
-            ConvaiLipSyncProfileRegistryAsset builtInRegistry = Track(CreateRegistry(
+            ConvaiLipSyncProfileRegistry builtInRegistry = Track(CreateRegistry(
                 "BuiltIn",
                 0,
                 CreateProfile(LipSyncProfileId.ARKitValue, "arkit")));
             LipSyncProfileCatalog.SetRegistryOverridesForTests(builtInRegistry,
-                new ConvaiLipSyncProfileRegistryAsset[0]);
+                new ConvaiLipSyncProfileRegistry[0]);
 
             // Act
             bool built = LipSyncTransportDefaults.TryBuildForProfile(
@@ -71,12 +71,12 @@ namespace Convai.Tests.EditMode.Application
         public void TryBuildForProfile_WithValidProfile_ProducesValidEnabledContract()
         {
             // Arrange
-            ConvaiLipSyncProfileRegistryAsset builtInRegistry = Track(CreateRegistry(
+            ConvaiLipSyncProfileRegistry builtInRegistry = Track(CreateRegistry(
                 "BuiltIn",
                 0,
                 CreateProfile(LipSyncProfileId.MetaHumanValue, "mha")));
             LipSyncProfileCatalog.SetRegistryOverridesForTests(builtInRegistry,
-                new ConvaiLipSyncProfileRegistryAsset[0]);
+                new ConvaiLipSyncProfileRegistry[0]);
 
             // Act
             bool built = LipSyncTransportDefaults.TryBuildForProfile(
@@ -89,12 +89,38 @@ namespace Convai.Tests.EditMode.Application
             Assert.IsTrue(options.IsValid);
             Assert.IsTrue(options.EnableChunking);
             Assert.AreEqual(60, options.OutputFps);
+            Assert.IsFalse(options.DeliverChunksAhead);
         }
 
-        private ConvaiLipSyncProfileRegistryAsset CreateRegistry(string name, int priority,
-            params ConvaiLipSyncProfileAsset[] profiles)
+        [Test]
+        public void TryBuildForProfile_WhenAheadDeliveryRequested_ProducesAheadContract()
         {
-            var registry = ScriptableObject.CreateInstance<ConvaiLipSyncProfileRegistryAsset>();
+            // Arrange
+            ConvaiLipSyncProfileRegistry builtInRegistry = Track(CreateRegistry(
+                "BuiltIn",
+                0,
+                CreateProfile(LipSyncProfileId.MetaHumanValue, "mha")));
+            LipSyncProfileCatalog.SetRegistryOverridesForTests(builtInRegistry,
+                new ConvaiLipSyncProfileRegistry[0]);
+
+            // Act
+            bool built = LipSyncTransportDefaults.TryBuildForProfile(
+                LipSyncProfileId.MetaHuman,
+                new[] { "jawOpen" },
+                out LipSyncTransportOptions options,
+                deliverChunksAhead: true);
+
+            // Assert
+            Assert.IsTrue(built);
+            Assert.IsTrue(options.IsValid);
+            Assert.IsTrue(options.DeliverChunksAhead);
+            Assert.AreEqual(60, options.OutputFps);
+        }
+
+        private ConvaiLipSyncProfileRegistry CreateRegistry(string name, int priority,
+            params ConvaiLipSyncProfile[] profiles)
+        {
+            var registry = ScriptableObject.CreateInstance<ConvaiLipSyncProfileRegistry>();
             registry.name = name;
             Track(registry);
 
@@ -108,9 +134,9 @@ namespace Convai.Tests.EditMode.Application
             return registry;
         }
 
-        private ConvaiLipSyncProfileAsset CreateProfile(string id, string format)
+        private ConvaiLipSyncProfile CreateProfile(string id, string format)
         {
-            var profile = ScriptableObject.CreateInstance<ConvaiLipSyncProfileAsset>();
+            var profile = ScriptableObject.CreateInstance<ConvaiLipSyncProfile>();
             Track(profile);
             SerializedObject serialized = new(profile);
             serialized.FindProperty("_profileId").stringValue = id;

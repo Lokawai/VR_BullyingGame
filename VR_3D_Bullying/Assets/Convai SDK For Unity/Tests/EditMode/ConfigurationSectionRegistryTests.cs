@@ -25,9 +25,34 @@ namespace Convai.Tests.EditMode
 
             Assert.That(sectionIds.Contains("welcome"));
             Assert.That(sectionIds.Contains("account"));
-            Assert.That(sectionIds.Contains("logger-setting"));
+            Assert.That(sectionIds.Contains("settings"));
+            Assert.That(sectionIds.Contains("ai-coding"));
+            Assert.That(sectionIds.Contains("config-assets"));
             Assert.That(sectionIds.Contains("ltm"));
             Assert.That(sectionIds.Contains("contact-us"));
+        }
+
+        [Test]
+        public void CoreDashboardSections_FollowConvaiMenuOrder()
+        {
+            string[] expectedOrder =
+            {
+                "welcome",
+                "account",
+                "settings",
+                "ai-coding",
+                "config-assets",
+                "ltm",
+                "contact-us"
+            };
+
+            HashSet<string> coreSectionIds = expectedOrder.ToHashSet();
+            string[] actualOrder = ConfigurationSectionRegistry.GetEnabledSections()
+                .Where(section => coreSectionIds.Contains(section.SectionId))
+                .Select(section => section.SectionId)
+                .ToArray();
+
+            CollectionAssert.AreEqual(expectedOrder, actualOrder);
         }
 
         [Test]

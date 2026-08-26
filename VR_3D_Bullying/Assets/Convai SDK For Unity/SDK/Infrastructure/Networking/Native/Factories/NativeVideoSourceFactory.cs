@@ -18,17 +18,9 @@ namespace Convai.Infrastructure.Networking.Native
         /// <inheritdoc />
         public IVideoSource CreateFromCamera(Camera camera, int width, int height, string name = null)
         {
-            // Create a RenderTexture for the camera
-            var renderTexture = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32)
-            {
-                name = $"CameraCapture_{camera.name}"
-            };
-            renderTexture.Create();
-
-            // Assign the render texture to the camera
-            camera.targetTexture = renderTexture;
-
-            return new NativeTextureVideoSource(renderTexture, DefaultFrameRate, name ?? camera.name);
+            throw new NotSupportedException(
+                "Direct native camera video sources are not supported because they assign Camera.targetTexture without capture lifecycle ownership. " +
+                "Use CameraVisionFrameSource and publish its RenderTexture instead.");
         }
 
         /// <inheritdoc />

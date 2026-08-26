@@ -1,4 +1,3 @@
-using Convai.Editor.ConfigurationWindow.Components.Sections.AccountsSection.APIKeySetup;
 using Convai.Editor.ConfigurationWindow.Components.Sections.AccountsSection.UserAccountInformation;
 using Convai.Runtime;
 using UnityEngine;
@@ -8,7 +7,7 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections
 {
     /// <summary>
     ///     Account section of the Convai configuration window.
-    ///     Displays account details, API key configuration, and usage statistics.
+    ///     Displays account details, API key status, and usage statistics.
     /// </summary>
     [UxmlElement]
     public partial class ConvaiAccountSection : ConvaiBaseSection
@@ -18,19 +17,12 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections
 
         private readonly AccountInformationUI _accountInformationUI;
         private readonly ConfigurationWindowContext _context;
-        private readonly ConvaiAccountSectionLogic _logic;
+        private Label _apiKeyStatusLabel;
 
-        /// <summary>
-        ///     Initializes a new instance of the <see cref="ConvaiAccountSection" /> class.
-        /// </summary>
         public ConvaiAccountSection() : this(null)
         {
         }
 
-        /// <summary>
-        ///     Initializes a new instance of the <see cref="ConvaiAccountSection" /> class.
-        /// </summary>
-        /// <param name="context">Shared window context.</param>
         public ConvaiAccountSection(ConfigurationWindowContext context)
         {
             _context = context;
@@ -46,19 +38,16 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections
             Add(CreateUsagesCard());
 
             _accountInformationUI = new AccountInformationUI(this, _context);
-            _logic = new ConvaiAccountSectionLogic(this, _accountInformationUI, _context);
+            RefreshApiKeyStatusLabel();
 
-            RegisterCallback<DetachFromPanelEvent>(_ => _accountInformationUI.CancelPendingOperations());
+            if (_context != null) _context.ApiKeyAvailabilityChanged += OnApiKeyAvailabilityChanged;
+
+            RegisterCallback<DetachFromPanelEvent>(_ =>
+            {
+                _accountInformationUI.CancelPendingOperations();
+                if (_context != null) _context.ApiKeyAvailabilityChanged -= OnApiKeyAvailabilityChanged;
+            });
         }
-
-        /// <summary>Text field for entering/editing the API key.</summary>
-        public TextField APIInputField { get; private set; }
-
-        /// <summary>Button to toggle API key visibility.</summary>
-        public Button ShowHideAPIKeyButton { get; private set; }
-
-        /// <summary>Button to save or update the API key.</summary>
-        public Button UpdateSaveButton { get; private set; }
 
         /// <summary>Label displaying the current plan name.</summary>
         public Label PlanName { get; private set; }
@@ -99,9 +88,33 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections
             _accountInformationUI.GetUserAPIUsageData(hasApiKey);
         }
 
-        protected override void OnSectionShown() => _logic?.OnSectionShown();
+        protected override void OnSectionShown()
+        {
+            bool hasApiKey = _context != null
+                ? _context.RefreshApiKeyAvailability(false)
+                : ConvaiSettings.Instance != null && ConvaiSettings.Instance.HasApiKey;
+            RefreshApiKeyStatusLabel();
+            _accountInformationUI.GetUserAPIUsageData(hasApiKey);
+        }
 
         protected override void OnSectionHidden() => _accountInformationUI?.CancelPendingOperations();
+
+        private void OnApiKeyAvailabilityChanged(bool available)
+        {
+            _accountInformationUI.CancelPendingOperations();
+            RefreshApiKeyStatusLabel();
+            _accountInformationUI.GetUserAPIUsageData(available);
+        }
+
+        private void RefreshApiKeyStatusLabel()
+        {
+            if (_apiKeyStatusLabel == null) return;
+
+            bool hasApiKey = ConvaiSettings.Instance != null && ConvaiSettings.Instance.HasApiKey;
+            _apiKeyStatusLabel.text = hasApiKey
+                ? "An API key is configured for this project."
+                : "No API key configured yet.";
+        }
 
         private VisualElement CreateAccountDetailsCard()
         {
@@ -160,26 +173,20 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections
             Label subheader = ConvaiVisualElementUtility.CreateLabel("api-key-header", "API Key", "subheader");
             card.Add(subheader);
 
-            VisualElement row = new() { name = "api-key-row" };
-            row.AddToClassList("api-key-row");
+            _apiKeyStatusLabel = ConvaiVisualElementUtility.CreateLabel(
+                "api-key-status", "No API key configured yet.", "helper-text");
+            card.Add(_apiKeyStatusLabel);
 
-            APIInputField = new TextField { isPasswordField = true, maskChar = '●' };
-            APIInputField.AddToClassList("api-key-field");
-
-            ShowHideAPIKeyButton = new Button { name = "show-hide-btn", text = "Show" };
-            ShowHideAPIKeyButton.AddToClassList("button-small");
-            ShowHideAPIKeyButton.style.flexShrink = 0;
-            ShowHideAPIKeyButton.style.marginLeft = 5;
-
-            row.Add(APIInputField);
-            row.Add(ShowHideAPIKeyButton);
-            card.Add(row);
-
-            UpdateSaveButton = new Button { name = "save-update-button", text = "Save API Key" };
-            ConvaiVisualElementUtility.AddStyles(UpdateSaveButton, "button", "btn-medium");
-            UpdateSaveButton.style.alignSelf = Align.Center;
-            UpdateSaveButton.style.marginTop = 10;
-            card.Add(UpdateSaveButton);
+            var manageButton = new Button(ConvaiConfigurationWindowEditor.OpenSettingsWindow)
+            {
+                name = "manage-api-key-button",
+                text = "Manage in Settings",
+                tooltip = "API key entry and validation live in the SDK Settings section."
+            };
+            ConvaiVisualElementUtility.AddStyles(manageButton, "button", "btn-medium");
+            manageButton.style.alignSelf = Align.Center;
+            manageButton.style.marginTop = 10;
+            card.Add(manageButton);
 
             return card;
         }

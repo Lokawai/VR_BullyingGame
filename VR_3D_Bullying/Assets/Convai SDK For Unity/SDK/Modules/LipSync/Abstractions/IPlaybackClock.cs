@@ -13,6 +13,20 @@ namespace Convai.Modules.LipSync
         public bool IsValid { get; }
 
         public void StartClock();
+
+        /// <summary>
+        ///     Starts the clock at a non-zero timeline position. Used when playback joins a stream
+        ///     whose audio began earlier (for example, gate-open latency after audio onset), so
+        ///     sampling lands on the frame that matches what is currently audible.
+        /// </summary>
+        public void StartClock(double initialElapsedSeconds);
+
+        /// <summary>
+        ///     Re-bases a running clock to the given elapsed value without a state transition.
+        ///     Used by drift correction to snap the visual timeline back onto the audio playhead.
+        /// </summary>
+        public void Rebase(double elapsedSeconds);
+
         public void Pause();
         public void Resume();
         public void Reset();

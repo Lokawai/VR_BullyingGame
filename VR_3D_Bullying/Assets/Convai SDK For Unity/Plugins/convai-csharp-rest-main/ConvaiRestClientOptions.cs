@@ -1,5 +1,6 @@
 #nullable enable
 using System;
+using System.Reflection;
 using Convai.RestAPI.Transport;
 
 namespace Convai.RestAPI
@@ -21,14 +22,32 @@ namespace Convai.RestAPI
     }
 
     /// <summary>
+    /// The credential type used to authenticate Convai API requests.
+    /// </summary>
+    public enum ConvaiAuthenticationMode
+    {
+        /// <summary>Authenticate with an account API key.</summary>
+        ApiKey,
+
+        /// <summary>Authenticate with a short-lived token minted by the user connect endpoint.</summary>
+        AuthToken
+    }
+
+    /// <summary>
     /// Configuration options for the Convai REST client.
     /// </summary>
     public sealed class ConvaiRestClientOptions
     {
         /// <summary>
-        /// The API key for authentication.
+        /// The credential value used for authentication. This is an API key by default, or an auth token when
+        /// <see cref="AuthenticationMode" /> is <see cref="ConvaiAuthenticationMode.AuthToken" />.
         /// </summary>
         public string ApiKey { get; }
+
+        /// <summary>
+        /// The authentication scheme used for requests. Defaults to API-key authentication.
+        /// </summary>
+        public ConvaiAuthenticationMode AuthenticationMode { get; set; } = ConvaiAuthenticationMode.ApiKey;
 
         /// <summary>
         /// The environment to use. Defaults to Production.
@@ -63,7 +82,7 @@ namespace Convai.RestAPI
         /// <summary>
         /// Client version used for room connect invocation metadata.
         /// </summary>
-        public string ClientVersion { get; set; } = "0.1.0";
+        public string ClientVersion { get; set; } = ResolveDefaultClientVersion();
 
         /// <summary>
         /// Creates new client options with the specified API key.
@@ -82,6 +101,13 @@ namespace Convai.RestAPI
         internal string GetBaseUrl()
         {
             return Environment == ConvaiEnvironment.Production ? ProductionBaseUrl : BetaBaseUrl;
+        }
+
+        private static string ResolveDefaultClientVersion()
+        {
+            Type? sdkType = Type.GetType("Convai.Application.ConvaiSDK, Convai.Runtime");
+            FieldInfo? versionField = sdkType?.GetField("Version", BindingFlags.Public | BindingFlags.Static);
+            return versionField?.GetValue(null)?.ToString() ?? "0.1.0";
         }
     }
 }

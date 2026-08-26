@@ -5,8 +5,9 @@ using System.Threading.Tasks;
 using Convai.Domain.EventSystem;
 using Convai.Infrastructure.Networking;
 using Convai.Infrastructure.Networking.Transport;
-using Convai.Runtime.Vision;
+using Convai.Runtime.Vision.Transport;
 using NUnit.Framework;
+using UnityEngine;
 
 namespace Convai.Tests.EditMode.Runtime
 {
@@ -44,7 +45,6 @@ namespace Convai.Tests.EditMode.Runtime
             public int StartCaptureCount { get; private set; }
             public int StopCaptureCount { get; private set; }
             public int DisposeCount { get; private set; }
-            public bool ReturnNullTrack { get; set; }
 
             public string Name { get; }
             public bool IsCapturing { get; private set; }
@@ -71,6 +71,36 @@ namespace Convai.Tests.EditMode.Runtime
                 _disposed = true;
                 IsCapturing = false;
             }
+        }
+
+        private sealed class TestTextureVideoSource : ITextureVideoSource
+        {
+            public bool IsCapturing { get; private set; }
+            public string Name { get; } = "texture-source";
+            public int Width => SourceTexture != null ? SourceTexture.width : 0;
+            public int Height => SourceTexture != null ? SourceTexture.height : 0;
+            public Texture SourceTexture { get; private set; }
+            public int TargetFrameRate { get; set; } = 30;
+
+            public void SetTexture(Texture texture) => SourceTexture = texture;
+            public void StartCapture() => IsCapturing = true;
+            public void StopCapture() => IsCapturing = false;
+            public void Dispose() => IsCapturing = false;
+        }
+
+        private sealed class TestVideoSourceFactory : IVideoSourceFactory
+        {
+            public TestTextureVideoSource LastCreatedTextureSource { get; private set; }
+
+            public IVideoSource CreateFromRenderTexture(RenderTexture texture, string name = null)
+            {
+                LastCreatedTextureSource = new TestTextureVideoSource();
+                LastCreatedTextureSource.SetTexture(texture);
+                return LastCreatedTextureSource;
+            }
+
+            public IVideoSource CreateFromCamera(Camera camera, int width, int height, string name = null) => null;
+            public IVideoSource CreateFromCanvasCapture(string name = null, int targetFrameRate = 15) => null;
         }
 
         private sealed class TestLocalVideoTrack : ILocalVideoTrack
@@ -109,7 +139,10 @@ namespace Convai.Tests.EditMode.Runtime
             public int UnpublishCallCount { get; private set; }
             public IVideoSource LastPublishedSource { get; private set; }
             public ILocalTrack LastUnpublishedTrack { get; private set; }
+            public bool? WasSourceCapturingWhenUnpublishCalled { get; private set; }
             public bool ReturnNullTrack { get; set; }
+            public bool CancelPublish { get; set; }
+            public bool CancelUnpublish { get; set; }
 
             public string Sid => "local-participant";
             public string Identity => "local";
@@ -137,6 +170,9 @@ namespace Convai.Tests.EditMode.Runtime
                 PublishVideoCallCount++;
                 LastPublishedSource = source;
 
+                if (CancelPublish)
+                    return Task.FromCanceled<ILocalVideoTrack>(new CancellationToken(true));
+
                 if (ReturnNullTrack) return Task.FromResult<ILocalVideoTrack>(null);
 
                 TestLocalVideoTrack track = new(source, $"video-track-{PublishVideoCallCount}");
@@ -149,7 +185,15 @@ namespace Convai.Tests.EditMode.Runtime
             {
                 UnpublishCallCount++;
                 LastUnpublishedTrack = track;
-                if (track is TestLocalVideoTrack videoTrack) videoTrack.MarkUnpublished();
+
+                if (CancelUnpublish)
+                    return Task.FromCanceled(new CancellationToken(true));
+
+                if (track is TestLocalVideoTrack videoTrack)
+                {
+                    WasSourceCapturingWhenUnpublishCalled = videoTrack.Source?.IsCapturing;
+                    videoTrack.MarkUnpublished();
+                }
 
                 _localTracks.Remove(track);
                 TrackUnpublished?.Invoke(track);
@@ -320,11 +364,98 @@ namespace Convai.Tests.EditMode.Runtime
             await _manager.UnpublishVideoAsync();
 
             Assert.AreEqual(1, _localParticipant.UnpublishCallCount);
+            Assert.AreEqual(false, _localParticipant.WasSourceCapturingWhenUnpublishCalled);
             Assert.AreEqual(1, source.StopCaptureCount);
             Assert.AreEqual(1, source.DisposeCount);
             Assert.IsFalse(_manager.IsPublishing);
             Assert.IsNull(_manager.CurrentTrackName);
             Assert.IsNull(_manager.CurrentTrackSid);
+        }
+
+        [Test]
+        public void PublishVideoAsync_WhenPublishIsCanceled_CleansUpNewSource()
+        {
+            TestVideoSource source = new("canvas-source");
+            _localParticipant.CancelPublish = true;
+
+            Assert.ThrowsAsync<TaskCanceledException>(async () =>
+                await _manager.PublishVideoAsync(
+                    source,
+                    VideoPublishOptions.Default.WithTrackName("webgl-scene")));
+
+            Assert.AreEqual(1, source.StartCaptureCount);
+            Assert.AreEqual(1, source.StopCaptureCount);
+            Assert.AreEqual(1, source.DisposeCount);
+            Assert.IsFalse(_manager.IsPublishing);
+        }
+
+        [Test]
+        public async Task PublishVideoAsync_WhenPrePublishUnpublishIsCanceled_CleansUpNewSource()
+        {
+            TestVideoSource currentSource = new("current-source");
+            TestVideoSource newSource = new("new-source");
+
+            await _manager.PublishVideoAsync(
+                currentSource,
+                VideoPublishOptions.Default.WithTrackName("current-track"));
+
+            _localParticipant.CancelUnpublish = true;
+
+            Assert.ThrowsAsync<TaskCanceledException>(async () =>
+                await _manager.PublishVideoAsync(
+                    newSource,
+                    VideoPublishOptions.Default.WithTrackName("new-track")));
+
+            Assert.AreEqual(0, newSource.StartCaptureCount);
+            Assert.AreEqual(1, newSource.StopCaptureCount);
+            Assert.AreEqual(1, newSource.DisposeCount);
+            Assert.IsFalse(_manager.IsPublishing);
+            Assert.AreEqual(1, currentSource.DisposeCount);
+        }
+
+        [Test]
+        public async Task PublishVideoAsync_WhenSuccessful_DoesNotDisposeOwnedSourceUntilUnpublish()
+        {
+            TestVideoSource source = new("canvas-source");
+
+            bool success = await _manager.PublishVideoAsync(
+                source,
+                VideoPublishOptions.Default.WithTrackName("webgl-scene"));
+
+            Assert.IsTrue(success);
+            Assert.AreEqual(0, source.StopCaptureCount);
+            Assert.AreEqual(0, source.DisposeCount);
+
+            await _manager.UnpublishVideoAsync();
+
+            Assert.AreEqual(1, source.StopCaptureCount);
+            Assert.AreEqual(1, source.DisposeCount);
+        }
+
+        [Test]
+        public async Task PublishVideoAsync_WithRenderTexture_PropagatesConfiguredFrameRateToTextureSource()
+        {
+            var factory = new TestVideoSourceFactory();
+            var renderTexture = new RenderTexture(64, 64, 0, RenderTextureFormat.ARGB32);
+            renderTexture.Create();
+
+            var manager = new VideoTrackManager(() => _roomFacade, _eventHub, null, factory);
+            try
+            {
+                bool success = await manager.PublishVideoAsync(
+                    renderTexture,
+                    VideoPublishOptions.Default.WithTrackName("unity-scene").WithMaxFrameRate(12));
+
+                Assert.IsTrue(success);
+                Assert.IsNotNull(factory.LastCreatedTextureSource);
+                Assert.AreEqual(12, factory.LastCreatedTextureSource.TargetFrameRate);
+                Assert.AreSame(factory.LastCreatedTextureSource, _localParticipant.LastPublishedSource);
+            }
+            finally
+            {
+                manager.Dispose();
+                UnityEngine.Object.DestroyImmediate(renderTexture);
+            }
         }
     }
 }

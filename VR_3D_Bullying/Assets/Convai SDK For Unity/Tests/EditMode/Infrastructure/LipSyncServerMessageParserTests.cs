@@ -348,6 +348,108 @@ namespace Convai.Tests.EditMode.Infrastructure
             Assert.IsTrue(handled);
             Assert.AreEqual(string.Empty, dropReason);
             Assert.IsNotNull(chunk);
+            Assert.AreEqual(17, chunk.Sequence);
+        }
+
+        [Test]
+        public void TryParse_AheadChunkMetadata_PopulatesTimelineFieldsAndFrameRate()
+        {
+            ReadOnlyMemory<byte> packet = WrapServerMessage(@"
+            {
+                ""type"": ""chunked-neurosync-blendshapes"",
+                ""format"": ""arkit"",
+                ""response_id"": ""session:r4"",
+                ""neurosync_turn_id"": 4,
+                ""epoch"": 2,
+                ""sequence"": 17,
+                ""fps"": 72,
+                ""start_frame_index"": 120,
+                ""blendshapes"": [
+                    [0.1, 0.2],
+                    [0.3, 0.4]
+                ]
+            }");
+
+            bool parsed = LipSyncServerMessageParser.TryParse(
+                packet,
+                60f,
+                CreateOptions(LipSyncProfileId.ARKit, "arkit", "A", "B"),
+                out bool handled,
+                out _,
+                out LipSyncPackedChunk chunk,
+                out string dropReason);
+
+            Assert.IsTrue(parsed);
+            Assert.IsTrue(handled);
+            Assert.AreEqual(string.Empty, dropReason);
+            Assert.AreEqual("session:r4", chunk.ResponseId);
+            Assert.AreEqual(4, chunk.NeuroSyncTurnId);
+            Assert.AreEqual(2, chunk.Epoch);
+            Assert.AreEqual(17, chunk.Sequence);
+            Assert.AreEqual(72f, chunk.FrameRate);
+            Assert.AreEqual(120, chunk.StartFrameIndex);
+            Assert.IsTrue(chunk.HasOwnerMetadata);
+            Assert.IsTrue(chunk.HasTimelineMetadata);
+        }
+
+        [Test]
+        public void TryParse_AheadChunkTurnIdAlias_PopulatesNeuroSyncTurnId()
+        {
+            ReadOnlyMemory<byte> packet = WrapServerMessage(@"
+            {
+                ""type"": ""chunked-neurosync-blendshapes"",
+                ""format"": ""arkit"",
+                ""response_id"": ""session:r9"",
+                ""turn_id"": 9,
+                ""start_frame_index"": 0,
+                ""blendshapes"": [
+                    [0.1, 0.2]
+                ]
+            }");
+
+            bool parsed = LipSyncServerMessageParser.TryParse(
+                packet,
+                60f,
+                CreateOptions(LipSyncProfileId.ARKit, "arkit", "A", "B"),
+                out bool handled,
+                out _,
+                out LipSyncPackedChunk chunk,
+                out string dropReason);
+
+            Assert.IsTrue(parsed);
+            Assert.IsTrue(handled);
+            Assert.AreEqual(string.Empty, dropReason);
+            Assert.AreEqual(9, chunk.NeuroSyncTurnId);
+            Assert.IsTrue(chunk.HasOwnerMetadata);
+            Assert.IsTrue(chunk.HasTimelineMetadata);
+        }
+
+        [Test]
+        public void TryParse_NegativeStartFrameIndex_DoesNotMarkTimelineMetadata()
+        {
+            ReadOnlyMemory<byte> packet = WrapServerMessage(@"
+            {
+                ""type"": ""chunked-neurosync-blendshapes"",
+                ""format"": ""arkit"",
+                ""response_id"": ""session:r4"",
+                ""start_frame_index"": -1,
+                ""blendshapes"": [
+                    [0.1, 0.2]
+                ]
+            }");
+
+            bool parsed = LipSyncServerMessageParser.TryParse(
+                packet,
+                60f,
+                CreateOptions(LipSyncProfileId.ARKit, "arkit", "A", "B"),
+                out _,
+                out _,
+                out LipSyncPackedChunk chunk,
+                out _);
+
+            Assert.IsTrue(parsed);
+            Assert.IsTrue(chunk.HasOwnerMetadata);
+            Assert.IsFalse(chunk.HasTimelineMetadata);
         }
 
         private static ReadOnlyMemory<byte> WrapServerMessage(string payloadObjectJson)

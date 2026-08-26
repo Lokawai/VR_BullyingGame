@@ -55,6 +55,20 @@ namespace Convai.Modules.LipSync
             for (int i = 0; i < limit; i++) current[i] += (target[i] - current[i]) * blend;
         }
 
+        /// <summary>
+        /// Approximate low-frequency group delay introduced by the one-pole temporal smoother.
+        /// Send-ahead playback can sample this far into its buffered visual timeline so smoothing
+        /// does not add a fixed mouth-behind-audio phase error.
+        /// </summary>
+        public static double GetTemporalSmoothingCompensationSeconds(float smoothingFactor)
+        {
+            double decay = Math.Clamp(smoothingFactor, 0f, 0.95f);
+            if (decay <= 0d) return 0d;
+
+            double delay = decay / (1d - decay) / LipSyncConstants.SmoothingReferenceFps;
+            return Math.Min(0.033d, delay);
+        }
+
         private static int MinLength(int a, int b, int c, int d, int e, int f)
         {
             int min = a;

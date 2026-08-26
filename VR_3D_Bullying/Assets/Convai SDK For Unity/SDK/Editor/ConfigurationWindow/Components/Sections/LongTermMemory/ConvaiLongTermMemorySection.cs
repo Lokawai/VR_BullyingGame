@@ -5,7 +5,7 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory
 {
     /// <summary>
     ///     Long Term Memory section of the Convai configuration window.
-    ///     Manages speaker IDs for the LTM feature, allowing viewing and deletion of stored speakers.
+    ///     Manages end users associated with long-term memory activity.
     /// </summary>
     [UxmlElement]
     public partial class ConvaiLongTermMemorySection : ConvaiBaseSection
@@ -16,26 +16,19 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory
         private readonly ConfigurationWindowContext _context;
         private LongTermMemoryLogic _logic;
 
-        /// <summary>
-        ///     Initializes a new instance of the <see cref="ConvaiLongTermMemorySection" /> class.
-        /// </summary>
         public ConvaiLongTermMemorySection() : this(null)
         {
         }
 
-        /// <summary>
-        ///     Initializes a new instance of the <see cref="ConvaiLongTermMemorySection" /> class.
-        /// </summary>
-        /// <param name="context">Shared window context.</param>
         public ConvaiLongTermMemorySection(ConfigurationWindowContext context)
         {
             _context = context;
             AddToClassList("section-card");
             CreateHeader();
             IDContainer = new ScrollView { style = { flexGrow = 1, marginBottom = 10 } };
-            TableTitle = ConvaiVisualElementUtility.CreateLabel("title", "No Speaker ID Found", "label");
+            TableTitle = ConvaiVisualElementUtility.CreateLabel("title", "No End Users Found", "label");
             StatusLabel = ConvaiVisualElementUtility.CreateLabel("ltm-status",
-                "Open this section to load Long Term Memory users.", "helper-text");
+                "Open this section to load end users.", "helper-text");
             RetryButton = new Button { name = "retry-button", text = "Retry" };
             SelectAllButton = new Button { name = "select-all-button", text = "Select All" };
             DeleteButton = new Button { name = "delete-button", text = "Delete" };
@@ -71,10 +64,10 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory
             });
         }
 
-        /// <summary>Button to refresh the speaker ID list.</summary>
+        /// <summary>Button to refresh the end-user list.</summary>
         public Button RefreshButton { get; private set; }
 
-        /// <summary>Scrollable container for speaker ID items.</summary>
+        /// <summary>Scrollable container for end-user items.</summary>
         public ScrollView IDContainer { get; }
 
         /// <summary>Label displaying the table title or empty state message.</summary>
@@ -86,10 +79,10 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory
         /// <summary>Retry button shown for recoverable load errors.</summary>
         public Button RetryButton { get; }
 
-        /// <summary>Button to select all speaker ID items in the list.</summary>
+        /// <summary>Button to select all end-user items in the list.</summary>
         public Button SelectAllButton { get; }
 
-        /// <summary>Button to delete selected speaker IDs.</summary>
+        /// <summary>Button to delete selected end users.</summary>
         public Button DeleteButton { get; }
 
         protected override void OnSectionShown()
@@ -133,19 +126,19 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory
     ///     UI element representing a single Long Term Memory end user item.
     ///     Displays user name, end user ID, and a toggle for selection.
     /// </summary>
-    internal class LTMItemUI : VisualElement
+    internal class EndUserItemUI : VisualElement
     {
         private readonly Action<bool, string> _onToggle;
         private readonly Toggle _toggleSelectionButton;
 
         /// <summary>
-        ///     Creates a new LTM item UI element.
+        ///     Creates a new end-user item UI element.
         /// </summary>
         /// <param name="displayName">Display name of the user.</param>
         /// <param name="endUserId">The end user ID (used for deletion).</param>
         /// <param name="shortId">Short version of the ID for display.</param>
         /// <param name="onToggle">Callback invoked when the selection toggle changes.</param>
-        public LTMItemUI(string displayName, string endUserId, string shortId, Action<bool, string> onToggle)
+        public EndUserItemUI(string displayName, string endUserId, string shortId, Action<bool, string> onToggle)
         {
             AddToClassList("card");
             DisplayName = displayName;

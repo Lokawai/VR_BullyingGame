@@ -30,18 +30,18 @@ namespace Convai.Tests.EditMode.Application
         public void GetProfiles_WithDuplicateProfileIds_LastRegistryWinsDeterministicallyBySortOrder()
         {
             // Arrange
-            ConvaiLipSyncProfileAsset builtIn = Track(CreateProfile("arkit", "arkit", "BuiltIn"));
-            ConvaiLipSyncProfileAsset extA = Track(CreateProfile("arkit", "ext_a", "ExtensionA"));
-            ConvaiLipSyncProfileAsset extB = Track(CreateProfile("arkit", "ext_b", "ExtensionB"));
-            ConvaiLipSyncProfileRegistryAsset builtInRegistry = Track(CreateRegistry("BuiltIn", 0, builtIn));
-            ConvaiLipSyncProfileRegistryAsset extensionZ = Track(CreateRegistry("Z_Extension", 10, extB));
-            ConvaiLipSyncProfileRegistryAsset extensionA = Track(CreateRegistry("A_Extension", 10, extA));
+            ConvaiLipSyncProfile builtIn = Track(CreateProfile("arkit", "arkit", "BuiltIn"));
+            ConvaiLipSyncProfile extA = Track(CreateProfile("arkit", "ext_a", "ExtensionA"));
+            ConvaiLipSyncProfile extB = Track(CreateProfile("arkit", "ext_b", "ExtensionB"));
+            ConvaiLipSyncProfileRegistry builtInRegistry = Track(CreateRegistry("BuiltIn", 0, builtIn));
+            ConvaiLipSyncProfileRegistry extensionZ = Track(CreateRegistry("Z_Extension", 10, extB));
+            ConvaiLipSyncProfileRegistry extensionA = Track(CreateRegistry("A_Extension", 10, extA));
 
             LipSyncProfileCatalog.SetRegistryOverridesForTests(builtInRegistry, new[] { extensionZ, extensionA });
 
             // Act
             bool found =
-                LipSyncProfileCatalog.TryGetProfile(LipSyncProfileId.ARKit, out ConvaiLipSyncProfileAsset resolved);
+                LipSyncProfileCatalog.TryGetProfile(LipSyncProfileId.ARKit, out ConvaiLipSyncProfile resolved);
 
             // Assert
             Assert.IsTrue(found);
@@ -53,17 +53,17 @@ namespace Convai.Tests.EditMode.Application
         public void GetProfiles_WhenExtensionOverridesBuiltIn_UsesExtensionRegardlessOfPriority()
         {
             // Arrange
-            ConvaiLipSyncProfileAsset builtIn = Track(CreateProfile("metahuman", "mha", "BuiltInMetaHuman"));
-            ConvaiLipSyncProfileAsset extension =
+            ConvaiLipSyncProfile builtIn = Track(CreateProfile("metahuman", "mha", "BuiltInMetaHuman"));
+            ConvaiLipSyncProfile extension =
                 Track(CreateProfile("metahuman", "metahuman_custom", "ExtensionMetaHuman"));
-            ConvaiLipSyncProfileRegistryAsset builtInRegistry = Track(CreateRegistry("BuiltIn", 999, builtIn));
-            ConvaiLipSyncProfileRegistryAsset extensionRegistry = Track(CreateRegistry("Extension", -999, extension));
+            ConvaiLipSyncProfileRegistry builtInRegistry = Track(CreateRegistry("BuiltIn", 999, builtIn));
+            ConvaiLipSyncProfileRegistry extensionRegistry = Track(CreateRegistry("Extension", -999, extension));
 
             LipSyncProfileCatalog.SetRegistryOverridesForTests(builtInRegistry, new[] { extensionRegistry });
 
             // Act
             bool found =
-                LipSyncProfileCatalog.TryGetProfile(LipSyncProfileId.MetaHuman, out ConvaiLipSyncProfileAsset resolved);
+                LipSyncProfileCatalog.TryGetProfile(LipSyncProfileId.MetaHuman, out ConvaiLipSyncProfile resolved);
 
             // Assert
             Assert.IsTrue(found);
@@ -74,10 +74,10 @@ namespace Convai.Tests.EditMode.Application
         public void GetProfiles_WhenInvalidProfilePresent_SkipsInvalidAndRecordsValidationIssue()
         {
             // Arrange
-            ConvaiLipSyncProfileAsset invalid = Track(CreateProfile(string.Empty, "arkit", "Invalid"));
-            ConvaiLipSyncProfileRegistryAsset builtInRegistry = Track(CreateRegistry("BuiltIn", 0, invalid));
+            ConvaiLipSyncProfile invalid = Track(CreateProfile(string.Empty, "arkit", "Invalid"));
+            ConvaiLipSyncProfileRegistry builtInRegistry = Track(CreateRegistry("BuiltIn", 0, invalid));
             LipSyncProfileCatalog.SetRegistryOverridesForTests(builtInRegistry,
-                new ConvaiLipSyncProfileRegistryAsset[0]);
+                new ConvaiLipSyncProfileRegistry[0]);
 
             // Act
             bool found = LipSyncProfileCatalog.TryGetProfile(LipSyncProfileId.ARKit, out _);
@@ -87,9 +87,21 @@ namespace Convai.Tests.EditMode.Application
             Assert.That(LipSyncProfileCatalog.GetValidationIssues(), Has.Some.Contains("Skipping profile"));
         }
 
-        private static ConvaiLipSyncProfileAsset CreateProfile(string profileId, string format, string displayName)
+        [Test]
+        public void TryGetProfile_LegacyMhaAlias_PrefersExactRegisteredProfile()
         {
-            var profile = ScriptableObject.CreateInstance<ConvaiLipSyncProfileAsset>();
+            ConvaiLipSyncProfile metahuman = Track(CreateProfile("metahuman", "mha", "MetaHuman"));
+            ConvaiLipSyncProfile exactLegacy = Track(CreateProfile("mha", "custom_mha", "Custom MHA"));
+            ConvaiLipSyncProfileRegistry registry = Track(CreateRegistry("BuiltIn", 0, metahuman, exactLegacy));
+            LipSyncProfileCatalog.SetRegistryOverridesForTests(registry, new ConvaiLipSyncProfileRegistry[0]);
+
+            Assert.IsTrue(LipSyncProfileCatalog.TryGetProfile("mha", out ConvaiLipSyncProfile resolved));
+            Assert.AreSame(exactLegacy, resolved);
+        }
+
+        private static ConvaiLipSyncProfile CreateProfile(string profileId, string format, string displayName)
+        {
+            var profile = ScriptableObject.CreateInstance<ConvaiLipSyncProfile>();
             SerializedObject serialized = new(profile);
             serialized.FindProperty("_profileId").stringValue = profileId;
             serialized.FindProperty("_displayName").stringValue = displayName;
@@ -98,12 +110,12 @@ namespace Convai.Tests.EditMode.Application
             return profile;
         }
 
-        private static ConvaiLipSyncProfileRegistryAsset CreateRegistry(
+        private static ConvaiLipSyncProfileRegistry CreateRegistry(
             string name,
             int priority,
-            params ConvaiLipSyncProfileAsset[] profiles)
+            params ConvaiLipSyncProfile[] profiles)
         {
-            var registry = ScriptableObject.CreateInstance<ConvaiLipSyncProfileRegistryAsset>();
+            var registry = ScriptableObject.CreateInstance<ConvaiLipSyncProfileRegistry>();
             registry.name = name;
 
             SerializedObject serialized = new(registry);

@@ -40,7 +40,7 @@ namespace Convai.Tests.EditMode.Infrastructure
             ManualResetEventSlim firstDeliveryStarted = new(false);
             ManualResetEventSlim subscribeComplete = new(false);
 
-            _eventHub.Subscribe<ThreadingEvent>(e =>
+            _eventHub.Subscribe<ThreadingEvent>(_ =>
             {
                 firstDeliveryStarted.Set();
                 subscribeComplete.Wait(TimeSpan.FromSeconds(5));
@@ -158,74 +158,16 @@ namespace Convai.Tests.EditMode.Infrastructure
 
         #endregion
 
-        #region Publish During Modify Tests
-
-        [Test]
-        public void PublishDuringSubscribe_DoesNotThrow()
-        {
-            int deliveryCount = 0;
-            ManualResetEventSlim publishStarted = new(false);
-            ManualResetEventSlim subscribeComplete = new(false);
-
-            Task publishTask = Task.Run(() =>
-            {
-                publishStarted.Set();
-                for (int i = 0; i < 1000; i++) _eventHub.Publish(new ThreadingEvent(i));
-            });
-
-            publishStarted.Wait();
-            for (int i = 0; i < 100; i++)
-            {
-                _eventHub.Subscribe<ThreadingEvent>(_ => Interlocked.Increment(ref deliveryCount),
-                    EventDeliveryPolicy.Immediate);
-            }
-
-            subscribeComplete.Set();
-
-            publishTask.Wait(TimeSpan.FromSeconds(10));
-
-            Assert.Pass("No exceptions during concurrent publish and subscribe");
-        }
-
-        [Test]
-        public void PublishDuringUnsubscribe_DoesNotThrow()
-        {
-            const int subscriptionCount = 100;
-            var tokens = new SubscriptionToken[subscriptionCount];
-
-            for (int i = 0; i < subscriptionCount; i++)
-                tokens[i] = _eventHub.Subscribe<ThreadingEvent>(_ => { }, EventDeliveryPolicy.Immediate);
-
-            ManualResetEventSlim publishStarted = new(false);
-
-            Task publishTask = Task.Run(() =>
-            {
-                publishStarted.Set();
-                for (int i = 0; i < 1000; i++) _eventHub.Publish(new ThreadingEvent(i));
-            });
-
-            publishStarted.Wait();
-            foreach (SubscriptionToken token in tokens) _eventHub.Unsubscribe(token);
-
-            publishTask.Wait(TimeSpan.FromSeconds(10));
-
-            Assert.Pass("No exceptions during concurrent publish and unsubscribe");
-        }
-
-        #endregion
-
         #region Delivery Policy Tests
 
         [Test]
         public void MainThreadDelivery_QueuesForMainThread()
         {
             int deliveryCount = 0;
-            int deliveryThreadId = 0;
 
-            _eventHub.Subscribe<ThreadingEvent>(e =>
+            _eventHub.Subscribe<ThreadingEvent>(_ =>
             {
                 Interlocked.Increment(ref deliveryCount);
-                deliveryThreadId = Thread.CurrentThread.ManagedThreadId;
             });
 
             Task.Run(() => _eventHub.Publish(new ThreadingEvent(1))).Wait();
@@ -244,7 +186,7 @@ namespace Convai.Tests.EditMode.Infrastructure
             int deliveryThreadId = 0;
             int callingThreadId = 0;
 
-            _eventHub.Subscribe<ThreadingEvent>(e =>
+            _eventHub.Subscribe<ThreadingEvent>(_ =>
             {
                 deliveryThreadId = Thread.CurrentThread.ManagedThreadId;
             }, EventDeliveryPolicy.Immediate);
@@ -265,7 +207,7 @@ namespace Convai.Tests.EditMode.Infrastructure
             int deliveryThreadId = 0;
             ManualResetEventSlim delivered = new(false);
 
-            _eventHub.Subscribe<ThreadingEvent>(e =>
+            _eventHub.Subscribe<ThreadingEvent>(_ =>
             {
                 deliveryThreadId = Thread.CurrentThread.ManagedThreadId;
                 delivered.Set();

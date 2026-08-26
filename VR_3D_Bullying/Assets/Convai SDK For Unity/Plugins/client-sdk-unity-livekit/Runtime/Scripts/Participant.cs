@@ -15,7 +15,7 @@ namespace LiveKit
     {
         public delegate void PublishDelegate(RemoteTrackPublication publication);
 
-        internal ParticipantInfo _info;
+        internal ParticipantInfo _info; // Can be updated by the server through room events.
         internal readonly Dictionary<string, TrackPublication> _tracks = new();
         public FfiHandle Handle;
         public string Sid => _info.Sid;
@@ -55,6 +55,14 @@ namespace LiveKit
         {
             TrackUnpublished?.Invoke(publication);
         }
+
+        internal void DisposeHandles()
+        {
+            foreach (var pub in _tracks.Values)
+                pub.DisposeHandles();
+            _tracks.Clear();
+            Handle?.Dispose();
+        }
     }
 
     public sealed class LocalParticipant : Participant
@@ -76,9 +84,9 @@ namespace LiveKit
             publish.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
             publish.TrackHandle = (ulong)track.Handle.DangerousGetHandle();
             publish.Options = options;
+            var instruction = new PublishTrackInstruction(request.RequestAsyncId, localTrack, _tracks);
             using var response = request.Send();
-            FfiResponse res = response;
-            return new PublishTrackInstruction(res.PublishTrack.AsyncId, localTrack, _tracks);
+            return instruction;
         }
 
         public UnpublishTrackInstruction UnpublishTrack(ILocalTrack localTrack, bool stopOnUnpublish)
@@ -91,24 +99,40 @@ namespace LiveKit
             unpublish.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
             unpublish.StopOnUnpublish = false;
             unpublish.TrackSid = localTrack.Sid;
+            var instruction = new UnpublishTrackInstruction(request.RequestAsyncId);
             using var response = request.Send();
-            FfiResponse res = response;
             _tracks.Remove(localTrack.Sid);
-            return new UnpublishTrackInstruction(res.UnpublishTrack.AsyncId);
+            return instruction;
         }
 
-        public void PublishData(byte[] data, IReadOnlyCollection<string> destination_identities = null, bool reliable = true, string topic = null)
+        /// <summary>
+        /// Publishes arbitrary data to participants in the room.
+        /// </summary>
+        /// <returns>
+        /// A <see cref="PublishDataInstruction"/> that completes once the packet is sent or errors.
+        /// Check <see cref="YieldInstruction.IsError"/> and read <see cref="PublishDataInstruction.Error"/>
+        /// to handle the result (e.g. payloads exceeding the negotiated maximum message size).
+        /// </returns>
+        public PublishDataInstruction PublishData(byte[] data, IReadOnlyCollection<string> destination_identities = null, bool reliable = true, string topic = null)
         {
-            PublishData(new Span<byte>(data), destination_identities, reliable, topic);
+            return PublishData(new Span<byte>(data), destination_identities, reliable, topic);
         }
 
-        public void PublishData(Span<byte> data, IReadOnlyCollection<string> destination_identities = null, bool reliable = true, string topic = null)
+        /// <summary>
+        /// Publishes arbitrary data to participants in the room.
+        /// </summary>
+        /// <returns>
+        /// A <see cref="PublishDataInstruction"/> that completes once the packet is sent or errors.
+        /// Check <see cref="YieldInstruction.IsError"/> and read <see cref="PublishDataInstruction.Error"/>
+        /// to handle the result (e.g. payloads exceeding the negotiated maximum message size).
+        /// </returns>
+        public PublishDataInstruction PublishData(Span<byte> data, IReadOnlyCollection<string> destination_identities = null, bool reliable = true, string topic = null)
         {
             unsafe
             {
                 fixed (byte* pointer = data)
                 {
-                    PublishData(pointer, data.Length, destination_identities, reliable, topic);
+                    return PublishData(pointer, data.Length, destination_identities, reliable, topic);
                 }
             }
         }
@@ -139,9 +163,9 @@ namespace LiveKit
             setReq.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
             setReq.Metadata = metadata;
 
+            var instruction = new SetLocalMetadataInstruction(request.RequestAsyncId);
             using var response = request.Send();
-            FfiResponse res = response;
-            return new SetLocalMetadataInstruction(res.SetLocalMetadata.AsyncId);
+            return instruction;
         }
 
         /// <summary>
@@ -158,9 +182,9 @@ namespace LiveKit
             setReq.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
             setReq.Name = name;
 
+            var instruction = new SetLocalNameInstruction(request.RequestAsyncId);
             using var response = request.Send();
-            FfiResponse res = response;
-            return new SetLocalNameInstruction(res.SetLocalName.AsyncId);
+            return instruction;
         }
 
         /// <summary>
@@ -180,6 +204,7 @@ namespace LiveKit
             var newAttributes = new Dictionary<string, string>(Attributes);
             foreach (var kvp in attributes)
             {
+                // Override existing attributes
                 newAttributes[kvp.Key] = kvp.Value;
             }
 
@@ -193,9 +218,9 @@ namespace LiveKit
                 setReq.Attributes.Add(entry);
             }
 
+            var instruction = new SetLocalAttributesInstruction(request.RequestAsyncId);
             using var response = request.Send();
-            FfiResponse res = response;
-            return new SetLocalAttributesInstruction(res.SetLocalAttributes.AsyncId);
+            return instruction;
         }
 
         /// <summary>
@@ -214,7 +239,7 @@ namespace LiveKit
         /// Check <see cref="PerformRpcInstruction.IsError"/> and access <see cref="PerformRpcInstruction.Payload"/>/<see cref="PerformRpcInstruction.Error"/> properties to handle the result.
         /// </returns>
         /// <remarks>
-        /// See https:
+        /// See https://docs.livekit.io/home/client/data/rpc/#errors for a list of possible error codes.
         /// </remarks>
         public PerformRpcInstruction PerformRpc(PerformRpcParams rpcParams)
         {
@@ -226,9 +251,9 @@ namespace LiveKit
             rpcReq.Payload = rpcParams.Payload;
             rpcReq.ResponseTimeoutMs = (uint)(rpcParams.ResponseTimeout * 1000);
 
+            var instruction = new PerformRpcInstruction(request.RequestAsyncId);
             using var response = request.Send();
-            FfiResponse res = response;
-            return new PerformRpcInstruction(res.PerformRpc.AsyncId);
+            return instruction;
         }
 
         /// <summary>
@@ -324,7 +349,7 @@ namespace LiveKit
             var response = request.Send();
         }
 
-        private unsafe void PublishData(byte* data, int len, IReadOnlyCollection<string> destination_identities = null, bool reliable = true, string topic = null)
+        private unsafe PublishDataInstruction PublishData(byte* data, int len, IReadOnlyCollection<string> destination_identities = null, bool reliable = true, string topic = null)
         {
             if (!Room.TryGetTarget(out var room))
                 throw new Exception("room is invalid");
@@ -334,6 +359,7 @@ namespace LiveKit
             var publish = request.request;
             publish.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
 
+            // Clear previous values of conditional fields
             publish.DestinationIdentities.Clear();
             publish.ClearTopic();
 
@@ -355,7 +381,12 @@ namespace LiveKit
                 publish.DataPtr = (ulong)data;
             }
             Utils.Debug("Sending message: " + topic);
-            var response = request.Send();
+
+            // Register the completion handler before sending so we never miss the
+            // callback (Rust may emit it before Send() returns).
+            var instruction = new PublishDataInstruction(request.RequestAsyncId);
+            using var response = request.Send();
+            return instruction;
         }
 
         /// <summary>
@@ -378,9 +409,9 @@ namespace LiveKit
             sendTextReq.Text = text;
             sendTextReq.Options = options.ToProto();
 
+            var instruction = new SendTextInstruction(request.RequestAsyncId);
             using var response = request.Send();
-            FfiResponse res = response;
-            return new SendTextInstruction(res.SendText.AsyncId);
+            return instruction;
         }
 
         /// <summary>
@@ -424,9 +455,9 @@ namespace LiveKit
             sendFileReq.FilePath = path;
             sendFileReq.Options = options.ToProto();
 
+            var instruction = new SendFileInstruction(request.RequestAsyncId);
             using var response = request.Send();
-            FfiResponse res = response;
-            return new SendFileInstruction(res.SendFile.AsyncId);
+            return instruction;
         }
 
         /// <summary>
@@ -472,9 +503,9 @@ namespace LiveKit
             streamTextReq.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
             streamTextReq.Options = options.ToProto();
 
+            var instruction = new StreamTextInstruction(request.RequestAsyncId);
             using var response = request.Send();
-            FfiResponse res = response;
-            return new StreamTextInstruction(res.TextStreamOpen.AsyncId);
+            return instruction;
         }
 
         /// <summary>
@@ -499,9 +530,9 @@ namespace LiveKit
             streamBytesReq.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
             streamBytesReq.Options = options.ToProto();
 
+            var instruction = new StreamBytesInstruction(request.RequestAsyncId);
             using var response = request.Send();
-            FfiResponse res = response;
-            return new StreamBytesInstruction(res.ByteStreamOpen.AsyncId);
+            return instruction;
         }
 
         /// <summary>
@@ -539,6 +570,47 @@ namespace LiveKit
             var options = new StreamTextOptions { Topic = topic };
             return StreamText(options);
         }
+
+        /// <summary>
+        /// Publishes a data track.
+        /// </summary>
+        /// <param name="options">Options for the data track, including the track name.</param>
+        /// <returns>
+        /// A <see cref="PublishDataTrackInstruction"/> that completes when the track is published or errors.
+        /// Check <see cref="PublishDataTrackInstruction.IsError"/> and access
+        /// <see cref="PublishDataTrackInstruction.Track"/> to get the published track.
+        /// Use <see cref="LocalDataTrack.TryPush"/> to send data frames on the track.
+        /// </returns>
+        public PublishDataTrackInstruction PublishDataTrack(DataTrackOptions options)
+        {
+            using var request = FFIBridge.Instance.NewRequest<PublishDataTrackRequest>();
+            var publishReq = request.request;
+            publishReq.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
+            publishReq.Options = new Proto.DataTrackOptions { Name = options.Name };
+
+            var instruction = new PublishDataTrackInstruction(request.RequestAsyncId);
+            using var response = request.Send();
+            return instruction;
+        }
+
+        /// <summary>
+        /// Publishes a data track.
+        /// </summary>
+        /// <param name="name">The track name used to identify the track to other participants.
+        /// Must not be empty and must be unique per publisher.</param>
+        /// <remarks>
+        /// Use the <see cref="PublishDataTrack(DataTrackOptions)"/> overload to set additional options.
+        /// </remarks>
+        /// <returns>
+        /// A <see cref="PublishDataTrackInstruction"/> that completes when the track is published or errors.
+        /// Check <see cref="PublishDataTrackInstruction.IsError"/> and access
+        /// <see cref="PublishDataTrackInstruction.Track"/> to get the published track.
+        /// Use <see cref="LocalDataTrack.TryPush"/> to send data frames on the track.
+        /// </returns>
+        public PublishDataTrackInstruction PublishDataTrack(string name)
+        {
+            return PublishDataTrack(new DataTrackOptions(name));
+        }
     }
 
     public sealed class RemoteParticipant : Participant
@@ -560,7 +632,10 @@ namespace LiveKit
             _asyncId = asyncId;
             _internalTracks = internalTracks;
             _localTrack = localTrack;
-            FfiClient.Instance.PublishTrackReceived += OnPublish;
+            // One-shot completion keyed by request_async_id. Concurrent requests simply occupy
+            // different slots in FfiClient's pending map and can complete in any order. Rust
+            // returns the same value through callback.AsyncId.
+            FfiClient.Instance.RegisterPendingCallback(asyncId, static e => e.PublishTrack, OnPublish, OnCanceled);
         }
 
         internal void OnPublish(PublishTrackCallback e)
@@ -570,95 +645,86 @@ namespace LiveKit
 
             IsError = !string.IsNullOrEmpty(e.Error);
             IsDone = true;
-            var publication = new LocalTrackPublication(e.Publication.Info);
+            var publication = new LocalTrackPublication(e.Publication.Info, FfiHandle.FromOwnedHandle(e.Publication.Handle));
             publication.UpdateTrack(_localTrack as Track);
             _localTrack.UpdateSid(publication.Sid);
             _internalTracks.Add(e.Publication.Info.Sid, publication);
-            FfiClient.Instance.PublishTrackReceived -= OnPublish;
+        }
+
+        void OnCanceled()
+        {
+            IsError = true;
+            IsDone = true;
         }
     }
 
-    public sealed class SetLocalMetadataInstruction : YieldInstruction
+    public sealed class SetLocalMetadataInstruction : FfiInstruction<SetLocalMetadataCallback>
     {
-        private ulong _asyncId;
-
         internal SetLocalMetadataInstruction(ulong asyncId)
-        {
-            _asyncId = asyncId;
-            FfiClient.Instance.SetLocalMetadataReceived += OnSetLocalMetadata;
-        }
-
-        internal void OnSetLocalMetadata(SetLocalMetadataCallback e)
-        {
-            if (e.AsyncId != _asyncId)
-                return;
-
-            IsError = !string.IsNullOrEmpty(e.Error);
-            IsDone = true;
-            FfiClient.Instance.SetLocalMetadataReceived -= OnSetLocalMetadata;
-        }
+            : base(asyncId, static e => e.SetLocalMetadata, static e => e.Error) { }
     }
 
-    public sealed class SetLocalNameInstruction : YieldInstruction
+    public sealed class SetLocalNameInstruction : FfiInstruction<SetLocalNameCallback>
     {
-        private ulong _asyncId;
-
         internal SetLocalNameInstruction(ulong asyncId)
-        {
-            _asyncId = asyncId;
-            FfiClient.Instance.SetLocalNameReceived += OnSetLocalName;
-        }
-
-        internal void OnSetLocalName(SetLocalNameCallback e)
-        {
-            if (e.AsyncId != _asyncId)
-                return;
-
-            IsError = !string.IsNullOrEmpty(e.Error);
-            IsDone = true;
-            FfiClient.Instance.SetLocalNameReceived -= OnSetLocalName;
-        }
+            : base(asyncId, static e => e.SetLocalName, static e => e.Error) { }
     }
 
-    public sealed class SetLocalAttributesInstruction : YieldInstruction
+    public sealed class SetLocalAttributesInstruction : FfiInstruction<SetLocalAttributesCallback>
     {
-        private ulong _asyncId;
-
         internal SetLocalAttributesInstruction(ulong asyncId)
-        {
-            _asyncId = asyncId;
-            FfiClient.Instance.SetLocalAttributesReceived += OnSetLocalAttributes;
-        }
-
-        internal void OnSetLocalAttributes(SetLocalAttributesCallback e)
-        {
-            if (e.AsyncId != _asyncId)
-                return;
-
-            IsError = !string.IsNullOrEmpty(e.Error);
-            IsDone = true;
-            FfiClient.Instance.SetLocalAttributesReceived -= OnSetLocalAttributes;
-        }
+            : base(asyncId, static e => e.SetLocalAttributes, static e => e.Error) { }
     }
 
-    public sealed class UnpublishTrackInstruction : YieldInstruction
+    public sealed class UnpublishTrackInstruction : FfiInstruction<UnpublishTrackCallback>
     {
-        private ulong _asyncId;
-
         internal UnpublishTrackInstruction(ulong asyncId)
+            : base(asyncId, static e => e.UnpublishTrack, static e => e.Error) { }
+    }
+
+    /// <summary>
+    /// YieldInstruction for publishing data packets. Returned by <see cref="LocalParticipant.PublishData(byte[], IReadOnlyCollection{string}, bool, string)"/>.
+    /// </summary>
+    /// <remarks>
+    /// Read <see cref="Error"/> after checking <see cref="YieldInstruction.IsError"/>. A packet that
+    /// exceeds the negotiated maximum message size completes with <see cref="YieldInstruction.IsError"/>
+    /// true and a descriptive <see cref="Error"/> message.
+    /// </remarks>
+    public sealed class PublishDataInstruction : YieldInstruction
+    {
+        private readonly ulong _asyncId;
+
+        /// <summary>
+        /// The error message if the publish failed, otherwise null.
+        /// </summary>
+        public string Error { get; private set; }
+
+        internal PublishDataInstruction(ulong asyncId)
         {
             _asyncId = asyncId;
-            FfiClient.Instance.UnpublishTrackReceived += OnUnpublish;
+            FfiClient.Instance.RegisterPendingCallback(
+                asyncId, static e => e.PublishData, OnPublishData, OnCanceled,
+                dispatchToMainThread: false);
         }
 
-        internal void OnUnpublish(UnpublishTrackCallback e)
+        internal void OnPublishData(PublishDataCallback e)
         {
             if (e.AsyncId != _asyncId)
                 return;
 
-            IsError = !string.IsNullOrEmpty(e.Error);
+            if (!string.IsNullOrEmpty(e.Error))
+            {
+                Error = e.Error;
+                IsError = true;
+            }
             IsDone = true;
-            FfiClient.Instance.UnpublishTrackReceived -= OnUnpublish;
+        }
+
+        void OnCanceled()
+        {
+            Error = "Canceled";
+            IsError = true;
+            IsDone = true;
         }
     }
 
@@ -676,13 +742,14 @@ namespace LiveKit
         internal PerformRpcInstruction(ulong asyncId)
         {
             _asyncId = asyncId;
-            FfiClient.Instance.PerformRpcReceived += OnRpcResponse;
+            FfiClient.Instance.RegisterPendingCallback(asyncId, static e => e.PerformRpc, OnRpcResponse, OnCanceled);
         }
 
         internal void OnRpcResponse(PerformRpcCallback e)
         {
             if (e.AsyncId != _asyncId)
                 return;
+
 
             if (e.Error != null)
             {
@@ -695,7 +762,13 @@ namespace LiveKit
                 _payload = e.Payload;
             }
             IsDone = true;
-            FfiClient.Instance.PerformRpcReceived -= OnRpcResponse;
+        }
+
+        void OnCanceled()
+        {
+            Error = new RpcError((uint)RpcError.ErrorCode.APPLICATION_ERROR, "Canceled");
+            IsError = true;
+            IsDone = true;
         }
 
         /// <summary>
@@ -735,7 +808,7 @@ namespace LiveKit
         internal SendTextInstruction(ulong asyncId)
         {
             _asyncId = asyncId;
-            FfiClient.Instance.SendTextReceived += OnSendText;
+            FfiClient.Instance.RegisterPendingCallback(asyncId, static e => e.SendText, OnSendText, OnCanceled);
         }
 
         internal void OnSendText(StreamSendTextCallback e)
@@ -754,7 +827,13 @@ namespace LiveKit
                     break;
             }
             IsDone = true;
-            FfiClient.Instance.SendTextReceived -= OnSendText;
+        }
+
+        void OnCanceled()
+        {
+            Error = new StreamError("Canceled");
+            IsError = true;
+            IsDone = true;
         }
 
         public TextStreamInfo Info
@@ -783,7 +862,7 @@ namespace LiveKit
         internal SendFileInstruction(ulong asyncId)
         {
             _asyncId = asyncId;
-            FfiClient.Instance.SendFileReceived += OnSendFile;
+            FfiClient.Instance.RegisterPendingCallback(asyncId, static e => e.SendFile, OnSendFile, OnCanceled);
         }
 
         internal void OnSendFile(StreamSendFileCallback e)
@@ -802,7 +881,13 @@ namespace LiveKit
                     break;
             }
             IsDone = true;
-            FfiClient.Instance.SendFileReceived -= OnSendFile;
+        }
+
+        void OnCanceled()
+        {
+            Error = new StreamError("Canceled");
+            IsError = true;
+            IsDone = true;
         }
 
         public ByteStreamInfo Info
@@ -831,7 +916,7 @@ namespace LiveKit
         internal StreamTextInstruction(ulong asyncId)
         {
             _asyncId = asyncId;
-            FfiClient.Instance.TextStreamOpenReceived += OnStreamOpen;
+            FfiClient.Instance.RegisterPendingCallback(asyncId, static e => e.TextStreamOpen, OnStreamOpen, OnCanceled);
         }
 
         internal void OnStreamOpen(TextStreamOpenCallback e)
@@ -850,7 +935,13 @@ namespace LiveKit
                     break;
             }
             IsDone = true;
-            FfiClient.Instance.TextStreamOpenReceived -= OnStreamOpen;
+        }
+
+        void OnCanceled()
+        {
+            Error = new StreamError("Canceled");
+            IsError = true;
+            IsDone = true;
         }
 
         public TextStreamWriter Writer
@@ -879,7 +970,7 @@ namespace LiveKit
         internal StreamBytesInstruction(ulong asyncId)
         {
             _asyncId = asyncId;
-            FfiClient.Instance.ByteStreamOpenReceived += OnStreamOpen;
+            FfiClient.Instance.RegisterPendingCallback(asyncId, static e => e.ByteStreamOpen, OnStreamOpen, OnCanceled);
         }
 
         internal void OnStreamOpen(ByteStreamOpenCallback e)
@@ -898,7 +989,13 @@ namespace LiveKit
                     break;
             }
             IsDone = true;
-            FfiClient.Instance.ByteStreamOpenReceived -= OnStreamOpen;
+        }
+
+        void OnCanceled()
+        {
+            Error = new StreamError("Canceled");
+            IsError = true;
+            IsDone = true;
         }
 
         public ByteStreamWriter Writer
@@ -911,5 +1008,81 @@ namespace LiveKit
         }
 
         public StreamError Error { get; private set; }
+    }
+
+    /// <summary>
+    /// YieldInstruction for publishing a data track. Returned by <see cref="LocalParticipant.PublishDataTrack(DataTrackOptions)"/>.
+    /// </summary>
+    /// <remarks>
+    /// Access <see cref="Track"/> after checking <see cref="YieldInstruction.IsError"/>.
+    /// </remarks>
+    public sealed class PublishDataTrackInstruction : YieldInstruction
+    {
+        private ulong _asyncId;
+        private LocalDataTrack _track;
+
+        internal PublishDataTrackInstruction(ulong asyncId)
+        {
+            _asyncId = asyncId;
+            FfiClient.Instance.RegisterPendingCallback(asyncId, static e => e.PublishDataTrack, OnPublishDataTrack, OnCanceled);
+        }
+
+        internal void OnPublishDataTrack(PublishDataTrackCallback e)
+        {
+            if (e.AsyncId != _asyncId)
+                return;
+
+            switch (e.ResultCase)
+            {
+                case PublishDataTrackCallback.ResultOneofCase.Error:
+                    Error = new PublishDataTrackError(e.Error.Message);
+                    IsError = true;
+                    break;
+                case PublishDataTrackCallback.ResultOneofCase.Track:
+                    _track = new LocalDataTrack(e.Track);
+                    break;
+            }
+            IsDone = true;
+        }
+
+        void OnCanceled()
+        {
+            Error = new PublishDataTrackError("Canceled");
+            IsError = true;
+            IsDone = true;
+        }
+
+        /// <summary>
+        /// The published data track. Use <see cref="LocalDataTrack.TryPush"/> to send
+        /// data frames on the track.
+        /// </summary>
+        /// <exception cref="PublishDataTrackError">Thrown if the publish operation failed.</exception>
+        public LocalDataTrack Track
+        {
+            get
+            {
+                if (IsError) throw Error;
+                return _track;
+            }
+        }
+
+        public PublishDataTrackError Error { get; private set; }
+    }
+
+    /// Helpers for setting <see cref="TrackPublishOptions"/> fields whose underlying type
+    /// lives in Google.Protobuf (e.g. RepeatedField&lt;T&gt;). Unity's default Assembly-CSharp
+    /// does not auto-reference Google.Protobuf, so callers without an asmdef cannot use a
+    /// collection initializer or call <c>.Add</c> on the repeated field directly. These
+    /// helpers keep Google.Protobuf types out of the caller's signature.
+    public static class TrackPublishOptionsExtensions
+    {
+        public static TrackPublishOptions WithPacketTrailerFeatures(
+            this TrackPublishOptions options,
+            params PacketTrailerFeature[] features)
+        {
+            foreach (var feature in features)
+                options.PacketTrailerFeatures.Add(feature);
+            return options;
+        }
     }
 }

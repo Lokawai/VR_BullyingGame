@@ -9,29 +9,8 @@ namespace Convai.Domain.DomainEvents.Runtime
     /// <remarks>
     ///     This event is published via EventHub whenever a bot-tts-text message is received from the server.
     ///     It contains text chunks that will be synthesized to speech by the TTS system.
-    ///     Integration Example:
-    ///     <code>
-    /// 
-    /// private readonly IEventHub _eventHub;
-    /// 
-    /// private void HandleCharacterTtsText(ProtocolMessage&lt;BotTranscriptionPayload&gt; message)
-    /// {
-    ///     string participantId = message.Packet.ParticipantId;
-    ///     string text = message.Payload?.Text ?? string.Empty;
-    ///     CharacterTtsTextChunk characterTtsTextEvent = CharacterTtsTextChunk.Create(participantId, text);
-    ///     _eventHub.Publish(characterTtsTextEvent);
-    /// }
-    /// 
-    /// 
-    /// _eventHub.Subscribe&lt;CharacterTtsTextChunk&gt;(this, e =>
-    /// {
-    ///     Debug.Log($"TTS text chunk from character {e.ParticipantId}: {e.Text}");
-    /// 
-    /// });
-    /// </code>
-    ///     Delivery Policy:
-    ///     - Typically use EventDeliveryPolicy.MainThread for UI updates
-    ///     - Can use EventDeliveryPolicy.Immediate for logging/analytics
+    ///     Typically use EventDeliveryPolicy.MainThread for UI updates and
+    ///     EventDeliveryPolicy.Immediate for lightweight logging or analytics.
     /// </remarks>
     public readonly struct CharacterTtsTextChunk
     {

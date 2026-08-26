@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Convai.Domain.Models.LipSync;
+using Convai.Modules.LipSync.Profiles;
 using UnityEngine;
 
 namespace Convai.Modules.LipSync
@@ -30,13 +31,15 @@ namespace Convai.Modules.LipSync
             LipSyncProfileId profileId,
             out bool usedSafeDisabledFallback)
         {
-            if (assigned != null && assigned.TargetProfileId == profileId)
+            LipSyncProfileId canonicalProfile = LipSyncProfileCatalog.CanonicalizeProfileId(profileId);
+            if (assigned != null &&
+                LipSyncProfileCatalog.CanonicalizeProfileId(assigned.TargetProfileId) == canonicalProfile)
             {
                 usedSafeDisabledFallback = false;
                 return assigned;
             }
 
-            ConvaiLipSyncMapAsset profileDefault = ResolveProfileDefault(profileId);
+            ConvaiLipSyncMapAsset profileDefault = ResolveProfileDefault(canonicalProfile);
             if (profileDefault != null)
             {
                 usedSafeDisabledFallback = false;
@@ -44,7 +47,7 @@ namespace Convai.Modules.LipSync
             }
 
             usedSafeDisabledFallback = true;
-            return ResolveSafeDisabled(profileId);
+            return ResolveSafeDisabled(canonicalProfile);
         }
 
         public static ConvaiLipSyncMapAsset ResolveProfileDefault(LipSyncProfileId profileId)

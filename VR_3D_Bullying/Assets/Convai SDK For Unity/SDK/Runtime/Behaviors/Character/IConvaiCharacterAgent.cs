@@ -1,11 +1,13 @@
 using System.Collections.Generic;
+using Convai.Domain.Emotion;
+using Convai.Runtime.DynamicContext;
+using Convai.Runtime.NarrativeDesign;
 using UnityEngine;
 
 namespace Convai.Runtime.Behaviors
 {
     /// <summary>
-    ///     Unity-facing abstraction exposed to Character behaviours so they can interact with a Character without depending on
-    ///     the legacy implementation.
+    ///     Unity-facing abstraction exposed to character behaviours for interacting with a character instance.
     /// </summary>
     public interface IConvaiCharacterAgent
     {
@@ -30,18 +32,33 @@ namespace Convai.Runtime.Behaviors
         public bool EnableSessionResume { get; }
 
         /// <summary>
-        ///     Sends a trigger message through the Character to the backend.
+        ///     Gets the initial dynamic info text to include in room connection requests.
         /// </summary>
-        /// <param name="triggerName">Name of the trigger to dispatch.</param>
-        /// <param name="triggerMessage">Optional payload accompanying the trigger.</param>
-        public void SendTrigger(string triggerName, string triggerMessage = null);
+        public string InitialDynamicInfoText { get; }
 
         /// <summary>
-        ///     Sends dynamic context information to the backend.
-        ///     This is injected as a context update for the character.
+        ///     Gets whether initial dynamic info should be kept in server context.
         /// </summary>
-        /// <param name="contextText">The dynamic context text to send.</param>
-        public void SendDynamicInfo(string contextText);
+        public bool InitialDynamicInfoKeepInContext { get; }
+
+        /// <summary>
+        ///     Character-owned dynamic context surface for tracked runtime state and events.
+        /// </summary>
+        public IConvaiDynamicContext DynamicContext { get; }
+
+        /// <summary>
+        ///     Effective emotion detection mode used to build the room-connect emotion_config.
+        /// </summary>
+        public EmotionDetectionMode EmotionDetectionMode { get; }
+
+        /// <summary>Invokes a saved Narrative Design trigger through the character.</summary>
+        public void SendTrigger(string triggerName);
+
+        /// <summary>Sends inline narrative event context through the character.</summary>
+        public void SendNarrativeEvent(string eventMessage);
+
+        /// <summary>Sends exact scripted narrative speech through the character.</summary>
+        public void SendNarrativeSpeech(string speechText);
 
         /// <summary>
         ///     Updates template keys for narrative design placeholder resolution.

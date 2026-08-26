@@ -8,11 +8,15 @@ namespace LiveKit.Internal
 
     internal delegate void FFICallbackDelegate(UIntPtr data, UIntPtr size);
 
+    // Callbacks
     internal delegate void PublishTrackDelegate(PublishTrackCallback e);
+
 
     internal delegate void UnpublishTrackDelegate(UnpublishTrackCallback e);
 
+
     internal delegate void ConnectReceivedDelegate(ConnectCallback e);
+
 
     internal delegate void DisconnectReceivedDelegate(DisconnectCallback e);
 
@@ -46,19 +50,29 @@ namespace LiveKit.Internal
 
     internal delegate void CaptureAudioFrameReceivedDelegate(CaptureAudioFrameCallback e);
 
+    // Events
     internal delegate void RoomEventReceivedDelegate(RoomEvent e);
+
 
     internal delegate void TrackEventReceivedDelegate(TrackEvent e);
 
     internal delegate void RpcMethodInvocationReceivedDelegate(RpcMethodInvocationEvent e);
 
+
     internal delegate void VideoStreamEventReceivedDelegate(VideoStreamEvent e);
+
 
     internal delegate void AudioStreamEventReceivedDelegate(AudioStreamEvent e);
 
     internal delegate void PerformRpcReceivedDelegate(PerformRpcCallback e);
 
+
     internal delegate void ByteStreamReaderEventReceivedDelegate(ByteStreamReaderEvent e);
 
     internal delegate void TextStreamReaderEventReceivedDelegate(TextStreamReaderEvent e);
+
+    // Data Track
+    internal delegate void PublishDataTrackReceivedDelegate(PublishDataTrackCallback e);
+
+    internal delegate void DataTrackStreamEventReceivedDelegate(DataTrackStreamEvent e);
 }

@@ -5,40 +5,7 @@ namespace Convai.Domain.DomainEvents.Transcript
 {
     /// <summary>
     ///     Domain event raised when a player transcript is received.
-    ///     Published via EventHub for decoupled transcript handling.
-    ///     Supports multi-user speaker attribution via <see cref="SpeakerInfo" />.
     /// </summary>
-    /// <remarks>
-    ///     <para>
-    ///         This event is published via EventHub whenever a player generates a transcript
-    ///         (any phase from speech recognition). The Application layer is responsible for
-    ///         deciding which phases to display and how to aggregate them.
-    ///     </para>
-    ///     <para>
-    ///         <b>Architecture Note:</b> This event carries the raw <see cref="TranscriptionPhase" />
-    ///         from the Transport layer. The Application layer (TranscriptPresenter) should:
-    ///         <list type="bullet">
-    ///             <item>
-    ///                 <description>Suppress <c>Idle</c> and <c>Listening</c> phases (no display value)</description>
-    ///             </item>
-    ///             <item>
-    ///                 <description>Display <c>Interim</c> phases as live transcription</description>
-    ///             </item>
-    ///             <item>
-    ///                 <description>Buffer <c>AsrFinal</c> and <c>ProcessedFinal</c> for final text selection</description>
-    ///             </item>
-    ///             <item>
-    ///                 <description>Emit final transcript on <c>Completed</c> using best available text</description>
-    ///             </item>
-    ///         </list>
-    ///     </para>
-    ///     <para>
-    ///         <b>Multi-User Support:</b>
-    ///         The <see cref="SpeakerInfo" /> property provides speaker attribution data from the backend's
-    ///         speaker directory system. Use <see cref="HasSpeakerInfo" /> to check if multi-user
-    ///         attribution is available for this transcript.
-    ///     </para>
-    /// </remarks>
     public readonly struct PlayerTranscriptReceived
     {
         /// <summary>
@@ -48,15 +15,28 @@ namespace Convai.Domain.DomainEvents.Transcript
 
         /// <summary>
         ///     The transcription phase this event represents.
-        ///     Used by the Application layer to make decisions about filtering and aggregation.
         /// </summary>
         public TranscriptionPhase Phase { get; }
 
         /// <summary>
         ///     Speaker attribution data for multi-user scenarios.
-        ///     Contains speaker_id, speaker_name, and participant_id from the backend.
         /// </summary>
         public SpeakerInfo SpeakerInfo { get; }
+
+        /// <summary>
+        ///     The speaking turn/session identifier associated with this transcript update.
+        /// </summary>
+        public string TurnId { get; }
+
+        /// <summary>
+        ///     Unique identifier for the rendered transcript message.
+        /// </summary>
+        public string MessageId { get; }
+
+        /// <summary>
+        ///     Normalized source of the transcript event.
+        /// </summary>
+        public TranscriptSegmentSourceKind SourceKind { get; }
 
         /// <summary>
         ///     Creates a new PlayerTranscriptReceived event.
@@ -64,11 +44,19 @@ namespace Convai.Domain.DomainEvents.Transcript
         public PlayerTranscriptReceived(
             TranscriptMessage message,
             TranscriptionPhase phase = TranscriptionPhase.Interim,
-            SpeakerInfo speakerInfo = default)
+            SpeakerInfo speakerInfo = default,
+            string turnId = null,
+            string messageId = null,
+            TranscriptSegmentSourceKind sourceKind = TranscriptSegmentSourceKind.Unknown)
         {
             Message = message;
             Phase = phase;
             SpeakerInfo = speakerInfo.IsValid ? speakerInfo : SpeakerInfo.Empty;
+            TurnId = string.IsNullOrWhiteSpace(turnId) ? message.PlayerOrCharacterId : turnId;
+            MessageId = string.IsNullOrWhiteSpace(messageId) ? TurnId : messageId;
+            SourceKind = sourceKind == TranscriptSegmentSourceKind.Unknown
+                ? GetDefaultSourceKind(phase)
+                : sourceKind;
         }
 
         /// <summary>
@@ -89,7 +77,10 @@ namespace Convai.Domain.DomainEvents.Transcript
             bool isFinal,
             TranscriptionPhase phase = TranscriptionPhase.Interim,
             float? confidence = null,
-            SpeakerInfo speakerInfo = default)
+            SpeakerInfo speakerInfo = default,
+            string turnId = null,
+            string messageId = null,
+            TranscriptSegmentSourceKind sourceKind = TranscriptSegmentSourceKind.Unknown)
         {
             var message = TranscriptMessage.Create(
                 playerId,
@@ -101,7 +92,7 @@ namespace Convai.Domain.DomainEvents.Transcript
                 SpeakerType.Player
             );
 
-            return new PlayerTranscriptReceived(message, phase, speakerInfo);
+            return new PlayerTranscriptReceived(message, phase, speakerInfo, turnId, messageId, sourceKind);
         }
 
         /// <summary>
@@ -110,7 +101,10 @@ namespace Convai.Domain.DomainEvents.Transcript
         public static PlayerTranscriptReceived CreateWithSpeaker(
             string text,
             TranscriptionPhase phase,
-            SpeakerInfo speakerInfo)
+            SpeakerInfo speakerInfo,
+            string turnId = null,
+            string messageId = null,
+            TranscriptSegmentSourceKind sourceKind = TranscriptSegmentSourceKind.Unknown)
         {
             TranscriptMessage message = TranscriptMessage.ForPlayer(
                 text,
@@ -120,13 +114,35 @@ namespace Convai.Domain.DomainEvents.Transcript
                 speakerInfo.ParticipantId
             );
 
-            return new PlayerTranscriptReceived(message, phase, speakerInfo);
+            return new PlayerTranscriptReceived(message, phase, speakerInfo, turnId, messageId, sourceKind);
+        }
+
+        /// <summary>
+        ///     Creates a typed-text player transcript event keyed by a stable message ID.
+        /// </summary>
+        public static PlayerTranscriptReceived CreateTypedText(
+            string playerId,
+            string displayName,
+            string text,
+            string messageId,
+            SpeakerInfo speakerInfo = default)
+        {
+            return Create(
+                playerId,
+                displayName,
+                text,
+                true,
+                TranscriptionPhase.Completed,
+                speakerInfo: speakerInfo,
+                turnId: messageId,
+                messageId: messageId,
+                sourceKind: TranscriptSegmentSourceKind.PlayerTypedText);
         }
 
         /// <summary>
         ///     Gets the player ID from the message.
         /// </summary>
-        public string PlayerId => Message.SpeakerId;
+        public string PlayerId => Message.PlayerOrCharacterId;
 
         /// <summary>
         ///     Gets the player's display name from the message.
@@ -141,12 +157,23 @@ namespace Convai.Domain.DomainEvents.Transcript
         /// <summary>
         ///     Checks if this is a final transcript.
         /// </summary>
-        public bool IsFinal => Message.IsFinal;
+        public bool IsFinal => Lifecycle != TranscriptLifecycle.Streaming;
 
         /// <summary>
         ///     Checks if this is an interim transcript.
         /// </summary>
-        public bool IsInterim => Message.IsInterim;
+        public bool IsInterim => Lifecycle == TranscriptLifecycle.Streaming;
+
+        /// <summary>
+        ///     Gets the lifecycle of this player transcript update.
+        /// </summary>
+        public TranscriptLifecycle Lifecycle => Phase switch
+        {
+            TranscriptionPhase.AsrFinal => TranscriptLifecycle.Stable,
+            TranscriptionPhase.ProcessedFinal => TranscriptLifecycle.Stable,
+            TranscriptionPhase.Completed => TranscriptLifecycle.Completed,
+            _ => TranscriptLifecycle.Streaming
+        };
 
         /// <summary>
         ///     Gets the timestamp when the transcript was received.
@@ -167,5 +194,11 @@ namespace Convai.Domain.DomainEvents.Transcript
         ///     Gets the LiveKit participant ID, if available.
         /// </summary>
         public string ParticipantId => Message.ParticipantId;
+
+        private static TranscriptSegmentSourceKind GetDefaultSourceKind(TranscriptionPhase phase) => phase switch
+        {
+            TranscriptionPhase.ProcessedFinal => TranscriptSegmentSourceKind.PlayerProcessedFinal,
+            _ => TranscriptSegmentSourceKind.PlayerAsr
+        };
     }
 }

@@ -4,29 +4,8 @@ using Newtonsoft.Json;
 
 namespace Convai.RestAPI.Internal
 {
-    [Serializable]
-    internal class CreateSpeakerIDResult
-    {
-        public CreateSpeakerIDResult(string speakerID) => SpeakerID = speakerID;
-
-        [JsonProperty("speaker_id")] public string SpeakerID { get; set; }
-    }
-
-    [Serializable]
-    public class SpeakerIDDetails
-    {
-        public SpeakerIDDetails(string id, string name)
-        {
-            ID = id;
-            Name = name;
-        }
-
-        [JsonProperty("speaker_id")] public string ID { get; set; }
-        [JsonProperty("name")] public string Name { get; set; }
-    }
-
     /// <summary>
-    /// Represents an end user (modern speaker with end_user_id) from the /user/end-users/list API.
+    /// Represents an end user from the /user/end-users/* APIs.
     /// </summary>
     [Serializable]
     public class EndUserDetails
@@ -173,6 +152,105 @@ namespace Convai.RestAPI.Internal
                 HasMore = false
             };
         }
+    }
+
+    /// <summary>
+    /// Response model for the /user/end-users/update API.
+    /// </summary>
+    [Serializable]
+    public class EndUserUpdateResponse : EndUserDetails
+    {
+        public EndUserUpdateResponse(
+            string endUserId,
+            string lastActiveTs,
+            string lastLtmUsageTs,
+            Dictionary<string, object> metadata,
+            string message = "")
+            : base(endUserId, lastActiveTs, lastLtmUsageTs, metadata)
+        {
+            Message = message;
+        }
+
+        [JsonProperty("message")] public string Message { get; set; }
+    }
+
+    /// <summary>
+    /// Response model for the /user/end-users/delete API.
+    /// </summary>
+    [Serializable]
+    public class EndUserDeleteResponse
+    {
+        [JsonProperty("message")] public string Message { get; set; } = string.Empty;
+        [JsonProperty("end_user_id")] public string EndUserId { get; set; } = string.Empty;
+        [JsonProperty("deleted")] public bool Deleted { get; set; }
+    }
+
+    /// <summary>
+    /// Single memory entry returned by the /memory/* APIs.
+    /// </summary>
+    [Serializable]
+    public class MemoryRecord
+    {
+        [JsonProperty("id")] public string Id { get; set; } = string.Empty;
+        [JsonProperty("memory")] public string Memory { get; set; } = string.Empty;
+        [JsonProperty("created_at")] public string CreatedAt { get; set; } = string.Empty;
+        [JsonProperty("updated_at")] public string UpdatedAt { get; set; } = string.Empty;
+        [JsonProperty("metadata")] public Dictionary<string, object> Metadata { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Result item returned when adding a memory.
+    /// </summary>
+    [Serializable]
+    public class MemoryAddResult
+    {
+        [JsonProperty("id")] public string Id { get; set; } = string.Empty;
+        [JsonProperty("event")] public string Event { get; set; } = string.Empty;
+        [JsonProperty("memory")] public string Memory { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// Response model for the /memory/add API.
+    /// </summary>
+    [Serializable]
+    public class AddMemoriesResponse
+    {
+        [JsonProperty("memories")] public List<MemoryAddResult> Memories { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Response model for the /memory/list API.
+    /// </summary>
+    [Serializable]
+    public class MemoryListResponse
+    {
+        [JsonProperty("memories")] public List<MemoryRecord> Memories { get; set; } = new();
+        [JsonProperty("total_count")] public int TotalCount { get; set; }
+        [JsonProperty("page")] public int Page { get; set; }
+        [JsonProperty("page_size")] public int PageSize { get; set; }
+        [JsonProperty("has_more")] public bool HasMore { get; set; }
+    }
+
+    /// <summary>
+    /// Response model for the /memory/delete API.
+    /// </summary>
+    [Serializable]
+    public class MemoryDeleteResponse
+    {
+        [JsonProperty("message")] public string Message { get; set; } = string.Empty;
+        [JsonProperty("memory_id")] public string MemoryId { get; set; } = string.Empty;
+        [JsonProperty("deleted")] public bool Deleted { get; set; }
+    }
+
+    /// <summary>
+    /// Response model for the /memory/delete-all API.
+    /// </summary>
+    [Serializable]
+    public class MemoryDeleteAllResponse
+    {
+        [JsonProperty("message")] public string Message { get; set; } = string.Empty;
+        [JsonProperty("character_id")] public string CharacterId { get; set; } = string.Empty;
+        [JsonProperty("end_user_id")] public string EndUserId { get; set; } = string.Empty;
     }
 
     [Serializable]
@@ -349,7 +427,17 @@ namespace Convai.RestAPI.Internal
     [Serializable]
     public class RoomDetails
     {
-        public RoomDetails(string token, string roomName, string sessionId, string roomURL, string characterSessionId = "", string speakerId = "", string transport = "livekit")
+        public RoomDetails(
+            string token,
+            string roomName,
+            string sessionId,
+            string roomURL,
+            string characterSessionId = "",
+            string speakerId = "",
+            string transport = "livekit",
+            string requestTraceId = "",
+            string endUserId = "",
+            Dictionary<string, object> endUserMetadata = null)
         {
             Token = token;
             RoomName = roomName;
@@ -358,6 +446,9 @@ namespace Convai.RestAPI.Internal
             CharacterSessionId = characterSessionId;
             SpeakerId = speakerId;
             Transport = transport;
+            RequestTraceId = requestTraceId;
+            EndUserId = endUserId;
+            EndUserMetadata = endUserMetadata;
         }
 
         public static RoomDetails Default()
@@ -374,14 +465,36 @@ namespace Convai.RestAPI.Internal
         [JsonProperty("session_id")]
         public string SessionId { get; private set; }
 
+        /// <summary>
+        /// Backend request trace ID for correlating Unity-side connect logs with backend logs.
+        /// </summary>
+        [JsonProperty("request_trace_id")]
+        public string RequestTraceId { get; private set; }
+
         [JsonProperty("room_url")]
         public string RoomURL { get; private set; }
 
         [JsonProperty("character_session_id")]
         public string CharacterSessionId { get; private set; }
 
+        /// <summary>
+        /// Optional backend-resolved speaker identifier.
+        /// This is internal/backend-facing state and may be omitted from current WebRTC connect responses.
+        /// </summary>
         [JsonProperty("speaker_id")]
         public string SpeakerId { get; private set; }
+
+        /// <summary>
+        /// Backend-resolved or echoed end-user identifier used for player/account scoped memory.
+        /// </summary>
+        [JsonProperty("end_user_id")]
+        public string EndUserId { get; private set; }
+
+        /// <summary>
+        /// Backend-resolved or echoed metadata for the active end user.
+        /// </summary>
+        [JsonProperty("end_user_metadata")]
+        public Dictionary<string, object> EndUserMetadata { get; private set; }
 
         /// <summary>
         /// Transport type (defaults to "livekit" if not provided by server).

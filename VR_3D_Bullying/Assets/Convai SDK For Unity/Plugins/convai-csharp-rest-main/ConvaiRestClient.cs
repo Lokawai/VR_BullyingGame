@@ -18,7 +18,8 @@ namespace Convai.RestAPI
     /// <list type="bullet">
     /// <item><see cref="Characters"/> - Character management operations</item>
     /// <item><see cref="Users"/> - User account and API key operations</item>
-    /// <item><see cref="Ltm"/> - Long-term memory (speaker ID) operations</item>
+    /// <item><see cref="EndUsers"/> - End-user identity management operations</item>
+    /// <item><see cref="Memory"/> - Character-scoped long-term memory operations</item>
     /// <item><see cref="Narrative"/> - Narrative design operations</item>
     /// <item><see cref="Animations"/> - Server animation operations</item>
     /// <item><see cref="Rooms"/> - Room connection operations</item>
@@ -37,8 +38,8 @@ namespace Convai.RestAPI
     /// var character = await client.Characters.GetDetailsAsync("character-id");
     /// Console.WriteLine($"Character: {character.CharacterName}");
     /// 
-    /// // Create a speaker for LTM
-    /// var speakerId = await client.Ltm.CreateSpeakerAsync("Player Name");
+    /// // Fetch an end user
+    /// var endUser = await client.EndUsers.GetAsync("player-42");
     /// </code>
     /// </example>
     public sealed class ConvaiRestClient : IDisposable
@@ -58,9 +59,14 @@ namespace Convai.RestAPI
         public UserService Users { get; }
 
         /// <summary>
-        /// Long-term memory (speaker ID) operations.
+        /// End-user identity management operations.
         /// </summary>
-        public LtmService Ltm { get; }
+        public EndUsersService EndUsers { get; }
+
+        /// <summary>
+        /// Character-scoped long-term memory operations.
+        /// </summary>
+        public MemoryService Memory { get; }
 
         /// <summary>
         /// Narrative design operations.
@@ -104,7 +110,8 @@ namespace Convai.RestAPI
             // Initialize all services
             Characters = new CharacterService(options, _transport);
             Users = new UserService(options, _transport);
-            Ltm = new LtmService(options, _transport);
+            EndUsers = new EndUsersService(options, _transport);
+            Memory = new MemoryService(options, _transport);
             Narrative = new NarrativeService(options, _transport);
             Animations = new AnimationService(options, _transport);
             Rooms = new RoomService(options, _transport);

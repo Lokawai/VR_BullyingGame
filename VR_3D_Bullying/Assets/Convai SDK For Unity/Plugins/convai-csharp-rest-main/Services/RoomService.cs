@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Convai.RestAPI.Internal;
 using Convai.RestAPI.Transport;
+using Convai.Shared.Actions;
 using Newtonsoft.Json;
 
 namespace Convai.RestAPI.Services
@@ -64,10 +65,10 @@ namespace Convai.RestAPI.Services
         public string ConnectionType { get; set; } = string.Empty;
 
         /// <summary>
-        /// The LLM provider to use.
+        /// The LLM provider sent to the backend. Unity currently always uses "dynamic".
         /// </summary>
         [JsonProperty("llm_provider")]
-        public string LlmProvider { get; set; } = string.Empty;
+        public string LlmProvider { get; set; } = "dynamic";
 
         /// <summary>
         /// The core service URL to connect to.
@@ -88,16 +89,30 @@ namespace Convai.RestAPI.Services
         public RoomInvocationMetadata? InvocationMetadata { get; set; }
 
         /// <summary>
-        /// Optional end user ID for long-term memory.
+        /// Optional stable identifier for the developer's end user.
+        /// Used for identity tracking, analytics, management, and memory lookup.
         /// </summary>
         [JsonProperty("end_user_id", NullValueHandling = NullValueHandling.Ignore)]
         public string? EndUserId { get; set; }
 
         /// <summary>
+        /// Optional metadata associated with the end user.
+        /// This is typically used for display and end-user management fields such as name.
+        /// </summary>
+        [JsonProperty("end_user_metadata", NullValueHandling = NullValueHandling.Ignore)]
+        public IReadOnlyDictionary<string, object>? EndUserMetadata { get; set; }
+
+        /// <summary>
         /// Optional maximum number of participants.
         /// </summary>
         [JsonProperty("max_num_participants", NullValueHandling = NullValueHandling.Ignore)]
-        public string? MaxNumParticipants { get; set; }
+        public int? MaxNumParticipants { get; set; }
+
+        /// <summary>
+        /// Optional shared session key used to group sessions.
+        /// </summary>
+        [JsonProperty("shared_session_key", NullValueHandling = NullValueHandling.Ignore)]
+        public string? SharedSessionKey { get; set; }
 
         /// <summary>
         /// Optional room name.
@@ -110,6 +125,18 @@ namespace Convai.RestAPI.Services
         /// </summary>
         [JsonProperty("video_track_name", NullValueHandling = NullValueHandling.Ignore)]
         public string? VideoTrackName { get; set; }
+
+        /// <summary>
+        /// Optional backend vision input configuration for dynamic context vision.
+        /// </summary>
+        [JsonProperty("vision_input_config", NullValueHandling = NullValueHandling.Ignore)]
+        public RoomVisionInputConfig? VisionInputConfig { get; set; }
+
+        /// <summary>
+        /// Optional response-mode policy for backend-controlled update/trigger lanes.
+        /// </summary>
+        [JsonProperty("respond_modes", NullValueHandling = NullValueHandling.Ignore)]
+        public RoomRespondModesConfig? RespondModes { get; set; }
 
         /// <summary>
         /// Optional mode.
@@ -130,6 +157,18 @@ namespace Convai.RestAPI.Services
         public TurnDetectionConfig? TurnDetectionConfig { get; set; }
 
         /// <summary>
+        /// Optional initial STT enabled state for the session.
+        /// </summary>
+        [JsonProperty("default_stt_enabled", NullValueHandling = NullValueHandling.Ignore)]
+        public bool? DefaultSttEnabled { get; set; }
+
+        /// <summary>
+        /// Optional user voice activity detection parameters for the session.
+        /// </summary>
+        [JsonProperty("vad_params", NullValueHandling = NullValueHandling.Ignore)]
+        public VadParams? VadParams { get; set; }
+
+        /// <summary>
         /// Optional blendshape provider to use for lip sync.
         /// When set, the server may stream blendshape data alongside audio.
         /// </summary>
@@ -148,6 +187,108 @@ namespace Convai.RestAPI.Services
         /// </summary>
         [JsonProperty("emotion_config", NullValueHandling = NullValueHandling.Ignore)]
         public RoomEmotionConfig? EmotionConfig { get; set; }
+
+        /// <summary>
+        /// When true, the backend enables RTVI metrics for this session (debug/analytics).
+        /// </summary>
+        [JsonProperty("debug", NullValueHandling = NullValueHandling.Ignore)]
+        public bool? Debug { get; set; }
+
+        /// <summary>
+        /// Optional dynamic info included with the initial connection request.
+        /// </summary>
+        [JsonProperty("dynamic_info", NullValueHandling = NullValueHandling.Ignore)]
+        public RoomDynamicInfo? DynamicInfo { get; set; }
+
+        /// <summary>
+        /// Optional action affordances available for this session.
+        /// </summary>
+        [JsonProperty("action_config", NullValueHandling = NullValueHandling.Ignore)]
+        public ConvaiActionConfig? ActionConfig { get; set; }
+    }
+
+    /// <summary>
+    /// Dynamic context vision input configuration sent with room-connect requests.
+    /// </summary>
+    public sealed class RoomVisionInputConfig
+    {
+        [JsonProperty("enabled")]
+        public bool Enabled { get; set; } = true;
+
+        [JsonProperty("sample_interval_secs")]
+        public float SampleIntervalSecs { get; set; } = 1f;
+
+        [JsonProperty("frames_per_turn")]
+        public int FramesPerTurn { get; set; } = 5;
+
+        [JsonProperty("buffer_frames", NullValueHandling = NullValueHandling.Ignore)]
+        public int? BufferFrames { get; set; }
+
+        [JsonProperty("sampling_windows", NullValueHandling = NullValueHandling.Ignore)]
+        public List<RoomVisionSamplingWindow>? SamplingWindows { get; set; }
+
+        [JsonProperty("staleness_seconds")]
+        public float StalenessSeconds { get; set; } = 10f;
+
+        [JsonProperty("max_resolution", NullValueHandling = NullValueHandling.Ignore)]
+        public int? MaxResolution { get; set; }
+
+        [JsonProperty("replace_previous_vision_context")]
+        public bool ReplacePreviousVisionContext { get; set; } = true;
+    }
+
+    /// <summary>
+    /// Frame sampling window for dynamic context vision input.
+    /// </summary>
+    public sealed class RoomVisionSamplingWindow
+    {
+        [JsonProperty("count")]
+        public int Count { get; set; }
+
+        [JsonProperty("interval_ms")]
+        public int IntervalMs { get; set; }
+    }
+
+    /// <summary>
+    /// Backend response-mode policy sent with room-connect requests.
+    /// </summary>
+    public sealed class RoomRespondModesConfig
+    {
+        [JsonProperty("text", NullValueHandling = NullValueHandling.Ignore)]
+        public string? Text { get; set; }
+
+        [JsonProperty("audio", NullValueHandling = NullValueHandling.Ignore)]
+        public string? Audio { get; set; }
+
+        [JsonProperty("vision", NullValueHandling = NullValueHandling.Ignore)]
+        public string? Vision { get; set; }
+
+        [JsonProperty("context_update", NullValueHandling = NullValueHandling.Ignore)]
+        public string? ContextUpdate { get; set; }
+
+        [JsonProperty("trigger", NullValueHandling = NullValueHandling.Ignore)]
+        public string? Trigger { get; set; }
+
+        [JsonProperty("scene_metadata", NullValueHandling = NullValueHandling.Ignore)]
+        public string? SceneMetadata { get; set; }
+    }
+
+    /// <summary>
+    /// Dynamic info payload for initial room-connect requests.
+    /// </summary>
+    public sealed class RoomDynamicInfo
+    {
+        /// <summary>
+        /// Dynamic info text value.
+        /// </summary>
+        [JsonProperty("text")]
+        public string Text { get; set; } = string.Empty;
+
+        /// <summary>
+        /// When true, backend keeps this dynamic info in context.
+        /// </summary>
+        [JsonProperty("keep_in_context")]
+        public bool KeepInContext { get; set; }
     }
 
     /// <summary>

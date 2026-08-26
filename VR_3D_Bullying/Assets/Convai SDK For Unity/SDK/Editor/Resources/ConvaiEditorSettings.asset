@@ -14,6 +14,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _convaiConfigurationWindowStyleSheet: {fileID: -4733365628477956816, guid: 5baa54a59b0c7d44394c08317613d092, type: 3}
   _unityStyleSheet: {fileID: -4733365628477956816, guid: 62dd20662e9534341948688eca68fa17, type: 3}
+  _convaiSettingsSectionsStyleSheet: {fileID: 7433441132597879392, guid: c3b70b4ed99545f4a8d22c5cc784bd44, type: 3}
   _convaiCharacterInspectorUxml: {fileID: 9197481963319205126, guid: 7c19e7b554eca4fb1b28cb5f2cc3ec78, type: 3}
   _convaiEditorStylesSheet: {fileID: 7433441132597879392, guid: fa1ad6e98a24348ea8307974b0703cb1, type: 3}
   _convaiIconTexture: {fileID: 2800000, guid: 11be21f3f1f4bac46a48d14a031f3d60, type: 3}

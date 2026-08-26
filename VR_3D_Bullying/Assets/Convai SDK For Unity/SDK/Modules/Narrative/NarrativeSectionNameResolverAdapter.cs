@@ -1,22 +1,14 @@
 using System.Collections.Generic;
 using Convai.Domain.Abstractions;
-using UnityEngine;
 
 namespace Convai.Modules.Narrative
 {
     /// <summary>
-    ///     Adapter that implements <see cref="INarrativeSectionNameResolver" /> by querying
-    ///     all <see cref="ConvaiNarrativeDesignManager" /> instances in the scene.
+    ///     Runtime registry that aggregates section-name resolvers contributed by the Narrative module.
     /// </summary>
-    /// <remarks>
-    ///     This adapter is used by RTVIHandler to resolve human-readable section names
-    ///     for debug logging purposes. It searches through all NarrativeDesignManagers
-    ///     to find a matching section by ID.
-    /// </remarks>
     public class NarrativeSectionNameResolverAdapter : INarrativeSectionNameResolver
     {
-        private readonly List<ConvaiNarrativeDesignManager> _managers = new();
-        private bool _initialized;
+        private readonly List<INarrativeSectionNameResolver> _resolvers = new();
 
         /// <inheritdoc />
         public bool TryGetSectionName(string sectionId, out string sectionName)
@@ -25,36 +17,40 @@ namespace Convai.Modules.Narrative
 
             if (string.IsNullOrEmpty(sectionId)) return false;
 
-            if (!_initialized) Refresh();
+            Refresh();
 
-            foreach (ConvaiNarrativeDesignManager manager in _managers)
+            foreach (INarrativeSectionNameResolver resolver in _resolvers)
             {
-                if (manager == null) continue;
-
-                UnitySectionEventConfig config = manager.FindSectionConfig(sectionId);
-                if (config != null && !string.IsNullOrEmpty(config.SectionName))
-                {
-                    sectionName = config.SectionName;
+                if (resolver == null || ReferenceEquals(resolver, this)) continue;
+                if (resolver.TryGetSectionName(sectionId, out sectionName) &&
+                    !string.IsNullOrEmpty(sectionName))
                     return true;
-                }
             }
 
             return false;
         }
 
         /// <summary>
-        ///     Refreshes the list of narrative design managers from the scene.
-        ///     Call this if managers are added or removed at runtime.
+        ///     Adds a new resolver to the registry.
         /// </summary>
-        public void Refresh()
+        public void AddResolver(INarrativeSectionNameResolver resolver)
         {
-            _managers.Clear();
-            ConvaiNarrativeDesignManager[] managers = Object.FindObjectsByType<ConvaiNarrativeDesignManager>(
-                FindObjectsInactive.Include,
-                FindObjectsSortMode.None);
-
-            if (managers != null) _managers.AddRange(managers);
-            _initialized = true;
+            if (resolver == null || ReferenceEquals(resolver, this) || _resolvers.Contains(resolver)) return;
+            _resolvers.Add(resolver);
         }
+
+        /// <summary>
+        ///     Removes a resolver from the registry.
+        /// </summary>
+        public void RemoveResolver(INarrativeSectionNameResolver resolver)
+        {
+            if (resolver == null) return;
+            _resolvers.Remove(resolver);
+        }
+
+        /// <summary>
+        ///     Prunes destroyed or removed resolver references.
+        /// </summary>
+        public void Refresh() => _resolvers.RemoveAll(resolver => resolver == null);
     }
 }

@@ -9,9 +9,6 @@ namespace Convai.Editor.ConfigurationWindow.Components
     /// </summary>
     public sealed class ConfigurationWindowContext
     {
-        /// <summary>
-        ///     Initializes a new instance of the <see cref="ConfigurationWindowContext" /> class.
-        /// </summary>
         public ConfigurationWindowContext()
         {
             RefreshApiKeyAvailability(false);
@@ -30,8 +27,8 @@ namespace Convai.Editor.ConfigurationWindow.Components
         private event Action<bool> _apiKeyAvailabilityChanged;
 
         /// <summary>
-        ///     Raised when API key availability changes.
-        ///     Parameter is true when an API key is present.
+        ///     Raised when API key availability or configured credentials change.
+        ///     Parameter is true when an API key is present after the refresh.
         /// </summary>
         public event Action<bool> ApiKeyAvailabilityChanged
         {
@@ -58,7 +55,11 @@ namespace Convai.Editor.ConfigurationWindow.Components
         /// <summary>
         ///     Signals that API-key-related state may have changed.
         /// </summary>
-        public void NotifyApiKeyUpdated() => RefreshApiKeyAvailability();
+        public void NotifyApiKeyUpdated()
+        {
+            RefreshApiKeyAvailability(false);
+            _apiKeyAvailabilityChanged?.Invoke(IsApiKeyAvailable);
+        }
 
         internal void ClearSubscribers() => _apiKeyAvailabilityChanged = null;
     }

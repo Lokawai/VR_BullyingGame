@@ -8,8 +8,11 @@ namespace Convai.Runtime.Configuration
     [CreateAssetMenu(fileName = "ConvaiKeyBindings", menuName = "Convai/Key Bindings")]
     public class ConvaiKeyBindings : ScriptableObject
     {
-        [SerializeField] private KeyCode talkKey = KeyCode.T;
-        [SerializeField] private KeyCode openSettingsKey = KeyCode.F10;
+        [SerializeField] [Tooltip("Key that starts and stops talking (push-to-talk).")]
+        private KeyCode talkKey = KeyCode.T;
+
+        [SerializeField] [Tooltip("Key that opens the Convai settings UI.")]
+        private KeyCode openSettingsKey = KeyCode.F10;
 
         /// <summary>Gets the key used to start/stop talking.</summary>
         public KeyCode TalkKey => talkKey;

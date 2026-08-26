@@ -59,6 +59,38 @@ namespace Convai.Domain.Errors
         /// <summary>Generic connection failure.</summary>
         public const string ConnectionFailed = "connection.failed";
 
+        /// <summary>Failed to resolve a short-lived auth token before connecting.</summary>
+        public const string ConnectionAuthTokenFetchFailed = "connection.auth_token_fetch_failed";
+
+        /// <summary>Connect API validation error (HTTP 422).</summary>
+        public const string ConnectionConnectValidationError = "connection.connect_validation_error";
+
+        /// <summary>Connect API rejected an invalid session identifier.</summary>
+        public const string ConnectionConnectInvalidSessionId = "connection.connect_invalid_session_id";
+
+        /// <summary>Connect API rejected the provided API key.</summary>
+        public const string ConnectionConnectInvalidApiKey = "connection.connect_invalid_api_key";
+
+        /// <summary>Realtime access is not enabled for this account or environment.</summary>
+        public const string ConnectionConnectRealtimeNotAllowed = "connection.connect_realtime_not_allowed";
+
+        /// <summary>The requested character was not found or is not accessible.</summary>
+        public const string ConnectionConnectCharacterNotFound = "connection.connect_character_not_found";
+
+        /// <summary>The concurrent session limit for the plan has been reached.</summary>
+        public const string ConnectionConnectConcurrencyLimitReached =
+            "connection.connect_concurrency_limit_reached";
+
+        /// <summary>The backend could not create or resolve a speaker due to limit constraints.</summary>
+        public const string ConnectionConnectSpeakerLimitReached = "connection.connect_speaker_limit_reached";
+
+        /// <summary>The backend failed while starting the bot pipeline.</summary>
+        public const string ConnectionConnectBotStartFailed = "connection.connect_bot_start_failed";
+
+        /// <summary>An unhandled server exception occurred during connect.</summary>
+        public const string ConnectionConnectUnhandledServerException =
+            "connection.connect_unhandled_server_exception";
+
         #endregion
 
         #region Transport Errors
@@ -189,6 +221,15 @@ namespace Convai.Domain.Errors
         /// <summary>API key is missing or not configured.</summary>
         public const string ConfigApiKeyMissing = "config.api_key_missing";
 
+        /// <summary>Auth Token mode has no registered provider or configured endpoint.</summary>
+        public const string ConfigAuthTokenProviderMissing = "config.auth_token_provider_missing";
+
+        /// <summary>The auth-token endpoint is not HTTPS or an HTTP loopback development URL.</summary>
+        public const string ConfigAuthTokenEndpointInvalid = "config.auth_token_endpoint_invalid";
+
+        /// <summary>An explicit auth-token connection was requested while another auth mode is selected.</summary>
+        public const string ConfigAuthTokenModeRequired = "config.auth_token_mode_required";
+
         /// <summary>Character ID is missing or not configured.</summary>
         public const string ConfigCharacterIdMissing = "config.character_id_missing";
 
@@ -216,6 +257,16 @@ namespace Convai.Domain.Errors
                 ConnectionNotFound => "Resource not found",
                 ConnectionBadRequest => "Bad request",
                 ConnectionFailed => "Connection failed",
+                ConnectionAuthTokenFetchFailed => "Failed to fetch an auth token",
+                ConnectionConnectValidationError => "Connect request failed validation",
+                ConnectionConnectInvalidSessionId => "Connect request used an invalid session ID",
+                ConnectionConnectInvalidApiKey => "Connect request used an invalid API key",
+                ConnectionConnectRealtimeNotAllowed => "Realtime access is not allowed",
+                ConnectionConnectCharacterNotFound => "Character not found or inaccessible",
+                ConnectionConnectConcurrencyLimitReached => "Concurrent session limit reached",
+                ConnectionConnectSpeakerLimitReached => "Speaker limit reached",
+                ConnectionConnectBotStartFailed => "Failed to start bot",
+                ConnectionConnectUnhandledServerException => "Unhandled server exception during connect",
 
                 // Transport
                 TransportLivekitError => "LiveKit transport error",
@@ -264,6 +315,9 @@ namespace Convai.Domain.Errors
 
                 // Config
                 ConfigApiKeyMissing => "API key is missing or not configured",
+                ConfigAuthTokenProviderMissing => "Auth token provider or endpoint is not configured",
+                ConfigAuthTokenEndpointInvalid => "Auth token endpoint URL is invalid",
+                ConfigAuthTokenModeRequired => "Auth Token mode is required",
                 ConfigCharacterIdMissing => "Character ID is missing or not configured",
 
                 _ => $"Unknown error: {errorCode}"
@@ -300,6 +354,10 @@ namespace Convai.Domain.Errors
                    errorCode == ConnectionServerError ||
                    errorCode == ConnectionServiceUnavailable ||
                    errorCode == ConnectionRateLimited ||
+                   errorCode == ConnectionConnectConcurrencyLimitReached ||
+                   errorCode == ConnectionConnectBotStartFailed ||
+                   errorCode == ConnectionConnectUnhandledServerException ||
+                   errorCode == ConnectionAuthTokenFetchFailed ||
                    errorCode == TransportIceFailed ||
                    errorCode == TransportSignalDisconnected ||
                    errorCode == VisionDeviceInitTimeout ||

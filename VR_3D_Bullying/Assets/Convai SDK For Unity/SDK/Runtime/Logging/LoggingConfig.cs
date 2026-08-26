@@ -1,3 +1,4 @@
+using System;
 using DomainLogLevel = Convai.Domain.Logging.LogLevel;
 using LogCategory = Convai.Domain.Logging.LogCategory;
 
@@ -8,9 +9,9 @@ namespace Convai.Runtime.Logging
     ///     Replaces the static LoggerConfig for runtime-configurable logging.
     /// </summary>
     /// <remarks>
-    ///     Performance optimizations (P0-2):
+    ///     Performance optimizations:
     ///     - Pre-computed lookup table for category log levels (O(1) instead of O(n))
-    ///     - Cached ConvaiSettings.Instance reference (P1-4)
+    ///     - Cached ConvaiSettings.Instance reference
     ///     - Cache invalidation via version number
     ///     This class provides a bridge between the Domain logging types and ConvaiSettings.
     ///     Runtime changes to settings are detected and cache is refreshed automatically.
@@ -24,7 +25,11 @@ namespace Convai.Runtime.Logging
     /// </remarks>
     public static class LoggingConfig
     {
-        private const int CategoryCount = (int)LogCategory.LipSync + 1;
+        // Derived from the enum rather than named after its last member. Written by hand, this
+        // silently under-sizes the cache the moment a category is added: every category past the
+        // end falls through to a hardcoded Info, which ignores the user's per-category override
+        // *and* their global level, so adding a category quietly made its logs unsilenceable.
+        private static readonly int CategoryCount = Enum.GetValues(typeof(LogCategory)).Length;
 
         private static readonly DomainLogLevel[] _categoryLevels = new DomainLogLevel[CategoryCount];
 
@@ -119,7 +124,7 @@ namespace Convai.Runtime.Logging
                 foreach (LogLevelOverride over in overrides)
                 {
                     int index = (int)over.Category;
-                    if (index is >= 0 and < CategoryCount) _categoryLevels[index] = over.Level;
+                    if (index >= 0 && index < CategoryCount) _categoryLevels[index] = over.Level;
                 }
             }
 
@@ -144,7 +149,7 @@ namespace Convai.Runtime.Logging
 
         /// <summary>
         ///     Gets the effective log level for a specific category.
-        ///     Uses O(1) array lookup instead of O(n) linear search (P0-2).
+        ///     Uses O(1) array lookup instead of O(n) linear search.
         /// </summary>
         /// <param name="category">The log category to check.</param>
         /// <returns>The effective log level for the category.</returns>
@@ -152,14 +157,14 @@ namespace Convai.Runtime.Logging
         {
             EnsureCacheValid();
             int index = (int)category;
-            return index is >= 0 and < CategoryCount
+            return index >= 0 && index < CategoryCount
                 ? _categoryLevels[index]
                 : DomainLogLevel.Info;
         }
 
         /// <summary>
         ///     Checks if a message at the given level and category should be logged.
-        ///     Optimized with cached lookup table for maximum performance (P0-2).
+        ///     Optimized with cached lookup table for maximum performance.
         /// </summary>
         /// <param name="level">The log level of the message.</param>
         /// <param name="category">The category of the message.</param>
@@ -168,7 +173,7 @@ namespace Convai.Runtime.Logging
         {
             EnsureCacheValid();
             int index = (int)category;
-            DomainLogLevel configuredLevel = index is >= 0 and < CategoryCount
+            DomainLogLevel configuredLevel = index >= 0 && index < CategoryCount
                 ? _categoryLevels[index]
                 : DomainLogLevel.Info;
 

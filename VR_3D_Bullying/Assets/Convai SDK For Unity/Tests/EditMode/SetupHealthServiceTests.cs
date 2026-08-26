@@ -19,19 +19,5 @@ namespace Convai.Tests.EditMode
             Assert.That(checkIds.Contains("players"));
         }
 
-        [Test]
-        public void BuildReport_StatusValuesAreValid()
-        {
-            SetupHealthReport report = SetupHealthService.BuildReport();
-
-            foreach (SetupHealthCheckResult result in report.Results)
-            {
-                Assert.That(
-                    result.Status == SetupHealthStatus.Healthy ||
-                    result.Status == SetupHealthStatus.Warning ||
-                    result.Status == SetupHealthStatus.Blocked,
-                    $"Unexpected status for check {result.Id}: {result.Status}");
-            }
-        }
     }
 }

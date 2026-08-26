@@ -3,11 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using Convai.Infrastructure.Networking.Transport;
 using LiveKit;
-// Type alias to disambiguate LiveKit track types from abstraction interfaces
 using LKRemoteTrack = LiveKit.IRemoteTrack;
 using LKConnectionState = LiveKit.Proto.ConnectionState;
 
-// CS0067: Events required by IRoomFacade interface but not yet raised (future LiveKit callback integration)
 #pragma warning disable CS0067
 
 namespace Convai.Infrastructure.Networking.Native
@@ -19,10 +17,6 @@ namespace Convai.Infrastructure.Networking.Native
     {
         #region Constructor
 
-        /// <summary>
-        ///     Creates a new native room facade wrapping a LiveKit room.
-        /// </summary>
-        /// <param name="room">The LiveKit room to wrap.</param>
         public NativeRoomFacade(Room room)
         {
             UnderlyingRoom = room ?? throw new ArgumentNullException(nameof(room));
@@ -31,11 +25,12 @@ namespace Convai.Infrastructure.Networking.Native
             if (UnderlyingRoom.LocalParticipant != null)
                 _localParticipant = new NativeLocalParticipant(UnderlyingRoom.LocalParticipant);
 
-            // Create remote participant wrappers
+            // Create remote participant wrappers and hydrate tracks that subscribed during connect.
             foreach (RemoteParticipant participant in UnderlyingRoom.RemoteParticipants.Values)
             {
                 var wrapper = new NativeRemoteParticipant(participant);
                 _remoteParticipants[participant.Sid] = wrapper;
+                HydrateSubscribedTracksForParticipant(wrapper, participant);
             }
 
             SubscribeToRoomEvents();
@@ -283,26 +278,11 @@ namespace Convai.Infrastructure.Networking.Native
             if (!_remoteParticipants.TryGetValue(participant.Sid, out NativeRemoteParticipant participantWrapper))
                 return;
 
-            if (track is RemoteAudioTrack audioTrack)
-            {
-                var trackWrapper = new NativeRemoteAudioTrack(audioTrack, participantWrapper);
-                participantWrapper.AddSubscribedTrack(trackWrapper);
+            if (!TryRegisterSubscribedRemoteTrack(track, publication, participantWrapper,
+                    out IRemoteTrack trackWrapper, out TrackPublicationInfo pubInfo))
+                return;
 
-                var pubInfo = new TrackPublicationInfo(publication.Sid, publication.Name, TrackKind.Audio,
-                    publication.Muted, true);
-                AudioTrackSubscribed?.Invoke(trackWrapper, participantWrapper);
-                TrackSubscribed?.Invoke(new TrackSubscriptionEventArgs(trackWrapper, participantWrapper, pubInfo));
-            }
-            else if (track is RemoteVideoTrack videoTrack)
-            {
-                var trackWrapper = new NativeRemoteVideoTrack(videoTrack, participantWrapper);
-                participantWrapper.AddSubscribedTrack(trackWrapper);
-
-                var pubInfo = new TrackPublicationInfo(publication.Sid, publication.Name, TrackKind.Video,
-                    publication.Muted, true);
-                VideoTrackSubscribed?.Invoke(trackWrapper, participantWrapper);
-                TrackSubscribed?.Invoke(new TrackSubscriptionEventArgs(trackWrapper, participantWrapper, pubInfo));
-            }
+            RaiseFacadeTrackSubscribed(trackWrapper, participantWrapper, pubInfo);
         }
 
         private void OnTrackUnsubscribed(LKRemoteTrack track, RemoteTrackPublication publication,
@@ -373,6 +353,66 @@ namespace Convai.Infrastructure.Networking.Native
 
         #region Helper Methods
 
+        private void HydrateSubscribedTracksForParticipant(NativeRemoteParticipant participantWrapper,
+            RemoteParticipant underlyingParticipant)
+        {
+            foreach (RemoteTrackPublication publication in underlyingParticipant.Tracks.Values)
+            {
+                if (publication.Track == null) continue;
+
+                TryRegisterSubscribedRemoteTrack(publication.Track, publication, participantWrapper,
+                    out _, out _);
+            }
+        }
+
+        private static bool TryRegisterSubscribedRemoteTrack(LKRemoteTrack track, RemoteTrackPublication publication,
+            NativeRemoteParticipant participantWrapper, out IRemoteTrack trackWrapper,
+            out TrackPublicationInfo publicationInfo)
+        {
+            trackWrapper = null;
+            publicationInfo = default;
+
+            if (track == null || publication == null || participantWrapper == null) return false;
+            if (participantWrapper.HasSubscribedTrack(track.Sid)) return false;
+
+            if (track is RemoteAudioTrack audioTrack)
+            {
+                trackWrapper = new NativeRemoteAudioTrack(audioTrack, participantWrapper);
+                participantWrapper.AddSubscribedTrack(trackWrapper);
+                publicationInfo = new TrackPublicationInfo(publication.Sid, publication.Name, TrackKind.Audio,
+                    publication.Muted, true);
+                return true;
+            }
+
+            if (track is RemoteVideoTrack videoTrack)
+            {
+                trackWrapper = new NativeRemoteVideoTrack(videoTrack, participantWrapper);
+                participantWrapper.AddSubscribedTrack(trackWrapper);
+                publicationInfo = new TrackPublicationInfo(publication.Sid, publication.Name, TrackKind.Video,
+                    publication.Muted, true);
+                return true;
+            }
+
+            return false;
+        }
+
+        private void RaiseFacadeTrackSubscribed(IRemoteTrack trackWrapper, NativeRemoteParticipant participantWrapper,
+            TrackPublicationInfo pubInfo)
+        {
+            if (trackWrapper is IRemoteAudioTrack audioTrack)
+            {
+                AudioTrackSubscribed?.Invoke(audioTrack, participantWrapper);
+                TrackSubscribed?.Invoke(new TrackSubscriptionEventArgs(audioTrack, participantWrapper, pubInfo));
+                return;
+            }
+
+            if (trackWrapper is IRemoteVideoTrack videoTrack)
+            {
+                VideoTrackSubscribed?.Invoke(videoTrack, participantWrapper);
+                TrackSubscribed?.Invoke(new TrackSubscriptionEventArgs(videoTrack, participantWrapper, pubInfo));
+            }
+        }
+
         private static RoomState MapRoomState(LKConnectionState state)
         {
             return state switch
@@ -384,9 +424,6 @@ namespace Convai.Infrastructure.Networking.Native
             };
         }
 
-        /// <summary>
-        ///     Gets the underlying LiveKit room.
-        /// </summary>
         public Room UnderlyingRoom { get; }
 
         #endregion

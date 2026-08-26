@@ -9,8 +9,7 @@ namespace Convai.Runtime.Presentation.Services.Utilities
     ///     Provides fade in, fade out, and sequenced fade animations.
     /// </summary>
     /// <remarks>
-    ///     Part of the Unity layer infrastructure.
-    ///     This is a core utility component that should remain in the SDK.
+    ///     Core utility component for transcript UI fade animations.
     /// </remarks>
     public class CanvasFader : MonoBehaviour
     {
@@ -75,11 +74,6 @@ namespace Convai.Runtime.Presentation.Services.Utilities
             StartCoroutine(FadeOutFadeInWithGap(canvasGroup, fadeInDuration, fadeOutDuration, gapDuration));
         }
 
-        /// <summary>
-        ///     Sets the alpha value of the given CanvasGroup.
-        /// </summary>
-        /// <param name="canvasGroup">The CanvasGroup to set the alpha value for.</param>
-        /// <param name="value">The alpha value to set.</param>
         private void SetAlpha(CanvasGroup canvasGroup, float value)
         {
             _currentAlpha = value;

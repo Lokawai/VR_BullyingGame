@@ -86,7 +86,7 @@ namespace Convai.Domain.Models
         /// <summary>
         ///     Gets the default player speaker info for single-user scenarios.
         /// </summary>
-        public static SpeakerInfo DefaultPlayer => new("local-player", "You", string.Empty);
+        public static SpeakerInfo DefaultPlayer => new("local-player", PlayerDisplayName.Default, string.Empty);
 
         /// <summary>
         ///     Gets an empty speaker info instance.
@@ -109,7 +109,7 @@ namespace Convai.Domain.Models
         public static SpeakerInfo FromMessage(TranscriptMessage message)
         {
             return new SpeakerInfo(
-                message.SpeakerId,
+                message.PlayerOrCharacterId,
                 message.DisplayName,
                 message.ParticipantId,
                 message.SpeakerType

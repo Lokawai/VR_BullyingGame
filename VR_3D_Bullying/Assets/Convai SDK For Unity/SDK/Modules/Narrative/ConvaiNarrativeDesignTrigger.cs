@@ -54,16 +54,7 @@ namespace Convai.Modules.Narrative
 
     /// <summary>
     ///     Component for invoking Convai Narrative Design triggers from Unity.
-    ///     Supports multiple activation modes: Collision, Proximity, Manual, and Time-based.
     /// </summary>
-    /// <remarks>
-    ///     Usage:
-    ///     - Attach to any GameObject with a Collider (for Collision/TimeBased modes)
-    ///     - Assign a Convai character
-    ///     - Select a trigger from the dropdown (auto-populated from backend)
-    ///     - Choose an activation mode
-    ///     - Configure mode-specific settings (radius, delay, etc.)
-    /// </remarks>
     [AddComponentMenu("Convai/Convai Narrative Design Trigger")]
     public class ConvaiNarrativeDesignTrigger : MonoBehaviour
     {
@@ -90,7 +81,7 @@ namespace Convai.Modules.Narrative
         [Tooltip("Name of the trigger (display name).")] [SerializeField]
         private string _triggerName;
 
-        [Tooltip("Optional message payload to send with the trigger.")] [SerializeField]
+        [Tooltip("Read-only saved trigger message fetched from Convai for Inspector display. Not sent by this component.")] [SerializeField]
         private string _triggerMessage;
 
         [Header("Activation Settings")] [Tooltip("How this trigger should be activated.")] [SerializeField]
@@ -198,12 +189,8 @@ namespace Convai.Modules.Narrative
             set => _triggerName = value;
         }
 
-        /// <summary>Gets or sets the trigger message.</summary>
-        public string TriggerMessage
-        {
-            get => _triggerMessage;
-            set => _triggerMessage = value;
-        }
+        /// <summary>Gets the saved trigger message fetched from Convai. This value is display-only.</summary>
+        public string TriggerMessage => _triggerMessage;
 
         /// <summary>Gets the activation mode.</summary>
         public TriggerActivationMode ActivationMode => _activationMode;
@@ -426,14 +413,14 @@ namespace Convai.Modules.Narrative
                 string warning =
                     "Trigger already fired and TriggerOnce is enabled. Call ResetTrigger() to allow it to fire again.";
                 CurrentStatus = TriggerStatus.AlreadyFired;
-                ConvaiLogger.Warning($"[ConvaiNarrativeDesignTrigger] {warning}", LogCategory.Narrative);
+                ConvaiLogger.Warning($"{warning}", LogCategory.Narrative);
                 return false;
             }
 
-            if (string.IsNullOrEmpty(_triggerName) && string.IsNullOrEmpty(_triggerMessage))
+            if (string.IsNullOrEmpty(_triggerName))
             {
                 string error =
-                    "No trigger name or message configured. Select a trigger from the dropdown or set one programmatically.";
+                    "No trigger name configured. Select a saved trigger from the dropdown or set one programmatically.";
                 HandleTriggerError(error);
                 return false;
             }
@@ -516,9 +503,9 @@ namespace Convai.Modules.Narrative
                 isValid = false;
             }
 
-            if (string.IsNullOrEmpty(_triggerName) && string.IsNullOrEmpty(_triggerMessage))
+            if (string.IsNullOrEmpty(_triggerName))
             {
-                _validationWarnings.Add("No trigger name or message configured.");
+                _validationWarnings.Add("No trigger name configured.");
                 isValid = false;
             }
 
@@ -533,7 +520,7 @@ namespace Convai.Modules.Narrative
                 CurrentStatus = TriggerStatus.ConfigurationError;
                 foreach (string warning in _validationWarnings)
                 {
-                    ConvaiLogger.Warning($"[ConvaiNarrativeDesignTrigger] Validation: {warning}",
+                    ConvaiLogger.Warning($"Validation: {warning}",
                         LogCategory.Narrative);
                 }
             }
@@ -546,7 +533,7 @@ namespace Convai.Modules.Narrative
         /// </summary>
         public void PrintDiagnostics()
         {
-            ConvaiLogger.Debug("[ConvaiNarrativeDesignTrigger] === DIAGNOSTICS ===\n" +
+            ConvaiLogger.Debug("=== DIAGNOSTICS ===\n" +
                                $"  GameObject: {gameObject.name}\n" +
                                $"  Status: {CurrentStatus}\n" +
                                $"  Has Triggered: {HasTriggered}\n" +
@@ -583,12 +570,11 @@ namespace Convai.Modules.Narrative
         /// </summary>
         /// <param name="triggerId">The trigger ID.</param>
         /// <param name="triggerName">The trigger name.</param>
-        /// <param name="message">The trigger message.</param>
-        public void SetTrigger(string triggerId, string triggerName, string message = null)
+        public void SetTrigger(string triggerId, string triggerName)
         {
             _triggerId = triggerId;
-            _triggerName = triggerName;
-            _triggerMessage = message;
+            _triggerName = NormalizeTriggerName(triggerName);
+            _triggerMessage = string.Empty;
             LogDiagnostic($"Trigger configured: name='{triggerName}', id='{triggerId}'");
         }
 
@@ -596,13 +582,7 @@ namespace Convai.Modules.Narrative
         ///     Sets the trigger name.
         /// </summary>
         /// <param name="triggerName">The trigger name to use.</param>
-        public void SetTriggerName(string triggerName) => _triggerName = triggerName;
-
-        /// <summary>
-        ///     Sets the trigger message payload.
-        /// </summary>
-        /// <param name="triggerMessage">The message to send with the trigger.</param>
-        public void SetTriggerMessage(string triggerMessage) => _triggerMessage = triggerMessage;
+        public void SetTriggerName(string triggerName) => _triggerName = NormalizeTriggerName(triggerName);
 
         /// <summary>
         ///     Sets the activation mode.
@@ -632,8 +612,25 @@ namespace Convai.Modules.Narrative
         ///     Updates the available triggers list (called from editor).
         /// </summary>
         /// <param name="triggers">List of triggers from backend.</param>
-        public void SetAvailableTriggers(List<TriggerData> triggers) =>
+        public void SetAvailableTriggers(List<TriggerData> triggers)
+        {
+            string selectedTriggerId = _triggerId;
             _availableTriggers = triggers ?? new List<TriggerData>();
+
+            if (!string.IsNullOrEmpty(selectedTriggerId))
+            {
+                for (int i = 0; i < _availableTriggers.Count; i++)
+                {
+                    if (!string.Equals(_availableTriggers[i].TriggerId, selectedTriggerId, StringComparison.Ordinal))
+                        continue;
+
+                    SelectTriggerByIndex(i);
+                    return;
+                }
+            }
+
+            ClearSelectedTrigger();
+        }
 
         /// <summary>
         ///     Selects a trigger by index from the available triggers list.
@@ -643,18 +640,15 @@ namespace Convai.Modules.Narrative
         {
             if (_availableTriggers == null || index < 0 || index >= _availableTriggers.Count)
             {
-                _selectedTriggerIndex = -1;
-                _triggerId = null;
-                _triggerName = null;
-                _triggerMessage = null;
+                ClearSelectedTrigger();
                 return;
             }
 
             _selectedTriggerIndex = index;
             TriggerData trigger = _availableTriggers[index];
             _triggerId = trigger.TriggerId;
-            _triggerName = trigger.TriggerName;
-            _triggerMessage = trigger.TriggerMessage;
+            _triggerName = NormalizeTriggerName(trigger.TriggerName);
+            _triggerMessage = string.Empty;
         }
 
         /// <summary>
@@ -686,9 +680,11 @@ namespace Convai.Modules.Narrative
         {
             try
             {
-                if (!string.IsNullOrEmpty(_triggerName))
-                    Character.SendTrigger(_triggerName, _triggerMessage);
-                else if (!string.IsNullOrEmpty(_triggerMessage)) Character.SendTrigger(string.Empty, _triggerMessage);
+                bool accepted = Character is ConvaiCharacter convaiCharacter
+                    ? convaiCharacter.NarrativeDesign.InvokeTrigger(_triggerName)
+                    : InvokeLegacyCharacterTrigger();
+
+                if (!accepted) return false;
 
                 HasTriggered = true;
                 IsQueuedForCharacterReady = false;
@@ -696,7 +692,7 @@ namespace Convai.Modules.Narrative
                 _onTriggerActivated?.Invoke();
 
                 ConvaiLogger.Info(
-                    $"[ConvaiNarrativeDesignTrigger] Trigger '{_triggerName}' invoked successfully on character '{Character.CharacterName}'.",
+                    $"Trigger '{_triggerName}' invoked successfully on character '{Character.CharacterName}'.",
                     LogCategory.Narrative);
                 return true;
             }
@@ -706,6 +702,27 @@ namespace Convai.Modules.Narrative
                 return false;
             }
         }
+
+        private bool InvokeLegacyCharacterTrigger()
+        {
+            if (Character == null) return false;
+
+            if (string.IsNullOrEmpty(_triggerName))
+                return false;
+
+            Character.SendTrigger(_triggerName);
+            return true;
+        }
+
+        private void ClearSelectedTrigger()
+        {
+            _selectedTriggerIndex = -1;
+            _triggerId = string.Empty;
+            _triggerName = string.Empty;
+            _triggerMessage = string.Empty;
+        }
+
+        private static string NormalizeTriggerName(string triggerName) => triggerName?.Trim() ?? string.Empty;
 
         /// <summary>
         ///     Queues the trigger to fire when the character becomes ready.
@@ -723,7 +740,7 @@ namespace Convai.Modules.Narrative
             _onTriggerQueued?.Invoke();
 
             ConvaiLogger.Debug(
-                $"[ConvaiNarrativeDesignTrigger] Trigger '{_triggerName}' queued. Waiting for character to be ready (max {_maxWaitTime}s).",
+                $"Trigger '{_triggerName}' queued. Waiting for character to be ready (max {_maxWaitTime}s).",
                 LogCategory.Narrative);
 
             if (_queuedTriggerCoroutine != null) StopCoroutine(_queuedTriggerCoroutine);
@@ -776,7 +793,7 @@ namespace Convai.Modules.Narrative
         {
             LastErrorMessage = error;
             CurrentStatus = TriggerStatus.ConfigurationError;
-            ConvaiLogger.Error($"[ConvaiNarrativeDesignTrigger] {error}", LogCategory.Narrative);
+            ConvaiLogger.Error($"{error}", LogCategory.Narrative);
             _onTriggerFailed?.Invoke(error);
         }
 
@@ -798,12 +815,14 @@ namespace Convai.Modules.Narrative
         }
 
         /// <summary>
-        ///     Attempts to automatically find a ConvaiCharacter in the scene.
+        ///     Attempts to automatically find a ConvaiCharacter.
+        ///     First checks parent hierarchy, then queries the manager's owned characters.
         /// </summary>
         private void TryAutoFindCharacter()
         {
             if (_characterComponent != null) return;
 
+            // First, check parent hierarchy
             var localCharacter = GetComponentInParent<ConvaiCharacter>();
             if (localCharacter != null)
             {
@@ -813,23 +832,31 @@ namespace Convai.Modules.Narrative
                 return;
             }
 
-            ConvaiCharacter[] characters = FindObjectsByType<ConvaiCharacter>(FindObjectsSortMode.None);
-            if (characters.Length == 1)
+            // Then, query the manager's owned characters (no scene scanning)
+            ConvaiManager manager = ConvaiManager.ActiveManager;
+            if (manager == null)
+            {
+                LogDiagnostic("No ConvaiManager available for auto-assignment");
+                return;
+            }
+
+            IReadOnlyList<ConvaiCharacter> characters = manager.Characters;
+            if (characters.Count == 1)
             {
                 _characterComponent = characters[0];
                 _cachedConvaiCharacter = characters[0];
                 ConvaiLogger.Warning(
-                    $"[ConvaiNarrativeDesignTrigger] Auto-assigned character '{characters[0].name}'. " +
+                    $"Auto-assigned character '{characters[0].name}'. " +
                     "Consider assigning it explicitly in the Inspector.", LogCategory.Narrative);
             }
-            else if (characters.Length > 1)
+            else if (characters.Count > 1)
             {
                 ConvaiLogger.Warning(
-                    $"[ConvaiNarrativeDesignTrigger] Multiple ConvaiCharacters found ({characters.Length}). " +
+                    $"Multiple ConvaiCharacters found ({characters.Count}). " +
                     "Cannot auto-assign. Please assign one explicitly.", LogCategory.Narrative);
             }
             else
-                LogDiagnostic("No ConvaiCharacter found in scene for auto-assignment");
+                LogDiagnostic("No ConvaiCharacter found via ConvaiManager for auto-assignment");
         }
 
         /// <summary>
@@ -962,7 +989,7 @@ namespace Convai.Modules.Narrative
         {
             if (_enableDiagnostics)
             {
-                ConvaiLogger.Debug($"[ConvaiNarrativeDesignTrigger] [{gameObject.name}] {message}",
+                ConvaiLogger.Debug($"[{gameObject.name}] {message}",
                     LogCategory.Narrative);
             }
         }

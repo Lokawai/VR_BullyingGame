@@ -9,29 +9,8 @@ namespace Convai.Domain.DomainEvents.Runtime
     /// <remarks>
     ///     This event is published via EventHub whenever a bot-ready message is received from the server.
     ///     It indicates that a character is ready to begin interaction.
-    ///     Integration Example:
-    ///     <code>
-    /// 
-    /// private readonly IEventHub _eventHub;
-    /// 
-    /// private void HandleCharacterReady(ProtocolMessage message)
-    /// {
-    ///     string participantId = message.Packet.ParticipantId;
-    ///     string characterId = ResolveCharacterId(participantId);
-    ///     CharacterReady characterReadyEvent = CharacterReady.Create(characterId, participantId);
-    ///     _eventHub.Publish(characterReadyEvent);
-    /// }
-    /// 
-    /// 
-    /// _eventHub.Subscribe&lt;CharacterReady&gt;(this, e =>
-    /// {
-    ///     Debug.Log($"Character {e.CharacterId} is ready");
-    /// 
-    /// });
-    /// </code>
-    ///     Delivery Policy:
-    ///     - Typically use EventDeliveryPolicy.MainThread for UI updates
-    ///     - Can use EventDeliveryPolicy.Immediate for logging/analytics
+    ///     Typically use EventDeliveryPolicy.MainThread for UI updates and
+    ///     EventDeliveryPolicy.Immediate for lightweight logging or analytics.
     /// </remarks>
     public readonly struct CharacterReady
     {

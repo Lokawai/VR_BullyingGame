@@ -24,6 +24,70 @@ namespace Convai.Tests.EditMode.Domain
         }
 
         [Test]
+        public void AppendFrames_WhenRetainingFutureFrames_PreservesFullSendAheadWindow()
+        {
+            // Arrange
+            FrameRingBuffer buffer = new();
+            buffer.SetChannelLayout(new[] { "A" });
+
+            // Act
+            buffer.AppendFrames(CreateRampFrames(360), 0f, 60f, 1f, retainFutureFrames: true);
+
+            // Assert
+            Assert.AreEqual(360, buffer.FrameCount);
+            Assert.Less(buffer.StartTime, 0.001f);
+            Assert.Greater(buffer.EndTime, 5.9f);
+        }
+
+        [Test]
+        public void AppendFrames_WhenRetainingFiveMinuteResponse_PreservesFrameZero()
+        {
+            FrameRingBuffer buffer = new();
+            buffer.SetChannelLayout(new[] { "A" });
+            float[][] oneSecond = CreateRampFrames(60);
+
+            for (int second = 0; second < 300; second++)
+                buffer.AppendFrames(oneSecond, second, 60f, 1f, retainFutureFrames: true);
+
+            Assert.AreEqual(300 * 60, buffer.FrameCount);
+            Assert.Less(buffer.StartTime, 0.001f);
+            Assert.Greater(buffer.EndTime, 299.9f);
+        }
+
+        [Test]
+        public void AppendFrames_WhenIndexedResponseExceedsHardCap_PreservesNewest300Seconds()
+        {
+            FrameRingBuffer buffer = new();
+            buffer.SetChannelLayout(new[] { "A" });
+            float[][] oneSecond = CreateRampFrames(60);
+
+            for (int second = 0; second < 301; second++)
+                buffer.AppendFrames(oneSecond, second, 60f, 1f, retainFutureFrames: true);
+
+            Assert.AreEqual((300 * 60) + 2, buffer.FrameCount);
+            Assert.Greater(buffer.StartTime, 0.9f);
+            Assert.Greater(buffer.EndTime, 300.9f);
+        }
+
+        [Test]
+        public void PruneBefore_AfterPlaybackAdvances_KeepsNeighborFramesForInterpolation()
+        {
+            // Arrange
+            FrameRingBuffer buffer = new();
+            buffer.SetChannelLayout(new[] { "A" });
+            buffer.AppendFrames(CreateRampFrames(360), 0f, 60f, 1f, retainFutureFrames: true);
+
+            // Act
+            int removed = buffer.PruneBefore(3f);
+
+            // Assert
+            Assert.Greater(removed, 0);
+            Assert.Less(buffer.FrameCount, 360);
+            Assert.Less(buffer.StartTime, 3f);
+            Assert.IsTrue(buffer.TryGetFrameWindow(3d, out _, out _, out _, out _, out _));
+        }
+
+        [Test]
         public void SetChannelLayout_WithDifferentLayout_ClearsExistingFrames()
         {
             // Arrange
@@ -136,6 +200,13 @@ namespace Convai.Tests.EditMode.Domain
                 float start = chunkIndex * 6f / 60f;
                 buffer.AppendFrames(frames, start, 60f, 2f);
             }
+        }
+
+        private static float[][] CreateRampFrames(int count)
+        {
+            float[][] frames = new float[count][];
+            for (int i = 0; i < count; i++) frames[i] = new[] { i / (float)count };
+            return frames;
         }
     }
 }

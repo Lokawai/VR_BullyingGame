@@ -25,17 +25,10 @@ namespace Convai.Editor.ConfigurationWindow.Components
         /// <summary>Callback invoked when a navigation button is clicked (parameter: section name).</summary>
         public Action<string> OnNavigationButtonClicked;
 
-        /// <summary>
-        ///     Initializes a new instance of the <see cref="ConvaiNavigationBarVisualElement" /> class.
-        /// </summary>
         public ConvaiNavigationBarVisualElement() : this(ConfigurationSectionRegistry.GetEnabledSections())
         {
         }
 
-        /// <summary>
-        ///     Initializes a new instance of the <see cref="ConvaiNavigationBarVisualElement" /> class.
-        /// </summary>
-        /// <param name="sections">Enabled section descriptors for navigation.</param>
         public ConvaiNavigationBarVisualElement(IReadOnlyList<ConfigurationSectionDescriptor> sections)
         {
             _navButtonEntries = sections

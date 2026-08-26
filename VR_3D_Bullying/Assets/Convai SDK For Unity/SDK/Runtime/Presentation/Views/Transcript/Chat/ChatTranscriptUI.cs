@@ -1,13 +1,13 @@
+using System;
 using System.Collections.Generic;
 using Convai.Domain.Logging;
+using Convai.Domain.Models;
 using Convai.Runtime.Behaviors;
+using Convai.Runtime.Components;
+using Convai.Runtime.Facades;
 using Convai.Runtime.Logging;
-using Convai.Runtime.Presentation.Presenters;
 using Convai.Runtime.Presentation.Services;
 using Convai.Runtime.Presentation.Services.Utilities;
-using Convai.Runtime.Services.CharacterLocator;
-using Convai.Shared;
-using Convai.Shared.DependencyInjection;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
@@ -15,23 +15,12 @@ using UnityEngine.UI;
 namespace Convai.Runtime.Presentation.Views.Transcript
 {
     /// <summary>
-    ///     Sample chat-style transcript UI that displays a scrollable message history.
-    ///     This is a reference implementation showing how to implement ITranscriptUI.
+    ///     Reference chat transcript UI built on ConvaiManager.Transcripts.
     /// </summary>
-    /// <remarks>
-    ///     <para>
-    ///         <b>Architecture:</b> This is a Samples layer reference implementation.
-    ///         Implements ITranscriptUI as a "dumb" view - all aggregation logic is handled
-    ///         by <see cref="Convai.Runtime.Presentation.Strategies.ChatPresentationStrategy" />.
-    ///     </para>
-    ///     <para>
-    ///         <b>DI Pattern:</b> Implements IInjectable for dependency injection.
-    ///         Services are injected by the ConvaiManager pipeline during scene initialization.
-    ///     </para>
-    /// </remarks>
-    public class ChatTranscriptUI : MonoBehaviour, ITranscriptUI, IInjectable
+    public class ChatTranscriptUI : MonoBehaviour
     {
-        [Header("UI References")] [SerializeField]
+        [Header("UI References")]
+        [SerializeField]
         private ScrollRect scrollRect;
 
         [SerializeField] private RectTransform chatContainer;
@@ -39,15 +28,19 @@ namespace Convai.Runtime.Presentation.Views.Transcript
         [SerializeField] private GameObject playerMessagePrefab;
         [SerializeField] private TMP_InputField chatInputField;
 
-        [Header("Fade Settings")] [SerializeField]
+        [Header("Fade Settings")]
+        [SerializeField]
         private CanvasFader canvasFader;
 
         [SerializeField] private CanvasGroup canvasGroup;
         [SerializeField] private float fadeDuration = 0.5f;
 
-        private readonly Dictionary<string, GameObject> _activeMessages = new();
-        private IConvaiCharacterLocatorService _characterLocator;
-        private bool _isActive;
+        private readonly Dictionary<string, GameObject> _messageRowsByTurnId = new();
+        private readonly HashSet<string> _locallyHiddenTurnIds = new();
+        private ConvaiTranscripts _boundTranscripts;
+        private IDisposable _transcriptSubscription;
+        private IAgentRegistry _agentRegistry;
+        private bool _isActive = true;
         private bool _isInjected;
         private IPlayerInputService _playerInput;
 
@@ -59,77 +52,234 @@ namespace Convai.Runtime.Presentation.Views.Transcript
                 canvasGroup = GetComponentInChildren<CanvasGroup>();
 
             if (chatContainer == null)
-            {
-                ConvaiLogger.Warning("[ChatTranscriptUI] chatContainer is not assigned - messages will not display",
+                ConvaiLogger.Warning("chatContainer is not assigned - messages will not display",
                     LogCategory.UI);
-            }
 
             if (scrollRect == null)
-            {
-                ConvaiLogger.Warning("[ChatTranscriptUI] scrollRect is not assigned - auto-scroll will not work",
+                ConvaiLogger.Warning("scrollRect is not assigned - auto-scroll will not work",
                     LogCategory.UI);
-            }
         }
 
         private void Start()
         {
-            if (!_isInjected)
-            {
-                ConvaiLogger.Warning(
-                    "[ChatTranscriptUI] Dependencies not injected - ensure ConvaiManager is present in scene",
-                    LogCategory.UI);
-            }
+            TryResolveDependencies();
+            TrySubscribeTranscripts(false);
+            StartFadeIn();
         }
 
         private void OnEnable()
         {
+            TryResolveDependencies();
+            TrySubscribeTranscripts(true);
             if (chatInputField != null) chatInputField.onSubmit.AddListener(OnChatInputSubmit);
         }
 
         private void OnDisable()
         {
             if (chatInputField != null) chatInputField.onSubmit.RemoveListener(OnChatInputSubmit);
+            UnsubscribeTranscripts();
         }
 
-        #region IInjectable Implementation
-
-        /// <inheritdoc />
-        public void InjectServices(IServiceContainer container)
+        private void OnDestroy()
         {
-            container.TryGet(out IConvaiCharacterLocatorService characterLocator);
-            container.TryGet(out IPlayerInputService playerInput);
-            _characterLocator = characterLocator;
+            UnsubscribeTranscripts();
+        }
+
+        private void Update()
+        {
+            TrySubscribeTranscripts(false);
+
+            if (!IsActive || chatInputField == null) return;
+
+            if (!chatInputField.isFocused && IsEnterKeyPressed())
+                chatInputField.ActivateInputField();
+        }
+
+        public bool IsActive => _isActive && gameObject.activeInHierarchy;
+
+        public void Inject(IAgentRegistry agentRegistry, IPlayerInputService playerInput)
+        {
+            _agentRegistry = agentRegistry;
             _playerInput = playerInput;
             _isInjected = true;
 
-            if (_characterLocator == null)
-            {
-                ConvaiLogger.Warning(
-                    "[ChatTranscriptUI] IConvaiCharacterLocatorService not available - character lookups will fail",
-                    LogCategory.UI);
-            }
-
             if (_playerInput == null)
-            {
-                ConvaiLogger.Warning("[ChatTranscriptUI] IPlayerInputService not available - text input will not work",
+                ConvaiLogger.Warning("IPlayerInputService not available - text input will not work",
                     LogCategory.UI);
-            }
-
-            ConvaiLogger.Info("[ChatTranscriptUI] Dependencies injected via IInjectable", LogCategory.UI);
         }
 
-        #endregion
+        public void SetActive(bool active)
+        {
+            _isActive = active;
+            gameObject.SetActive(active);
 
-        /// <summary>
-        ///     Gets the unique identifier for this Chat UI instance.
-        ///     Must match TranscriptUIMode.Chat for mode-based activation.
-        /// </summary>
-        public string Identifier => "Chat";
+            if (active) StartFadeIn();
+        }
 
-        /// <summary>
-        ///     Gets whether this UI is currently active and visible.
-        /// </summary>
-        public bool IsActive => _isActive && gameObject.activeInHierarchy;
+        private void StartFadeIn()
+        {
+            if (canvasFader != null && canvasGroup != null)
+                canvasFader.StartFadeIn(canvasGroup, fadeDuration);
+        }
+
+        public void ClearAll()
+        {
+            ClearRenderedRows(true);
+        }
+
+        private void ClearRenderedRows(bool rememberAsLocallyHidden)
+        {
+            if (rememberAsLocallyHidden)
+            {
+                foreach (string turnId in _messageRowsByTurnId.Keys)
+                    _locallyHiddenTurnIds.Add(turnId);
+            }
+
+            if (chatContainer != null)
+            {
+                foreach (Transform child in chatContainer.transform)
+                {
+                    if (child.gameObject != characterMessagePrefab &&
+                        child.gameObject != playerMessagePrefab)
+                        Destroy(child.gameObject);
+                }
+            }
+
+            _messageRowsByTurnId.Clear();
+        }
+
+        private void TryResolveDependencies()
+        {
+            if (_isInjected) return;
+
+            ConvaiManager manager = ConvaiManager.ActiveManager;
+            if (manager == null) return;
+
+            manager.TryGetAgentRegistry(out IAgentRegistry agentRegistry);
+            manager.TryGetPlayerInputService(out IPlayerInputService playerInput);
+            Inject(agentRegistry, playerInput);
+        }
+
+        private void TrySubscribeTranscripts(bool logFailure)
+        {
+            ConvaiManager manager = ConvaiManager.ActiveManager;
+            if (manager == null || !manager.TryGetTranscripts(out ConvaiTranscripts transcripts))
+            {
+                UnsubscribeTranscripts();
+                if (logFailure)
+                    ConvaiLogger.Warning("No active ConvaiManager found.", LogCategory.UI);
+                return;
+            }
+
+            if (ReferenceEquals(_boundTranscripts, transcripts)) return;
+
+            UnsubscribeTranscripts();
+            _boundTranscripts = transcripts;
+            _boundTranscripts.PresentationEnabledChanged += HandlePresentationEnabledChanged;
+            ApplyPresentationEnabled(_boundTranscripts.IsPresentationEnabled);
+        }
+
+        private void UnsubscribeTranscripts()
+        {
+            DisposeTranscriptSubscription();
+            if (_boundTranscripts != null)
+                _boundTranscripts.PresentationEnabledChanged -= HandlePresentationEnabledChanged;
+            _boundTranscripts = null;
+        }
+
+        private void HandlePresentationEnabledChanged(bool enabled) => ApplyPresentationEnabled(enabled);
+
+        private void ApplyPresentationEnabled(bool enabled)
+        {
+            if (!enabled)
+            {
+                DisposeTranscriptSubscription();
+                ClearRenderedRows(false);
+                return;
+            }
+
+            if (_boundTranscripts == null || _transcriptSubscription != null) return;
+
+            _locallyHiddenTurnIds.IntersectWith(_boundTranscripts.CurrentTimeline.TurnsById.Keys);
+            _transcriptSubscription = _boundTranscripts.Subscribe(
+                DisplayChange,
+                new TranscriptSubscriptionOptions { ReplayExisting = true });
+        }
+
+        private void DisposeTranscriptSubscription()
+        {
+            _transcriptSubscription?.Dispose();
+            _transcriptSubscription = null;
+        }
+
+        private void DisplayChange(TranscriptChange change)
+        {
+            if (change == null) return;
+
+            if (change.Kind == TranscriptChangeKind.Removed)
+            {
+                _locallyHiddenTurnIds.Remove(change.TurnId);
+                if (_messageRowsByTurnId.TryGetValue(change.TurnId, out GameObject row))
+                {
+                    _messageRowsByTurnId.Remove(change.TurnId);
+                    if (row != null) Destroy(row);
+                }
+
+                return;
+            }
+
+            DisplayTurn(change.Turn);
+        }
+
+        private void DisplayTurn(TranscriptTurn turn)
+        {
+            if (turn == null || !turn.HasText || chatContainer == null || _locallyHiddenTurnIds.Contains(turn.Id))
+                return;
+
+            bool hadRow = _messageRowsByTurnId.TryGetValue(turn.Id, out GameObject messageObj);
+            if (!hadRow)
+            {
+                GameObject prefab = turn.Speaker?.Type == TranscriptSpeakerType.Character
+                    ? characterMessagePrefab
+                    : playerMessagePrefab;
+                if (prefab == null) return;
+
+                messageObj = Instantiate(prefab, chatContainer);
+                messageObj.SetActive(true);
+                _messageRowsByTurnId.Add(turn.Id, messageObj);
+
+                if (messageObj.TryGetComponent(out ChatMessageBubble bubble))
+                {
+                    bubble.Identifier = turn.Speaker?.Type == TranscriptSpeakerType.Character
+                        ? turn.Speaker.Id
+                        : turn.Id;
+                    bubble.SetAgentRegistry(_agentRegistry);
+                }
+            }
+
+            UpdateMessageBubble(messageObj, turn);
+            ScrollToBottom();
+        }
+
+        private void UpdateMessageBubble(GameObject messageObj, TranscriptTurn turn)
+        {
+            if (messageObj.TryGetComponent(out ChatMessageBubble bubble))
+            {
+                bubble.SetSender(turn.Speaker?.DisplayName ?? string.Empty);
+                bubble.SetMessage(turn.DisplayText);
+                bubble.IsCompleted = turn.IsCommitted;
+
+                if (turn.Speaker?.Type == TranscriptSpeakerType.Character &&
+                    _agentRegistry != null &&
+                    _agentRegistry.TryGetCharacter(turn.Speaker.Id, out IConvaiCharacterAgent character))
+                    bubble.SetSenderColor(character.NameTagColor);
+                return;
+            }
+
+            TMP_Text textComponent = messageObj.GetComponentInChildren<TMP_Text>();
+            if (textComponent != null)
+                textComponent.text = $"{turn.Speaker?.DisplayName}: {turn.DisplayText}";
+        }
 
         private void OnChatInputSubmit(string text)
         {
@@ -137,41 +287,20 @@ namespace Convai.Runtime.Presentation.Views.Transcript
 
             if (!_isInjected)
             {
-                ConvaiLogger.Warning("[ChatTranscriptUI] Cannot send message - dependencies not injected",
+                ConvaiLogger.Warning("Cannot send message - dependencies not injected",
                     LogCategory.UI);
                 return;
             }
 
             if (_playerInput == null || !_playerInput.HasPlayer)
             {
-                ConvaiLogger.Info("[ChatTranscriptUI] No player found", LogCategory.UI);
+                ConvaiLogger.Info("No player found", LogCategory.UI);
                 return;
             }
 
             chatInputField.SetTextWithoutNotify(string.Empty);
             _playerInput.Player.SendTextMessage(text);
-
             chatInputField.ActivateInputField();
-        }
-
-        private void UpdateMessageBubble(GameObject messageObj, TranscriptViewModel viewModel)
-        {
-            var bubble = messageObj.GetComponent<ChatMessageBubble>();
-            if (bubble != null)
-            {
-                bubble.SetSender(viewModel.DisplayName);
-                bubble.SetMessage(viewModel.Text);
-
-                if (viewModel.Speaker == TranscriptSpeaker.Character &&
-                    _characterLocator != null &&
-                    _characterLocator.TryGetCharacter(viewModel.SpeakerId, out IConvaiCharacterAgent character))
-                    bubble.SetSenderColor(character.NameTagColor);
-            }
-            else
-            {
-                var textComponent = messageObj.GetComponentInChildren<TMP_Text>();
-                if (textComponent != null) textComponent.text = $"{viewModel.DisplayName}: {viewModel.Text}";
-            }
         }
 
         private void ScrollToBottom()
@@ -185,98 +314,106 @@ namespace Convai.Runtime.Presentation.Views.Transcript
             scrollRect.verticalNormalizedPosition = 0;
         }
 
-        #region ITranscriptUI Implementation
-
-        /// <summary>
-        ///     Displays or updates a transcript message.
-        ///     Receives pre-aggregated view models from ChatPresentationStrategy.
-        /// </summary>
-        public void DisplayMessage(TranscriptViewModel viewModel)
+        private static bool IsEnterKeyPressed()
         {
-            ConvaiLogger.Info(
-                $"[ChatTranscriptUI] DisplayMessage: Speaker={viewModel.Speaker}, SpeakerId={viewModel.SpeakerId}, IsFinal={viewModel.IsFinal}",
-                LogCategory.UI);
-
-            if (!_activeMessages.TryGetValue(viewModel.SpeakerId, out GameObject messageObj))
+#if ENABLE_LEGACY_INPUT_MANAGER
+            return Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter);
+#elif ENABLE_INPUT_SYSTEM
+            return IsInputSystemKeyPressedThisFrame("Enter", "NumpadEnter");
+#else
+            try
             {
-                if (string.IsNullOrEmpty(viewModel.Text)) return;
+                return Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter);
+            }
+            catch
+            {
+                return false;
+            }
+#endif
+        }
 
-                GameObject prefab = viewModel.Speaker == TranscriptSpeaker.Character
-                    ? characterMessagePrefab
-                    : playerMessagePrefab;
-                messageObj = Instantiate(prefab, chatContainer);
-                messageObj.SetActive(true);
-                _activeMessages.Add(viewModel.SpeakerId, messageObj);
+        private static bool _inputSystemReflectionChecked;
+        private static Type _keyboardType;
+        private static Type _keyType;
+        private static System.Reflection.PropertyInfo _currentKeyboardProp;
+        private static System.Reflection.PropertyInfo _indexerProp;
+        private static System.Reflection.PropertyInfo _wasPressedProperty;
+        private static readonly Dictionary<string, object> _inputSystemKeyCache = new();
 
-                var bubble = messageObj.GetComponent<ChatMessageBubble>();
-                if (bubble != null)
+        private static bool IsInputSystemKeyPressedThisFrame(params string[] keyNames)
+        {
+            EnsureInputSystemReflection();
+
+            if (_keyboardType == null || _keyType == null || _currentKeyboardProp == null || _indexerProp == null)
+                return false;
+
+            object keyboard = _currentKeyboardProp.GetValue(null);
+            if (keyboard == null)
+                return false;
+
+            for (int i = 0; i < keyNames.Length; i++)
+                if (IsInputSystemKeyPressedThisFrame(keyboard, keyNames[i]))
+                    return true;
+
+            return false;
+        }
+
+        private static void EnsureInputSystemReflection()
+        {
+            if (_inputSystemReflectionChecked)
+                return;
+
+            _inputSystemReflectionChecked = true;
+            try
+            {
+                _keyboardType = Type.GetType("UnityEngine.InputSystem.Keyboard, Unity.InputSystem");
+                _keyType = Type.GetType("UnityEngine.InputSystem.Key, Unity.InputSystem");
+                if (_keyboardType != null && _keyType != null)
                 {
-                    bubble.Identifier = viewModel.SpeakerId;
-                    bubble.SetLocatorService(_characterLocator);
+                    _currentKeyboardProp = _keyboardType.GetProperty(
+                        "current",
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                    _indexerProp = _keyboardType.GetProperty("Item", new[] { _keyType });
                 }
             }
-
-            UpdateMessageBubble(messageObj, viewModel);
-            ScrollToBottom();
-        }
-
-        /// <summary>
-        ///     Marks a message as completed.
-        ///     Called by TranscriptUIController when ChatPresentationStrategy signals completion.
-        /// </summary>
-        public void CompleteMessage(string messageId)
-        {
-            ConvaiLogger.Info(
-                $"[ChatTranscriptUI] CompleteMessage: Identifier={messageId}",
-                LogCategory.UI);
-
-            if (_activeMessages.TryGetValue(messageId, out GameObject messageObj))
+            catch
             {
-                var bubble = messageObj.GetComponent<ChatMessageBubble>();
-                if (bubble != null) bubble.IsCompleted = true;
-
-                _activeMessages.Remove(messageId);
+                // Input System may be absent from host project assemblies.
             }
         }
 
-        /// <summary>
-        ///     Clears all displayed messages.
-        /// </summary>
-        public void ClearAll()
+        private static bool IsInputSystemKeyPressedThisFrame(object keyboard, string keyName)
         {
-            if (chatContainer != null)
+            if (!TryResolveInputSystemKey(keyName, out object key))
+                return false;
+
+            object keyControl = _indexerProp.GetValue(keyboard, new[] { key });
+            if (keyControl == null)
+                return false;
+
+            _wasPressedProperty ??= keyControl.GetType().GetProperty(
+                "wasPressedThisFrame",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+
+            return _wasPressedProperty?.GetValue(keyControl) is bool wasPressed && wasPressed;
+        }
+
+        private static bool TryResolveInputSystemKey(string keyName, out object key)
+        {
+            if (_inputSystemKeyCache.TryGetValue(keyName, out key))
+                return true;
+
+            try
             {
-                foreach (Transform child in chatContainer.transform)
-                {
-                    if (child.gameObject != characterMessagePrefab &&
-                        child.gameObject != playerMessagePrefab)
-                        Destroy(child.gameObject);
-                }
+                key = Enum.Parse(_keyType, keyName, false);
+                _inputSystemKeyCache[keyName] = key;
+                return true;
             }
-
-            _activeMessages.Clear();
-            ConvaiLogger.Info("[ChatTranscriptUI] Chat reset - all messages cleared", LogCategory.UI);
+            catch
+            {
+                key = null;
+                return false;
+            }
         }
-
-        /// <summary>
-        ///     Sets the active/visible state of this UI.
-        /// </summary>
-        public void SetActive(bool active)
-        {
-            _isActive = active;
-            gameObject.SetActive(active);
-
-            if (active && canvasFader != null && canvasGroup != null)
-                canvasFader.StartFadeIn(canvasGroup, fadeDuration);
-        }
-
-        /// <summary>
-        ///     Completes all active player messages.
-        ///     Called when player turn ends - strategy handles aggregation, this just logs.
-        /// </summary>
-        public void CompletePlayerTurn() =>
-            ConvaiLogger.Debug("[ChatTranscriptUI] Player turn completed", LogCategory.UI);
-
-        #endregion
     }
 }

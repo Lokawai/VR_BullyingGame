@@ -2,13 +2,15 @@
     "name": "Convai.Editor",
     "rootNamespace": "Convai.Editor",
     "references": [
-        "Convai.Runtime",
-        "Convai.Application",
-        "Convai.RestAPI",
         "Convai.Domain",
+        "Convai.Shared.Unity",
+        "Convai.Modules.LipSync",
         "Convai.Modules.Narrative",
-        "Convai.Runtime.Behaviors",
-        "Convai.Shared"
+        "Convai.RestAPI",
+        "Convai.Runtime",
+        "Convai.Runtime.UI",
+        "Convai.Modules.Vision",
+        "Newtonsoft.Json"
     ],
     "includePlatforms": [
         "Editor"

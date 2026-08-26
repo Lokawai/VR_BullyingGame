@@ -12,7 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: a8c2684d597f23d42bedc3c8fd8f9304, type: 3}
   m_Name: UsageLimitExceeded
   m_EditorClassIdentifier: 
-  notificationType: 5
+  _id: USAGE_LIMIT_EXCEEDED
   icon: {fileID: 21300000, guid: 92d367b138ee2d040a34c3fd0c26aace, type: 3}
   notificationTitle: Usage Limit Reached
   notificationMessage: You have exceeded the usage limit for your current plan. Please

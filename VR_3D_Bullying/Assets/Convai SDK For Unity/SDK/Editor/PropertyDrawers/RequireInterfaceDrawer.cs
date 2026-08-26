@@ -4,6 +4,7 @@ using Convai.Runtime.Logging;
 using Convai.Runtime.Utilities;
 using UnityEditor;
 using UnityEngine;
+using Glyphs = Convai.Editor.UI.ConvaiEditorGlyphs;
 using Object = UnityEngine.Object;
 
 namespace Convai.Editor.PropertyDrawers
@@ -13,7 +14,7 @@ namespace Convai.Editor.PropertyDrawers
     ///     Filters the object picker to only show components implementing the required interface.
     /// </summary>
     [CustomPropertyDrawer(typeof(RequireInterfaceAttribute))]
-    public class RequireInterfaceDrawer : PropertyDrawer
+    internal sealed class RequireInterfaceDrawer : PropertyDrawer
     {
         /// <inheritdoc />
         public override void OnGUI(Rect position, SerializedProperty property, GUIContent label)
@@ -55,7 +56,7 @@ namespace Convai.Editor.PropertyDrawers
                     else
                     {
                         ConvaiLogger.Warning(
-                            $"[RequireInterface] GameObject '{go.name}' has no component implementing {interfaceType.Name}.",
+                            $"GameObject '{go.name}' has no component implementing {interfaceType.Name}.",
                             LogCategory.Editor);
                     }
                 }
@@ -71,7 +72,7 @@ namespace Convai.Editor.PropertyDrawers
                         else
                         {
                             ConvaiLogger.Warning(
-                                $"[RequireInterface] Component '{component.GetType().Name}' does not implement {interfaceType.Name}.",
+                                $"Component '{component.GetType().Name}' does not implement {interfaceType.Name}.",
                                 LogCategory.Editor);
                         }
                     }
@@ -84,7 +85,7 @@ namespace Convai.Editor.PropertyDrawers
                 if (!isValid)
                 {
                     var warningRect = new Rect(position.xMax - 20, position.y, 20, position.height);
-                    EditorGUI.LabelField(warningRect, new GUIContent("⚠", $"Does not implement {interfaceType.Name}"));
+                    EditorGUI.LabelField(warningRect, new GUIContent(Glyphs.Status.Warn, $"Does not implement {interfaceType.Name}"));
                 }
             }
         }

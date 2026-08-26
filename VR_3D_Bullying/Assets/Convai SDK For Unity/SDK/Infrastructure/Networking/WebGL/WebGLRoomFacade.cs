@@ -64,9 +64,6 @@ namespace Convai.Infrastructure.Networking.WebGL
 
         #region Internal Methods
 
-        /// <summary>
-        ///     Gets the underlying LiveKit room (for internal use only).
-        /// </summary>
         internal Room UnderlyingRoom { get; }
 
         #endregion

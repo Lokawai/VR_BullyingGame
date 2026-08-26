@@ -3,7 +3,6 @@ using Convai.Infrastructure.Networking.Transport;
 using LiveKit;
 using UnityEngine;
 
-// CS0067: Event required by IRemoteTrack interface but not yet raised (future mute state tracking)
 #pragma warning disable CS0067
 
 namespace Convai.Infrastructure.Networking.Native
@@ -20,9 +19,6 @@ namespace Convai.Infrastructure.Networking.Native
             IsSubscribed = true;
         }
 
-        /// <summary>
-        ///     Gets the underlying LiveKit remote audio track.
-        /// </summary>
         public RemoteAudioTrack UnderlyingTrack { get; }
 
         public void SetRemoteAudioEnabled(bool enabled) => ((LiveKit.IRemoteTrack)UnderlyingTrack).SetEnabled(enabled);

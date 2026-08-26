@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using Convai.Domain.Logging;
 
 namespace Convai.Domain.EventSystem
@@ -9,24 +10,8 @@ namespace Convai.Domain.EventSystem
     ///     Uses copy-on-write pattern to keep Publish() allocation-light and dictionary for O(1) event type lookup.
     /// </summary>
     /// <remarks>
-    ///     EventHub provides a publish-subscribe mechanism for loosely-coupled communication.
-    ///     Key Features:
-    ///     - Thread-safe subscription management
-    ///     - Weak references prevent memory leaks
-    ///     - Multiple delivery policies (MainThread, Background, Immediate)
-    ///     - Automatic cleanup of dead subscriptions
-    ///     - Exception isolation (one subscriber's exception doesn't affect others)
-    ///     - **Allocation-free type lookup in Publish() hot path** (copy-on-write pattern)
-    ///     - **O(1) event type lookup** (dictionary-based storage)
-    ///     Architecture:
-    ///     - Subscriptions stored by event type in volatile dictionary for lock-free reading
-    ///     - Copy-on-write: allocations happen only on Subscribe/Unsubscribe (cold path)
-    ///     - Publish() uses volatile read with O(1) type lookup (no lock; allocations only for scheduled delivery or cleanup)
-    ///     - Uses IUnityScheduler for thread marshaling
-    ///     Performance:
-    ///     - Publish: O(1) type lookup + O(k) iteration where k = subscribers for that type
-    ///     - Subscribe: O(1) amortized
-    ///     - Unsubscribe: O(1) token lookup + O(k) array copy
+    ///     Provides publish-subscribe event delivery with thread-safe subscription management,
+    ///     weak-reference cleanup, and multiple delivery policies.
     ///     Usage:
     ///     <code>
     /// IUnityScheduler scheduler = UnityScheduler.Instance;
@@ -93,11 +78,11 @@ namespace Convai.Domain.EventSystem
             ILogger logger = null)
         {
             _scheduler = scheduler ?? throw new ArgumentNullException(nameof(scheduler));
-            _logger = logger;
+            _logger = logger.WithTag(nameof(EventHub));
             _lastPeriodicCleanupTime = 0f;
             _hasPerformedPeriodicCleanup = false;
 
-            _logger?.Debug("[EventHub] Initialized (low-allocation mode)", LogCategory.Events);
+            _logger?.Debug("Initialized (low-allocation mode)", LogCategory.Events);
         }
 
         /// <summary>
@@ -236,7 +221,7 @@ namespace Convai.Domain.EventSystem
             {
                 if (!_tokenToType.TryGetValue(token, out Type eventType))
                 {
-                    _logger?.Warning($"[EventHub] Unsubscribe called with unknown token: {token}", LogCategory.Events);
+                    _logger?.Warning($"Unsubscribe called with unknown token: {token}", LogCategory.Events);
                     return;
                 }
 
@@ -244,7 +229,7 @@ namespace Convai.Domain.EventSystem
 
                 if (!oldDict.TryGetValue(eventType, out Subscription[] oldArray))
                 {
-                    _logger?.Warning($"[EventHub] No subscriptions found for type {eventType.Name}",
+                    _logger?.Warning($"No subscriptions found for type {eventType.Name}",
                         LogCategory.Events);
                     _tokenToType.Remove(token);
                     return;
@@ -262,7 +247,7 @@ namespace Convai.Domain.EventSystem
 
                 if (indexToRemove < 0)
                 {
-                    _logger?.Warning($"[EventHub] Token not found in {eventType.Name} subscriptions",
+                    _logger?.Warning($"Token not found in {eventType.Name} subscriptions",
                         LogCategory.Events);
                     _tokenToType.Remove(token);
                     return;
@@ -290,7 +275,7 @@ namespace Convai.Domain.EventSystem
                 _subscriptionsByType = newDict;
 
                 _logger?.Debug(
-                    $"[EventHub] Unsubscribed from {eventType.Name} (Remaining for type: {(newDict.TryGetValue(eventType, out Subscription[] remaining) ? remaining.Length : 0)})",
+                    $"Unsubscribed from {eventType.Name} (Remaining for type: {(newDict.TryGetValue(eventType, out Subscription[] remaining) ? remaining.Length : 0)})",
                     LogCategory.Events);
             }
         }
@@ -365,7 +350,7 @@ namespace Convai.Domain.EventSystem
                     break;
 
                 default:
-                    _logger?.Warning($"[EventHub] Unknown delivery policy: {policy}", LogCategory.Events);
+                    _logger?.Warning($"Unknown delivery policy: {policy}", LogCategory.Events);
                     break;
             }
         }
@@ -381,20 +366,68 @@ namespace Convai.Domain.EventSystem
             }
             catch (Exception ex)
             {
-                _logger?.Error($"[EventHub] Exception in subscriber for {typeof(TEvent).Name}: {ex.Message}",
+                string subscriberDescription = DescribeSubscriber(subscriber);
+                _logger?.Error(
+                    $"Exception in subscriber '{subscriberDescription}' for {typeof(TEvent).Name}: {ex.Message}",
                     LogCategory.Events);
 
                 if (!_scheduler.IsMainThread())
                 {
                     _scheduler.ScheduleOnMainThread(() =>
                     {
-                        _logger?.Error($"[EventHub] Background thread exception details: {ex}", LogCategory.Events);
+                        _logger?.Error(
+                            $"Background thread exception details for subscriber '{subscriberDescription}': {ex}",
+                            LogCategory.Events);
                     });
                 }
             }
         }
 
         #region Helper Methods
+
+        private static string DescribeSubscriber(object subscriber)
+        {
+            if (subscriber == null) return "<null>";
+
+            if (TryDescribeDelegateSubscriber(subscriber, out string delegateDescription))
+                return delegateDescription;
+
+            if (TryDescribeInnerSubscriber(subscriber, out string innerSubscriberDescription))
+                return innerSubscriberDescription;
+
+            return subscriber.GetType().FullName ?? subscriber.GetType().Name;
+        }
+
+        private static bool TryDescribeDelegateSubscriber(object subscriber, out string description)
+        {
+            FieldInfo handlerField = subscriber.GetType().GetField("_handler",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            if (handlerField?.GetValue(subscriber) is not Delegate handler)
+            {
+                description = null;
+                return false;
+            }
+
+            string declaringType = handler.Target?.GetType().FullName ??
+                                   handler.Method.DeclaringType?.FullName ??
+                                   "<static>";
+            description = $"{declaringType}.{handler.Method.Name}";
+            return true;
+        }
+
+        private static bool TryDescribeInnerSubscriber(object subscriber, out string description)
+        {
+            FieldInfo innerSubscriberField = subscriber.GetType().GetField("_innerSubscriber",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            if (innerSubscriberField?.GetValue(subscriber) == null)
+            {
+                description = null;
+                return false;
+            }
+
+            description = DescribeSubscriber(innerSubscriberField.GetValue(subscriber));
+            return true;
+        }
 
         /// <summary>
         ///     Cleans up all dead subscriptions (garbage collected subscribers).
@@ -455,7 +488,7 @@ namespace Convai.Domain.EventSystem
                 if (totalDeadCount > 0)
                 {
                     _subscriptionsByType = newDict;
-                    _logger?.Debug($"[EventHub] Cleaned up {totalDeadCount} dead subscriptions", LogCategory.Events);
+                    _logger?.Debug($"Cleaned up {totalDeadCount} dead subscriptions", LogCategory.Events);
                 }
             }
         }
@@ -479,7 +512,7 @@ namespace Convai.Domain.EventSystem
                 _lastPeriodicCleanupTime = currentTimeSeconds;
                 CleanupAllDeadSubscriptions();
 
-                _logger?.Debug($"[EventHub] Periodic cleanup triggered at t={currentTimeSeconds:F1}s",
+                _logger?.Debug($"Periodic cleanup triggered at t={currentTimeSeconds:F1}s",
                     LogCategory.Events);
                 return true;
             }
@@ -489,7 +522,7 @@ namespace Convai.Domain.EventSystem
             _lastPeriodicCleanupTime = currentTimeSeconds;
             CleanupAllDeadSubscriptions();
 
-            _logger?.Debug($"[EventHub] Periodic cleanup triggered at t={currentTimeSeconds:F1}s", LogCategory.Events);
+            _logger?.Debug($"Periodic cleanup triggered at t={currentTimeSeconds:F1}s", LogCategory.Events);
             return true;
         }
 

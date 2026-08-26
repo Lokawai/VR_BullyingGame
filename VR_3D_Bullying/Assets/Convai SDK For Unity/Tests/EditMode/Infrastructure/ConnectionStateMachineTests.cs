@@ -1,421 +1,115 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
-using Convai.Infrastructure.Networking;
+using System.Threading.Tasks;
 using Convai.Infrastructure.Networking.Connection;
 using NUnit.Framework;
 
 namespace Convai.Tests.EditMode.Infrastructure
 {
-    /// <summary>
-    ///     Unit tests for ConnectionStateMachine covering state transitions, concurrency, and edge cases.
-    /// </summary>
     [TestFixture]
-    public class ConnectionStateMachineTests
+    public sealed class ConnectionStateMachineTests
     {
+        private ConnectionStateMachine _stateMachine;
+        private List<(ConnectionState oldState, ConnectionState newState, string error)> _events;
+
+        private static IEnumerable<TestCaseData> TransitionCases()
+        {
+            foreach (ConnectionState from in Enum.GetValues(typeof(ConnectionState)))
+            foreach (ConnectionState to in Enum.GetValues(typeof(ConnectionState)))
+                yield return new TestCaseData(from, to, IsValidTransition(from, to))
+                    .SetName($"Transition_{from}_To_{to}_Is_{{2}}");
+        }
+
         [SetUp]
         public void SetUp()
         {
             _stateMachine = new ConnectionStateMachine();
-            _stateChanges = new List<(ConnectionState, ConnectionState, string)>();
-            _stateMachine.StateChanged += (oldState, newState, errorMessage) =>
-                _stateChanges.Add((oldState, newState, errorMessage));
-        }
-
-        [TearDown]
-        public void TearDown()
-        {
-            _stateMachine = null;
-            _stateChanges = null;
-        }
-
-        private ConnectionStateMachine _stateMachine;
-        private List<(ConnectionState oldState, ConnectionState newState, string errorMessage)> _stateChanges;
-
-        [Test]
-        public void InitialState_IsDisconnected() =>
-            Assert.AreEqual(ConnectionState.Disconnected, _stateMachine.CurrentState);
-
-        [Test]
-        public void TryTransition_DisconnectedToConnecting_ReturnsTrue()
-        {
-            bool result = _stateMachine.TryTransition(ConnectionState.Connecting);
-
-            Assert.IsTrue(result);
-            Assert.AreEqual(ConnectionState.Connecting, _stateMachine.CurrentState);
-            Assert.AreEqual(1, _stateChanges.Count);
-            Assert.AreEqual(ConnectionState.Disconnected, _stateChanges[0].oldState);
-            Assert.AreEqual(ConnectionState.Connecting, _stateChanges[0].newState);
+            _events = new List<(ConnectionState, ConnectionState, string)>();
+            _stateMachine.StateChanged += (oldState, newState, error) =>
+                _events.Add((oldState, newState, error));
         }
 
         [Test]
-        public void TryTransition_ConnectingToConnected_ReturnsTrue()
+        public void StartsDisconnected() =>
+            Assert.That(_stateMachine.CurrentState, Is.EqualTo(ConnectionState.Disconnected));
+
+        [TestCaseSource(nameof(TransitionCases))]
+        public void TryTransition_EnforcesCompleteStateGraph(ConnectionState from, ConnectionState to, bool expected)
         {
-            _stateMachine.TryTransition(ConnectionState.Connecting);
+            _stateMachine.ForceTransition(from);
+            _events.Clear();
 
-            bool result = _stateMachine.TryTransition(ConnectionState.Connected);
+            bool changed = _stateMachine.TryTransition(to, "reason");
 
-            Assert.IsTrue(result);
-            Assert.AreEqual(ConnectionState.Connected, _stateMachine.CurrentState);
+            Assert.That(changed, Is.EqualTo(expected));
+            Assert.That(_stateMachine.CurrentState, Is.EqualTo(expected ? to : from));
+            Assert.That(_events, Has.Count.EqualTo(expected ? 1 : 0));
+            if (!expected) return;
+            Assert.That(_events[0], Is.EqualTo((from, to, "reason")));
         }
 
         [Test]
-        public void TryTransition_ConnectingToDisconnected_ReturnsTrue()
+        public void ForceTransition_BypassesGraphButSameStateIsNoOp()
         {
-            _stateMachine.TryTransition(ConnectionState.Connecting);
+            _stateMachine.ForceTransition(ConnectionState.Connected, "forced");
+            _stateMachine.ForceTransition(ConnectionState.Connected, "ignored");
 
-            bool result = _stateMachine.TryTransition(ConnectionState.Disconnected, "Connection failed");
-
-            Assert.IsTrue(result);
-            Assert.AreEqual(ConnectionState.Disconnected, _stateMachine.CurrentState);
-            Assert.AreEqual("Connection failed", _stateChanges[1].errorMessage);
+            Assert.That(_stateMachine.CurrentState, Is.EqualTo(ConnectionState.Connected));
+            Assert.That(_events, Has.Count.EqualTo(1));
+            Assert.That(_events[0], Is.EqualTo((ConnectionState.Disconnected, ConnectionState.Connected, "forced")));
         }
 
         [Test]
-        public void TryTransition_ConnectedToReconnecting_ReturnsTrue()
+        public void Reset_PublishesOnlyWhenStateChanges()
         {
-            _stateMachine.TryTransition(ConnectionState.Connecting);
-            _stateMachine.TryTransition(ConnectionState.Connected);
-
-            bool result = _stateMachine.TryTransition(ConnectionState.Reconnecting);
-
-            Assert.IsTrue(result);
-            Assert.AreEqual(ConnectionState.Reconnecting, _stateMachine.CurrentState);
-        }
-
-        [Test]
-        public void TryTransition_ConnectedToDisconnecting_ReturnsTrue()
-        {
-            _stateMachine.TryTransition(ConnectionState.Connecting);
-            _stateMachine.TryTransition(ConnectionState.Connected);
-
-            bool result = _stateMachine.TryTransition(ConnectionState.Disconnecting);
-
-            Assert.IsTrue(result);
-            Assert.AreEqual(ConnectionState.Disconnecting, _stateMachine.CurrentState);
-        }
-
-        [Test]
-        public void TryTransition_ReconnectingToConnected_ReturnsTrue()
-        {
-            _stateMachine.TryTransition(ConnectionState.Connecting);
-            _stateMachine.TryTransition(ConnectionState.Connected);
-            _stateMachine.TryTransition(ConnectionState.Reconnecting);
-
-            bool result = _stateMachine.TryTransition(ConnectionState.Connected);
-
-            Assert.IsTrue(result);
-            Assert.AreEqual(ConnectionState.Connected, _stateMachine.CurrentState);
-        }
-
-        [Test]
-        public void TryTransition_ReconnectingToDisconnected_ReturnsTrue()
-        {
-            _stateMachine.TryTransition(ConnectionState.Connecting);
-            _stateMachine.TryTransition(ConnectionState.Connected);
-            _stateMachine.TryTransition(ConnectionState.Reconnecting);
-
-            bool result = _stateMachine.TryTransition(ConnectionState.Disconnected);
-
-            Assert.IsTrue(result);
-            Assert.AreEqual(ConnectionState.Disconnected, _stateMachine.CurrentState);
-        }
-
-        [Test]
-        public void TryTransition_DisconnectingToDisconnected_ReturnsTrue()
-        {
-            _stateMachine.TryTransition(ConnectionState.Connecting);
-            _stateMachine.TryTransition(ConnectionState.Connected);
-            _stateMachine.TryTransition(ConnectionState.Disconnecting);
-
-            bool result = _stateMachine.TryTransition(ConnectionState.Disconnected);
-
-            Assert.IsTrue(result);
-            Assert.AreEqual(ConnectionState.Disconnected, _stateMachine.CurrentState);
-        }
-
-        [Test]
-        public void TryTransition_DisconnectedToConnected_ReturnsFalse()
-        {
-            bool result = _stateMachine.TryTransition(ConnectionState.Connected);
-
-            Assert.IsFalse(result);
-            Assert.AreEqual(ConnectionState.Disconnected, _stateMachine.CurrentState);
-            Assert.AreEqual(0, _stateChanges.Count);
-        }
-
-        [Test]
-        public void TryTransition_DisconnectedToReconnecting_ReturnsFalse()
-        {
-            bool result = _stateMachine.TryTransition(ConnectionState.Reconnecting);
-
-            Assert.IsFalse(result);
-            Assert.AreEqual(ConnectionState.Disconnected, _stateMachine.CurrentState);
-        }
-
-        [Test]
-        public void TryTransition_DisconnectedToDisconnecting_ReturnsFalse()
-        {
-            bool result = _stateMachine.TryTransition(ConnectionState.Disconnecting);
-
-            Assert.IsFalse(result);
-            Assert.AreEqual(ConnectionState.Disconnected, _stateMachine.CurrentState);
-        }
-
-        [Test]
-        public void TryTransition_ConnectingToReconnecting_ReturnsFalse()
-        {
-            _stateMachine.TryTransition(ConnectionState.Connecting);
-
-            bool result = _stateMachine.TryTransition(ConnectionState.Reconnecting);
-
-            Assert.IsFalse(result);
-            Assert.AreEqual(ConnectionState.Connecting, _stateMachine.CurrentState);
-        }
-
-        [Test]
-        public void TryTransition_ConnectingToDisconnecting_ReturnsFalse()
-        {
-            _stateMachine.TryTransition(ConnectionState.Connecting);
-
-            bool result = _stateMachine.TryTransition(ConnectionState.Disconnecting);
-
-            Assert.IsFalse(result);
-            Assert.AreEqual(ConnectionState.Connecting, _stateMachine.CurrentState);
-        }
-
-        [Test]
-        public void TryTransition_ConnectedToConnecting_ReturnsFalse()
-        {
-            _stateMachine.TryTransition(ConnectionState.Connecting);
-            _stateMachine.TryTransition(ConnectionState.Connected);
-
-            bool result = _stateMachine.TryTransition(ConnectionState.Connecting);
-
-            Assert.IsFalse(result);
-            Assert.AreEqual(ConnectionState.Connected, _stateMachine.CurrentState);
-        }
-
-        [Test]
-        public void TryTransition_ConnectedToDisconnected_ReturnsFalse()
-        {
-            _stateMachine.TryTransition(ConnectionState.Connecting);
-            _stateMachine.TryTransition(ConnectionState.Connected);
-
-            bool result = _stateMachine.TryTransition(ConnectionState.Disconnected);
-
-            Assert.IsFalse(result);
-            Assert.AreEqual(ConnectionState.Connected, _stateMachine.CurrentState);
-        }
-
-        [Test]
-        public void TryTransition_SameState_ReturnsFalse()
-        {
-            bool result = _stateMachine.TryTransition(ConnectionState.Disconnected);
-
-            Assert.IsFalse(result);
-            Assert.AreEqual(0, _stateChanges.Count);
-        }
-
-        [Test]
-        public void TryTransition_ConnectingToConnecting_ReturnsFalse()
-        {
-            _stateMachine.TryTransition(ConnectionState.Connecting);
-            _stateChanges.Clear();
-
-            bool result = _stateMachine.TryTransition(ConnectionState.Connecting);
-
-            Assert.IsFalse(result);
-            Assert.AreEqual(0, _stateChanges.Count);
-        }
-
-        [Test]
-        public void CanTransitionTo_ValidTransition_ReturnsTrue() =>
-            Assert.IsTrue(_stateMachine.CanTransitionTo(ConnectionState.Connecting));
-
-        [Test]
-        public void CanTransitionTo_InvalidTransition_ReturnsFalse()
-        {
-            Assert.IsFalse(_stateMachine.CanTransitionTo(ConnectionState.Connected));
-            Assert.IsFalse(_stateMachine.CanTransitionTo(ConnectionState.Reconnecting));
-        }
-
-        [Test]
-        public void CanTransitionTo_ReflectsCurrentState()
-        {
-            _stateMachine.TryTransition(ConnectionState.Connecting);
-            _stateMachine.TryTransition(ConnectionState.Connected);
-
-            Assert.IsTrue(_stateMachine.CanTransitionTo(ConnectionState.Reconnecting));
-            Assert.IsTrue(_stateMachine.CanTransitionTo(ConnectionState.Disconnecting));
-            Assert.IsFalse(_stateMachine.CanTransitionTo(ConnectionState.Connecting));
-        }
-
-        [Test]
-        public void ForceTransition_BypassesValidation()
-        {
-            _stateMachine.ForceTransition(ConnectionState.Connected);
-
-            Assert.AreEqual(ConnectionState.Connected, _stateMachine.CurrentState);
-            Assert.AreEqual(1, _stateChanges.Count);
-        }
-
-        [Test]
-        public void ForceTransition_SameState_NoEvent()
-        {
-            _stateMachine.ForceTransition(ConnectionState.Disconnected);
-
-            Assert.AreEqual(0, _stateChanges.Count);
-        }
-
-        [Test]
-        public void ForceTransition_IncludesErrorMessage()
-        {
-            _stateMachine.ForceTransition(ConnectionState.Disconnected, "Forced disconnect");
-
-            Assert.AreEqual(0, _stateChanges.Count);
-
-            _stateMachine.ForceTransition(ConnectionState.Connected, "Forced connect");
-            Assert.AreEqual("Forced connect", _stateChanges[0].errorMessage);
-        }
-
-        [Test]
-        public void Reset_FromDisconnected_NoEvent()
-        {
-            _stateMachine.Reset();
-
-            Assert.AreEqual(ConnectionState.Disconnected, _stateMachine.CurrentState);
-            Assert.AreEqual(0, _stateChanges.Count);
-        }
-
-        [Test]
-        public void Reset_FromConnected_TransitionsToDisconnected()
-        {
-            _stateMachine.TryTransition(ConnectionState.Connecting);
-            _stateMachine.TryTransition(ConnectionState.Connected);
-            _stateChanges.Clear();
+            _stateMachine.ForceTransition(ConnectionState.Reconnecting);
+            _events.Clear();
 
             _stateMachine.Reset();
-
-            Assert.AreEqual(ConnectionState.Disconnected, _stateMachine.CurrentState);
-            Assert.AreEqual(1, _stateChanges.Count);
-            Assert.AreEqual(ConnectionState.Disconnected, _stateChanges[0].newState);
-        }
-
-        [Test]
-        public void Reset_FromReconnecting_TransitionsToDisconnected()
-        {
-            _stateMachine.TryTransition(ConnectionState.Connecting);
-            _stateMachine.TryTransition(ConnectionState.Connected);
-            _stateMachine.TryTransition(ConnectionState.Reconnecting);
-            _stateChanges.Clear();
-
             _stateMachine.Reset();
 
-            Assert.AreEqual(ConnectionState.Disconnected, _stateMachine.CurrentState);
-            Assert.AreEqual(1, _stateChanges.Count);
+            Assert.That(_stateMachine.CurrentState, Is.EqualTo(ConnectionState.Disconnected));
+            Assert.That(_events, Has.Count.EqualTo(1));
+            Assert.That(_events[0].oldState, Is.EqualTo(ConnectionState.Reconnecting));
+            Assert.That(_events[0].newState, Is.EqualTo(ConnectionState.Disconnected));
         }
 
         [Test]
-        public void ConcurrentTransitions_OnlyOneSucceeds()
+        public void ConcurrentTransition_AllowsOneWinner()
         {
-            const int threadCount = 10;
-            int successCount = 0;
-            var barrier = new Barrier(threadCount);
-            var threads = new Thread[threadCount];
+            _stateMachine.ForceTransition(ConnectionState.Connecting);
+            int successes = 0;
 
-            for (int i = 0; i < threadCount; i++)
+            Parallel.For(0, 100, _ =>
             {
-                threads[i] = new Thread(() =>
-                {
-                    barrier.SignalAndWait();
-                    if (_stateMachine.TryTransition(ConnectionState.Connecting))
-                        Interlocked.Increment(ref successCount);
-                });
-            }
+                if (_stateMachine.TryTransition(ConnectionState.Connected))
+                    Interlocked.Increment(ref successes);
+            });
 
-            foreach (Thread thread in threads)
-                thread.Start();
-
-            foreach (Thread thread in threads)
-                thread.Join();
-
-            Assert.AreEqual(1, successCount, "Only one thread should succeed in transitioning");
-            Assert.AreEqual(ConnectionState.Connecting, _stateMachine.CurrentState);
+            Assert.That(successes, Is.EqualTo(1));
+            Assert.That(_stateMachine.CurrentState, Is.EqualTo(ConnectionState.Connected));
         }
 
         [Test]
-        public void ConcurrentReads_AreThreadSafe()
+        public void StateChangedHandlerException_DoesNotBlockTransition()
         {
-            _stateMachine.TryTransition(ConnectionState.Connecting);
-            _stateMachine.TryTransition(ConnectionState.Connected);
+            _stateMachine.StateChanged += (_, _, _) => throw new InvalidOperationException("subscriber failure");
 
-            const int threadCount = 20;
-            var barrier = new Barrier(threadCount);
-            var errors = new List<Exception>();
-            var threads = new Thread[threadCount];
+            bool changed = _stateMachine.TryTransition(ConnectionState.Connecting);
 
-            for (int i = 0; i < threadCount; i++)
-            {
-                threads[i] = new Thread(() =>
-                {
-                    try
-                    {
-                        barrier.SignalAndWait();
-                        for (int j = 0; j < 100; j++)
-                        {
-                            _ = _stateMachine.CurrentState;
-                            _ = _stateMachine.CanTransitionTo(ConnectionState.Disconnecting);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        lock (errors) errors.Add(ex);
-                    }
-                });
-            }
-
-            foreach (Thread thread in threads)
-                thread.Start();
-
-            foreach (Thread thread in threads)
-                thread.Join();
-
-            Assert.AreEqual(0, errors.Count, "No exceptions should occur during concurrent reads");
+            Assert.That(changed, Is.True);
+            Assert.That(_stateMachine.CurrentState, Is.EqualTo(ConnectionState.Connecting));
         }
 
-        [Test]
-        public void FullPath_ConnectDisconnect()
+        private static bool IsValidTransition(ConnectionState from, ConnectionState to) => (from, to) switch
         {
-            Assert.IsTrue(_stateMachine.TryTransition(ConnectionState.Connecting));
-            Assert.IsTrue(_stateMachine.TryTransition(ConnectionState.Connected));
-            Assert.IsTrue(_stateMachine.TryTransition(ConnectionState.Disconnecting));
-            Assert.IsTrue(_stateMachine.TryTransition(ConnectionState.Disconnected));
-
-            Assert.AreEqual(4, _stateChanges.Count);
-        }
-
-        [Test]
-        public void FullPath_ConnectReconnectDisconnect()
-        {
-            Assert.IsTrue(_stateMachine.TryTransition(ConnectionState.Connecting));
-            Assert.IsTrue(_stateMachine.TryTransition(ConnectionState.Connected));
-            Assert.IsTrue(_stateMachine.TryTransition(ConnectionState.Reconnecting));
-            Assert.IsTrue(_stateMachine.TryTransition(ConnectionState.Connected));
-            Assert.IsTrue(_stateMachine.TryTransition(ConnectionState.Disconnecting));
-            Assert.IsTrue(_stateMachine.TryTransition(ConnectionState.Disconnected));
-
-            Assert.AreEqual(6, _stateChanges.Count);
-        }
-
-        [Test]
-        public void FullPath_ConnectFailure()
-        {
-            Assert.IsTrue(_stateMachine.TryTransition(ConnectionState.Connecting));
-            Assert.IsTrue(_stateMachine.TryTransition(ConnectionState.Disconnected, "Connection timeout"));
-
-            Assert.AreEqual(2, _stateChanges.Count);
-            Assert.AreEqual("Connection timeout", _stateChanges[1].errorMessage);
-        }
+            (ConnectionState.Disconnected, ConnectionState.Connecting) => true,
+            (ConnectionState.Connecting, ConnectionState.Connected or ConnectionState.Disconnected) => true,
+            (ConnectionState.Connected, ConnectionState.Reconnecting or ConnectionState.Disconnecting) => true,
+            (ConnectionState.Reconnecting, ConnectionState.Connected or ConnectionState.Disconnected) => true,
+            (ConnectionState.Disconnecting, ConnectionState.Disconnected) => true,
+            _ => false
+        };
     }
 }

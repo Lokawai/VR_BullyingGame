@@ -9,25 +9,8 @@ namespace Convai.Domain.DomainEvents.Vision
     /// <remarks>
     ///     This event is published via EventHub whenever vision capture is initiated.
     ///     Consumers can subscribe to track when visual context becomes available.
-    ///     Integration Example:
-    ///     <code>
-    /// 
-    /// private readonly IEventHub _eventHub;
-    /// 
-    /// private void OnCaptureStarted(int width, int height, float fps)
-    /// {
-    ///     _eventHub.Publish(VisionCaptureStarted.Create(width, height, fps));
-    /// }
-    /// 
-    /// 
-    /// _eventHub.Subscribe&lt;VisionCaptureStarted&gt;(this, e =>
-    /// {
-    ///     Debug.Log($"Vision capture started: {e.Width}x{e.Height} @ {e.FramesPerSecond} FPS");
-    /// });
-    /// </code>
-    ///     Delivery Policy:
-    ///     - Use EventDeliveryPolicy.MainThread for UI updates
-    ///     - Use EventDeliveryPolicy.Immediate for logging/analytics
+    ///     Use EventDeliveryPolicy.MainThread for UI updates and
+    ///     EventDeliveryPolicy.Immediate for lightweight logging or analytics.
     /// </remarks>
     public readonly struct VisionCaptureStarted
     {

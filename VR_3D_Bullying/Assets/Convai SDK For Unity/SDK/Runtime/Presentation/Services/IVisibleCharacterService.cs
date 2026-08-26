@@ -8,8 +8,7 @@ namespace Convai.Runtime.Presentation.Services
     ///     Used by transcript UIs for filtering and fading logic.
     /// </summary>
     /// <remarks>
-    ///     This service replaces the visibility tracking previously handled by ConvaiTranscriptHandler.
-    ///     It provides a centralized way to manage character visibility across the transcript UI system.
+    ///     Provides a centralized view of which character IDs are currently visible.
     /// </remarks>
     public interface IVisibleCharacterService
     {

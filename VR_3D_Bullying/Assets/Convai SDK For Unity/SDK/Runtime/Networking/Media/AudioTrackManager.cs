@@ -6,7 +6,7 @@ using Convai.Domain.DomainEvents.Runtime;
 using Convai.Domain.EventSystem;
 using Convai.Domain.Logging;
 using Convai.Infrastructure.Networking;
-using Convai.Infrastructure.Networking.Models;
+using Convai.Runtime.Behaviors;
 using UnityEngine;
 using ILogger = Convai.Domain.Logging.ILogger;
 
@@ -20,23 +20,22 @@ namespace Convai.Runtime.Networking.Media
     /// </summary>
     internal class AudioTrackManager : IAudioTrackManager
     {
+        private readonly IAgentRegistry _agentRegistry;
         private readonly bool _allowNullAudioTrackInFactory;
         private readonly Func<string, AudioSource> _audioSourceResolver;
         private readonly IAudioStreamFactory _audioStreamFactory;
-        private readonly Dictionary<string, IDisposable> _characterAudioStreams = new();
-        private readonly ICharacterRegistry _characterRegistry;
+        private readonly Dictionary<string, RemoteAudioPlaybackRegistration> _remoteAudioRegistrations = new();
         private readonly IEventHub _eventHub;
         private readonly ILogger _logger;
-        private readonly Dictionary<string, (Action started, Action stopped)> _playbackHandlers = new();
-
-        private readonly Dictionary<string, (IRemoteAudioTrack track, IRemoteParticipant participant)>
-            _remoteAudioTrackByParticipantSid = new();
-
+        private readonly SemaphoreSlim _microphoneOperationLock = new(1, 1);
         private readonly IRemotePlayerRegistry _remotePlayerRegistry;
         private readonly Func<IRoomFacade> _roomFacadeProvider;
         private readonly object _syncRoot = new();
         private ILocalAudioTrack _currentAudioTrack;
+        private AudioPublishOptions _currentMicrophonePublishOptions;
         private bool _disposed;
+        private bool _hasCurrentMicrophonePublishOptions;
+        private bool _unresolvedParticipantRouteLogged;
 
         private IMicrophoneSource _microphoneSource;
 
@@ -47,7 +46,7 @@ namespace Convai.Runtime.Networking.Media
         ///     Provider function that returns the current room facade.
         ///     Using a provider allows the room to be recreated between connections while maintaining the same AudioTrackManager.
         /// </param>
-        /// <param name="characterRegistry">Registry for Character audio routing.</param>
+        /// <param name="agentRegistry">Registry for Character audio routing.</param>
         /// <param name="logger">Logger for diagnostics.</param>
         /// <param name="audioSourceResolver">Function to resolve AudioSource for a character ID. Required for audio routing.</param>
         /// <param name="remotePlayerRegistry">Optional registry for remote player audio (multiplayer).</param>
@@ -58,7 +57,7 @@ namespace Convai.Runtime.Networking.Media
         /// </param>
         public AudioTrackManager(
             Func<IRoomFacade> roomFacadeProvider,
-            ICharacterRegistry characterRegistry,
+            IAgentRegistry agentRegistry,
             ILogger logger,
             Func<string, AudioSource> audioSourceResolver,
             IRemotePlayerRegistry remotePlayerRegistry = null,
@@ -66,9 +65,9 @@ namespace Convai.Runtime.Networking.Media
             IEventHub eventHub = null)
         {
             _roomFacadeProvider = roomFacadeProvider ?? throw new ArgumentNullException(nameof(roomFacadeProvider));
-            _characterRegistry = characterRegistry ?? throw new ArgumentNullException(nameof(characterRegistry));
+            _agentRegistry = agentRegistry ?? throw new ArgumentNullException(nameof(agentRegistry));
             _audioSourceResolver = audioSourceResolver ?? throw new ArgumentNullException(nameof(audioSourceResolver));
-            _logger = logger;
+            _logger = logger.WithTag(nameof(AudioTrackManager));
             _remotePlayerRegistry = remotePlayerRegistry;
             _audioStreamFactory = audioStreamFactory;
             _allowNullAudioTrackInFactory = audioStreamFactory != null;
@@ -131,13 +130,13 @@ namespace Convai.Runtime.Networking.Media
                 catch (Exception ex)
                 {
                     _logger?.Warning(
-                        $"[AudioTrackManager] Failed to stop microphone source during ClearState: {ex.Message}");
+                        $"Failed to stop microphone source during ClearState: {ex.Message}");
                 }
             }
 
             ClearRemoteAudio();
 
-            _logger?.Debug("[AudioTrackManager] State cleared (track, microphone, and remote audio streams reset)");
+            _logger?.Debug("State cleared (track, microphone, and remote audio streams reset)");
         }
 
         /// <summary>
@@ -152,26 +151,78 @@ namespace Convai.Runtime.Networking.Media
 
             if (microphoneSource == null) throw new ArgumentNullException(nameof(microphoneSource));
 
+            await _microphoneOperationLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                return await PublishMicrophoneCoreAsync(microphoneSource, options).ConfigureAwait(false);
+            }
+            finally
+            {
+                _microphoneOperationLock.Release();
+            }
+        }
+
+        internal async Task<bool> RepublishMicrophoneAsync(IMicrophoneSource microphoneSource,
+            AudioPublishOptions? options = null)
+        {
+            ThrowIfDisposed();
+
+            if (microphoneSource == null) throw new ArgumentNullException(nameof(microphoneSource));
+
+            await _microphoneOperationLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                return await PublishMicrophoneCoreAsync(microphoneSource,
+                    options ?? GetCurrentMicrophonePublishOptionsOrDefault()).ConfigureAwait(false);
+            }
+            finally
+            {
+                _microphoneOperationLock.Release();
+            }
+        }
+
+        internal bool IsCurrentMicrophoneSource(IMicrophoneSource microphoneSource)
+        {
+            lock (_syncRoot)
+                return ReferenceEquals(_microphoneSource, microphoneSource);
+        }
+
+        internal AudioPublishOptions GetCurrentMicrophonePublishOptionsOrDefault()
+        {
+            lock (_syncRoot)
+                return _hasCurrentMicrophonePublishOptions
+                    ? _currentMicrophonePublishOptions
+                    : AudioPublishOptions.DefaultMicrophone;
+        }
+
+        private async Task<bool> PublishMicrophoneCoreAsync(IMicrophoneSource microphoneSource, AudioPublishOptions options)
+        {
+            ThrowIfDisposed();
+
+            if (microphoneSource == null) throw new ArgumentNullException(nameof(microphoneSource));
+
             IRoomFacade room = RoomFacade;
             if (room?.LocalParticipant == null)
             {
-                _logger?.Error("[AudioTrackManager] PublishMicrophoneAsync aborted: LocalParticipant is null");
+                _logger?.Error("PublishMicrophoneAsync aborted: LocalParticipant is null");
                 return false;
             }
 
             try
             {
-                await UnpublishMicrophoneAsync().ConfigureAwait(false);
+                await UnpublishMicrophoneCoreAsync(clearPublishOptions: false).ConfigureAwait(false);
 
                 // Delegate to the platform-specific local participant implementation
-                ILocalAudioTrack track = await room.LocalParticipant.PublishAudioTrackAsync(
-                    microphoneSource,
-                    options,
-                    CancellationToken.None).ConfigureAwait(false);
+                ILocalAudioTrack track = await RunOnMainThreadAsync(() =>
+                        room.LocalParticipant.PublishAudioTrackAsync(
+                            microphoneSource,
+                            options,
+                            CancellationToken.None))
+                    .ConfigureAwait(false);
 
                 if (track == null)
                 {
-                    _logger?.Error("[AudioTrackManager] PublishMicrophoneAsync failed: track is null");
+                    _logger?.Error("PublishMicrophoneAsync failed: track is null");
                     return false;
                 }
 
@@ -179,16 +230,18 @@ namespace Convai.Runtime.Networking.Media
                 {
                     _microphoneSource = microphoneSource;
                     _currentAudioTrack = track;
+                    _currentMicrophonePublishOptions = options;
+                    _hasCurrentMicrophonePublishOptions = true;
 
                     if (IsMicMuted && _microphoneSource != null) _microphoneSource.IsMuted = true;
                 }
 
-                _logger?.Info("[AudioTrackManager] Microphone published successfully");
+                _logger?.Info("Microphone published successfully");
                 return true;
             }
             catch (Exception ex)
             {
-                _logger?.Error($"[AudioTrackManager] Exception in PublishMicrophoneAsync: {ex}");
+                _logger?.Error($"Exception in PublishMicrophoneAsync: {ex}");
                 return false;
             }
         }
@@ -201,6 +254,21 @@ namespace Convai.Runtime.Networking.Media
         {
             ThrowIfDisposed();
 
+            await _microphoneOperationLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                await UnpublishMicrophoneCoreAsync(clearPublishOptions: true).ConfigureAwait(false);
+            }
+            finally
+            {
+                _microphoneOperationLock.Release();
+            }
+        }
+
+        private async Task UnpublishMicrophoneCoreAsync(bool clearPublishOptions)
+        {
+            ThrowIfDisposed();
+
             ILocalAudioTrack trackToUnpublish;
             IMicrophoneSource sourceToStop;
 
@@ -210,6 +278,21 @@ namespace Convai.Runtime.Networking.Media
                 sourceToStop = _microphoneSource;
                 _currentAudioTrack = null;
                 _microphoneSource = null;
+                if (clearPublishOptions)
+                    _hasCurrentMicrophonePublishOptions = false;
+            }
+
+            if (sourceToStop != null)
+            {
+                try
+                {
+                    await RunOnMainThreadAsync(() => sourceToStop.StopCapture()).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger?.Error(
+                        $"Exception in UnpublishMicrophoneAsync while stopping microphone: {ex}");
+                }
             }
 
             if (trackToUnpublish != null)
@@ -225,26 +308,13 @@ namespace Convai.Runtime.Networking.Media
                     catch (Exception ex)
                     {
                         _logger?.Warning(
-                            $"[AudioTrackManager] Exception in UnpublishMicrophoneAsync while unpublishing track (may be stale): {ex.Message}");
+                            $"Exception in UnpublishMicrophoneAsync while unpublishing track (may be stale): {ex.Message}");
                     }
                 }
                 else
                 {
                     _logger?.Debug(
-                        "[AudioTrackManager] UnpublishMicrophoneAsync: clearing stale track reference (room not available)");
-                }
-            }
-
-            if (sourceToStop != null)
-            {
-                try
-                {
-                    await RunOnMainThreadAsync(() => sourceToStop.StopCapture()).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    _logger?.Error(
-                        $"[AudioTrackManager] Exception in UnpublishMicrophoneAsync while stopping microphone: {ex}");
+                        "UnpublishMicrophoneAsync: clearing stale track reference (room not available)");
                 }
             }
         }
@@ -269,23 +339,23 @@ namespace Convai.Runtime.Networking.Media
                     {
                         _microphoneSource.IsMuted = muted;
                         _logger?.Info(
-                            $"[AudioTrackManager] Microphone mute state changed: {(muted ? "MUTED" : "UNMUTED")}");
+                            $"Microphone mute state changed: {(muted ? "MUTED" : "UNMUTED")}");
                     }
                     catch (Exception ex)
                     {
-                        _logger?.Error($"[AudioTrackManager] SetMicMuted failed to set mute on MicrophoneSource: {ex}");
+                        _logger?.Error($"SetMicMuted failed to set mute on MicrophoneSource: {ex}");
                     }
                 }
                 else
                 {
                     _logger?.Debug(
-                        $"[AudioTrackManager] SetMicMuted called but MicrophoneSource is null (muted={muted})");
+                        $"SetMicMuted called but MicrophoneSource is null (muted={muted})");
                 }
             }
 
             if (changed)
             {
-                _logger?.Debug($"[AudioTrackManager] Microphone mute state changed event fired: muted={muted}");
+                _logger?.Debug($"Microphone mute state changed event fired: muted={muted}");
                 OnMicMuteChanged?.Invoke(muted);
             }
         }
@@ -317,77 +387,187 @@ namespace Convai.Runtime.Networking.Media
                     catch (Exception ex)
                     {
                         _logger?.Log(LogLevel.Debug,
-                            $"[AudioTrackManager] StopCapture failed during Dispose: {ex.Message}");
+                            $"StopCapture failed during Dispose: {ex.Message}");
                     }
 
                     _microphoneSource = null;
                 }
 
                 _currentAudioTrack = null;
+                _hasCurrentMicrophonePublishOptions = false;
             }
 
             _remotePlayerRegistry?.Clear();
+            _microphoneOperationLock.Dispose();
 
             GC.SuppressFinalize(this);
         }
 
-        private static void ConfigureAudioSource(AudioSource source, bool isMuted)
+        private static void ApplyAudioMuteState(AudioSource source, bool isMuted)
         {
-            source.playOnAwake = false;
-            source.loop = false;
-            source.volume = 1f;
-            source.priority = 128;
-            source.spatialBlend = 0f;
             source.mute = isMuted;
         }
 
-        private void SubscribePlaybackHandlers(string characterId, IAudioPlaybackStateSource source)
+        /// <summary>
+        ///     Reads the measured audio playhead for a character's remote stream: seconds of source
+        ///     audio actually rendered since the current playback signal started. Returns false when
+        ///     the stream is missing or does not expose the legacy playhead. WebGL exposes its
+        ///     browser media clock through the separate internal media-timeline capability.
+        /// </summary>
+        public bool TryGetAudioPlayhead(string characterId, out double playedSeconds)
         {
-            if (string.IsNullOrEmpty(characterId) || source == null) return;
-
-            UnsubscribePlaybackHandlers(characterId);
-
-            Action startedHandler = () => _eventHub?.Publish(CharacterAudioPlaybackStateChanged.Started(characterId));
-            Action stoppedHandler = () => _eventHub?.Publish(CharacterAudioPlaybackStateChanged.Stopped(characterId));
-            source.PlaybackStarted += startedHandler;
-            source.PlaybackStopped += stoppedHandler;
-            _playbackHandlers[characterId] = (startedHandler, stoppedHandler);
+            playedSeconds = 0d;
+            if (string.IsNullOrEmpty(characterId)) return false;
+            return TryGetRegistrationByCharacter(characterId, out RemoteAudioPlaybackRegistration registration) &&
+                   registration.TryGetPlayhead(out playedSeconds);
         }
 
-        private void UnsubscribePlaybackHandlers(string characterId)
+        internal bool TryGetAudioTimeline(string characterId, out AudioTimelineSnapshot snapshot)
         {
-            if (string.IsNullOrEmpty(characterId) ||
-                !_playbackHandlers.TryGetValue(characterId, out (Action started, Action stopped) handlers)) return;
+            snapshot = default;
+            if (string.IsNullOrEmpty(characterId)) return false;
 
-            _playbackHandlers.Remove(characterId);
-            if (_characterAudioStreams.TryGetValue(characterId, out IDisposable stream) &&
-                stream is IAudioPlaybackStateSource source)
+            return TryGetRegistrationByCharacter(characterId, out RemoteAudioPlaybackRegistration registration) &&
+                   registration.TryGetTimeline(out snapshot);
+        }
+
+        internal bool TryGetAudioMediaTimeline(string characterId, out AudioMediaTimelineSnapshot snapshot)
+        {
+            snapshot = default;
+            if (string.IsNullOrEmpty(characterId)) return false;
+
+            return TryGetRegistrationByCharacter(characterId, out RemoteAudioPlaybackRegistration registration) &&
+                   registration.TryGetMediaTimeline(out snapshot);
+        }
+
+        internal int DuckActiveCharacterAudio(float targetGain, float durationSeconds)
+        {
+            int affected = 0;
+            foreach (RemoteAudioPlaybackRegistration registration in _remoteAudioRegistrations.Values)
             {
-                source.PlaybackStarted -= handlers.started;
-                source.PlaybackStopped -= handlers.stopped;
+                if (registration.Duck(targetGain, durationSeconds))
+                    affected++;
+            }
+
+            return affected;
+        }
+
+        internal bool DuckCharacterAudio(
+            string characterId,
+            float targetGain,
+            float durationSeconds) =>
+            !string.IsNullOrEmpty(characterId) &&
+            TryGetRegistrationByCharacter(characterId, out RemoteAudioPlaybackRegistration registration) &&
+            registration.Duck(targetGain, durationSeconds);
+
+        internal bool HasActiveCharacterAudioPlayback
+        {
+            get
+            {
+                foreach (RemoteAudioPlaybackRegistration registration in _remoteAudioRegistrations.Values)
+                {
+                    if (registration.IsPlaying || registration.IsDucked)
+                        return true;
+                }
+
+                return false;
             }
         }
 
+        internal bool IsCharacterAudioPlaybackActive(string characterId) =>
+            !string.IsNullOrEmpty(characterId) &&
+            TryGetRegistrationByCharacter(characterId, out RemoteAudioPlaybackRegistration registration) &&
+            (registration.IsPlaying || registration.IsDucked);
+
+        internal int CommitActiveCharacterAudioInterruption(float durationSeconds)
+        {
+            int affected = 0;
+            foreach (RemoteAudioPlaybackRegistration registration in _remoteAudioRegistrations.Values)
+            {
+                if (registration.CommitInterruption(durationSeconds))
+                    affected++;
+            }
+
+            return affected;
+        }
+
+        internal bool CommitCharacterAudioInterruption(
+            string characterId,
+            float durationSeconds) =>
+            !string.IsNullOrEmpty(characterId) &&
+            TryGetRegistrationByCharacter(characterId, out RemoteAudioPlaybackRegistration registration) &&
+            registration.CommitInterruption(durationSeconds);
+
+        internal int RestoreInterruptedCharacterAudio(float durationSeconds)
+        {
+            int affected = 0;
+            foreach (RemoteAudioPlaybackRegistration registration in _remoteAudioRegistrations.Values)
+            {
+                if (registration.Restore(durationSeconds))
+                    affected++;
+            }
+
+            return affected;
+        }
+
+        internal bool RestoreInterruptedCharacterAudio(
+            string characterId,
+            float durationSeconds) =>
+            !string.IsNullOrEmpty(characterId) &&
+            TryGetRegistrationByCharacter(characterId, out RemoteAudioPlaybackRegistration registration) &&
+            registration.Restore(durationSeconds);
+
         private bool TryResolveCharacter(string participantSid, string participantIdentity,
-            out CharacterDescriptor descriptor)
+            out IConvaiCharacterAgent agent)
         {
             if (!string.IsNullOrEmpty(participantSid) &&
-                _characterRegistry.TryGetCharacterByParticipantId(participantSid, out descriptor))
+                _agentRegistry.TryGetCharacterByParticipantId(participantSid, out agent))
                 return true;
 
             if (!string.IsNullOrEmpty(participantIdentity) &&
-                _characterRegistry.TryGetCharacter(participantIdentity, out descriptor))
+                _agentRegistry.TryGetCharacter(participantIdentity, out agent))
                 return true;
 
-            IReadOnlyList<CharacterDescriptor> all = _characterRegistry.GetAllCharacters();
-            if (all.Count > 0)
+            IReadOnlyList<IConvaiCharacterAgent> all = _agentRegistry.Characters;
+            if (all != null && all.Count == 1)
             {
-                descriptor = all[0];
+                agent = all[0];
                 return true;
             }
 
-            descriptor = default;
+            if (!_unresolvedParticipantRouteLogged)
+            {
+                _unresolvedParticipantRouteLogged = true;
+                _logger?.Warning(
+                    $"Rejected ambiguous remote audio route: participantSid='{participantSid}', identity='{participantIdentity}', registeredCharacters={all?.Count ?? 0}.",
+                    LogCategory.Audio);
+            }
+
+            agent = null;
             return false;
+        }
+
+        private bool TryGetRegistrationByCharacter(
+            string characterId,
+            out RemoteAudioPlaybackRegistration registration)
+        {
+            foreach (KeyValuePair<string, RemoteAudioPlaybackRegistration> pair in _remoteAudioRegistrations)
+            {
+                if (!string.Equals(pair.Value.CharacterId, characterId, StringComparison.Ordinal)) continue;
+                registration = pair.Value;
+                return true;
+            }
+
+            registration = null;
+            return false;
+        }
+
+        private void RemoveRegistration(RemoteAudioPlaybackRegistration registration, bool stopOutput)
+        {
+            if (registration == null) return;
+            _remoteAudioRegistrations.Remove(registration.ParticipantSid);
+            registration.Dispose();
+            if (stopOutput) registration.StopOutput();
         }
 
         private void ThrowIfDisposed()
@@ -401,7 +581,7 @@ namespace Convai.Runtime.Networking.Media
         /// </summary>
         private static Task RunOnMainThreadAsync(Action action)
         {
-            var tcs = new TaskCompletionSource<bool>();
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             UnityScheduler.Instance.ScheduleOnMainThread(() =>
             {
                 try
@@ -417,6 +597,30 @@ namespace Convai.Runtime.Networking.Media
             return tcs.Task;
         }
 
+        private static Task<T> RunOnMainThreadAsync<T>(Func<Task<T>> action)
+        {
+            var tcs = new TaskCompletionSource<Task<T>>(TaskCreationOptions.RunContinuationsAsynchronously);
+            UnityScheduler.Instance.ScheduleOnMainThread(() =>
+            {
+                try
+                {
+                    tcs.TrySetResult(action());
+                }
+                catch (Exception ex)
+                {
+                    tcs.TrySetException(ex);
+                }
+            });
+
+            return AwaitScheduledTaskAsync(tcs.Task);
+        }
+
+        private static async Task<T> AwaitScheduledTaskAsync<T>(Task<Task<T>> scheduledTask)
+        {
+            Task<T> innerTask = await scheduledTask.ConfigureAwait(false);
+            return await innerTask.ConfigureAwait(false);
+        }
+
         #region Remote Player Management (Future Multiplayer)
 
         /// <summary>
@@ -428,7 +632,7 @@ namespace Convai.Runtime.Networking.Media
         {
             ThrowIfDisposed();
             _remotePlayerRegistry?.RegisterPlayer(participantId, displayName);
-            _logger?.Debug($"[AudioTrackManager] Registered remote player: {participantId} ({displayName})");
+            _logger?.Debug($"Registered remote player: {participantId} ({displayName})");
         }
 
         /// <summary>
@@ -439,7 +643,7 @@ namespace Convai.Runtime.Networking.Media
         {
             ThrowIfDisposed();
             _remotePlayerRegistry?.UnregisterPlayer(participantId);
-            _logger?.Debug($"[AudioTrackManager] Unregistered remote player: {participantId}");
+            _logger?.Debug($"Unregistered remote player: {participantId}");
         }
 
         /// <summary>
@@ -453,7 +657,7 @@ namespace Convai.Runtime.Networking.Media
         public void SubscribeToPlayerAudio(string participantId)
         {
             ThrowIfDisposed();
-            _logger?.Debug($"[AudioTrackManager] Subscribe to player audio requested: {participantId}");
+            _logger?.Debug($"Subscribe to player audio requested: {participantId}");
         }
 
         /// <summary>
@@ -467,7 +671,7 @@ namespace Convai.Runtime.Networking.Media
         public void UnsubscribeFromPlayerAudio(string participantId)
         {
             ThrowIfDisposed();
-            _logger?.Debug($"[AudioTrackManager] Unsubscribe from player audio requested: {participantId}");
+            _logger?.Debug($"Unsubscribe from player audio requested: {participantId}");
         }
 
         #endregion
@@ -486,25 +690,25 @@ namespace Convai.Runtime.Networking.Media
 
             if (string.IsNullOrEmpty(characterId))
             {
-                _logger?.Debug("[AudioTrackManager] Attempted to set mute on null/empty Character ID");
+                _logger?.Debug("Attempted to set mute on null/empty Character ID");
                 return false;
             }
 
-            if (!_characterRegistry.TryGetCharacter(characterId, out CharacterDescriptor descriptor))
+            if (!_agentRegistry.TryGetCharacter(characterId, out IConvaiCharacterAgent _))
             {
                 _logger?.Debug(
-                    $"[AudioTrackManager] Character '{characterId}' is not registered; cannot update mute state.");
+                    $"Character '{characterId}' is not registered; cannot update mute state.");
                 return false;
             }
 
-            _characterRegistry.SetCharacterMuted(characterId, muted);
+            _agentRegistry.SetCharacterMuted(characterId, muted);
 
             AudioSource audioSource = _audioSourceResolver(characterId);
             if (audioSource != null)
             {
                 audioSource.mute = muted;
                 _logger?.Info(
-                    $"[AudioTrackManager] Character audio mute state changed: characterId={characterId}, muted={muted}");
+                    $"Character audio mute state changed: characterId={characterId}, muted={muted}");
             }
 
             return true;
@@ -521,8 +725,8 @@ namespace Convai.Runtime.Networking.Media
 
             if (string.IsNullOrEmpty(characterId)) return false;
 
-            return _characterRegistry.TryGetCharacter(characterId, out CharacterDescriptor descriptor) &&
-                   descriptor.IsMuted;
+            return _agentRegistry.TryGetCharacter(characterId, out IConvaiCharacterAgent _) &&
+                   _agentRegistry.IsCharacterMuted(characterId);
         }
 
         /// <summary>
@@ -544,136 +748,167 @@ namespace Convai.Runtime.Networking.Media
             bool isDebugEnabled = _logger?.IsEnabled(LogLevel.Debug, LogCategory.Audio) ?? false;
 
             _logger?.Info(
-                $"[AudioTrackManager] Audio track subscription started for participant: {participantIdentity}");
+                $"Audio track subscription started for participant: {participantIdentity}");
 
             if (isDebugEnabled)
             {
-                _logger.Debug("[AudioTrackManager] HandleRemoteAudioTrackSubscribed called:");
-                _logger.Debug($"[AudioTrackManager]   - Participant SID: {participantSid}");
-                _logger.Debug($"[AudioTrackManager]   - Participant Identity: {participantIdentity}");
+                _logger.Debug("HandleRemoteAudioTrackSubscribed called:");
+                _logger.Debug($"  - Participant SID: {participantSid}");
+                _logger.Debug($"  - Participant Identity: {participantIdentity}");
                 _logger.Debug(
-                    $"[AudioTrackManager]   - AudioTrack: {(audioTrack != null ? $"valid (Name: {audioTrack.Name}, Sid: {audioTrack.Sid})" : "NULL")}");
-                _logger.Debug($"[AudioTrackManager]   - Room reference: {(RoomFacade != null ? "valid" : "NULL")}");
+                    $"  - AudioTrack: {(audioTrack != null ? $"valid (Name: {audioTrack.Name}, Sid: {audioTrack.Sid})" : "NULL")}");
+                _logger.Debug($"  - Room reference: {(RoomFacade != null ? "valid" : "NULL")}");
             }
 
             if (!_allowNullAudioTrackInFactory && audioTrack == null)
             {
                 _logger?.Warning(
-                    "[AudioTrackManager] Remote audio track is null and no custom factory provided. ABORTING.");
+                    "Remote audio track is null and no custom factory provided. ABORTING.");
                 return;
             }
 
             if (isDebugEnabled)
             {
-                IReadOnlyList<CharacterDescriptor> allCharacters = _characterRegistry.GetAllCharacters();
+                IReadOnlyList<IConvaiCharacterAgent> allCharacters = _agentRegistry.Characters;
                 _logger.Debug(
-                    $"[AudioTrackManager] Character Registry state: {allCharacters.Count} Characters registered");
-                foreach (CharacterDescriptor character in allCharacters)
+                    $"Character Registry state: {allCharacters.Count} Characters registered");
+                foreach (IConvaiCharacterAgent character in allCharacters)
                 {
                     AudioSource charAudioSource = _audioSourceResolver(character.CharacterId);
+                    _agentRegistry.TryGetParticipantId(character.CharacterId, out string participantIdStr);
+                    bool isMuted = _agentRegistry.IsCharacterMuted(character.CharacterId);
                     _logger.Debug(
-                        $"[AudioTrackManager]   - InstanceId: {character.InstanceId}, CharacterId: {character.CharacterId}, ParticipantId: '{character.ParticipantId}', HasAudioSource: {charAudioSource != null}, IsMuted: {character.IsMuted}");
+                        $"  - CharacterId: {character.CharacterId}, ParticipantId: '{participantIdStr}', HasAudioSource: {charAudioSource != null}, IsMuted: {isMuted}");
                 }
             }
 
-            if (!TryResolveCharacter(participantSid, participantIdentity, out CharacterDescriptor descriptor))
+            if (!TryResolveCharacter(participantSid, participantIdentity, out IConvaiCharacterAgent agent))
             {
                 _logger?.Error(
-                    $"[AudioTrackManager] FAILED to resolve Character for incoming audio track. SID: {participantSid}, Identity: {participantIdentity}. Audio will NOT play!");
+                    $"FAILED to resolve Character for incoming audio track. SID: {participantSid}, Identity: {participantIdentity}. Audio will NOT play!");
                 return;
             }
 
+            string characterId = agent.CharacterId;
             _logger?.Info(
-                $"[AudioTrackManager] Successfully resolved Character: {descriptor.InstanceId} (CharacterId: {descriptor.CharacterId})");
+                $"Successfully resolved Character: {characterId}");
 
-            AudioSource targetSource = _audioSourceResolver(descriptor.CharacterId);
+            AudioSource targetSource = _audioSourceResolver(characterId);
             if (targetSource == null)
             {
                 _logger?.Error(
-                    $"[AudioTrackManager] Character '{descriptor.CharacterId}' does not have an AudioSource assigned. Audio will NOT play!");
+                    $"Character '{characterId}' does not have an AudioSource assigned. Audio will NOT play!");
                 return;
             }
 
             if (isDebugEnabled)
             {
-                _logger.Debug($"[AudioTrackManager] Found AudioSource for Character '{descriptor.CharacterId}':");
-                _logger.Debug($"[AudioTrackManager]   - AudioSource.enabled: {targetSource.enabled}");
-                _logger.Debug($"[AudioTrackManager]   - AudioSource.volume: {targetSource.volume}");
-                _logger.Debug($"[AudioTrackManager]   - AudioSource.mute: {targetSource.mute}");
-                _logger.Debug($"[AudioTrackManager]   - AudioSource.isPlaying: {targetSource.isPlaying}");
+                _logger.Debug($"Found AudioSource for Character '{characterId}':");
+                _logger.Debug($"  - AudioSource.enabled: {targetSource.enabled}");
+                _logger.Debug($"  - AudioSource.volume: {targetSource.volume}");
+                _logger.Debug($"  - AudioSource.mute: {targetSource.mute}");
+                _logger.Debug($"  - AudioSource.isPlaying: {targetSource.isPlaying}");
                 _logger.Debug(
-                    $"[AudioTrackManager] Configuring AudioSource for Character '{descriptor.CharacterId}'...");
+                    $"Configuring AudioSource for Character '{characterId}'...");
             }
 
-            ConfigureAudioSource(targetSource, descriptor.IsMuted);
+            bool isMutedState = _agentRegistry.IsCharacterMuted(characterId);
+            ApplyAudioMuteState(targetSource, isMutedState);
 
             if (isDebugEnabled)
             {
-                _logger.Debug("[AudioTrackManager] AudioSource configured:");
-                _logger.Debug($"[AudioTrackManager]   - AudioSource.volume: {targetSource.volume}");
-                _logger.Debug($"[AudioTrackManager]   - AudioSource.mute: {targetSource.mute}");
-                _logger.Debug($"[AudioTrackManager]   - AudioSource.playOnAwake: {targetSource.playOnAwake}");
-                _logger.Debug($"[AudioTrackManager]   - AudioSource.spatialBlend: {targetSource.spatialBlend}");
+                _logger.Debug("AudioSource configured:");
+                _logger.Debug($"  - AudioSource.volume: {targetSource.volume}");
+                _logger.Debug($"  - AudioSource.mute: {targetSource.mute}");
+                _logger.Debug($"  - AudioSource.playOnAwake: {targetSource.playOnAwake}");
+                _logger.Debug($"  - AudioSource.spatialBlend: {targetSource.spatialBlend}");
             }
 
-            CharacterDescriptor updatedDescriptor = descriptor;
-
-            if (!string.IsNullOrEmpty(participantSid) && descriptor.ParticipantId != participantSid)
+            _agentRegistry.TryGetParticipantId(characterId, out string currentParticipantId);
+            if (!string.IsNullOrEmpty(participantSid) && currentParticipantId != participantSid)
             {
                 if (isDebugEnabled)
                 {
                     _logger.Debug(
-                        $"[AudioTrackManager] Updating ParticipantId from '{descriptor.ParticipantId}' to '{participantSid}'");
+                        $"Updating ParticipantId from '{currentParticipantId}' to '{participantSid}'");
                 }
 
-                updatedDescriptor = updatedDescriptor.WithParticipantId(participantSid);
+                _agentRegistry.SetParticipantId(characterId, participantSid);
             }
 
-            if (_characterAudioStreams.TryGetValue(descriptor.CharacterId, out IDisposable existingStream))
+            if (TryGetRegistrationByCharacter(characterId, out RemoteAudioPlaybackRegistration existingRegistration))
             {
                 if (isDebugEnabled)
                 {
                     _logger.Debug(
-                        $"[AudioTrackManager] Disposing existing audio stream for Character '{descriptor.CharacterId}'");
+                        $"Disposing existing audio stream for Character '{characterId}'");
                 }
 
-                UnsubscribePlaybackHandlers(descriptor.CharacterId);
-                existingStream?.Dispose();
+                RemoveRegistration(existingRegistration, stopOutput: false);
             }
 
-            if (isDebugEnabled) _logger.Debug("[AudioTrackManager] Creating AudioStream with factory...");
+            if (isDebugEnabled) _logger.Debug("Creating AudioStream with factory...");
 
             // Use the platform-agnostic audio stream factory
             IDisposable stream = _audioStreamFactory?.Create(audioTrack, targetSource);
             if (stream != null)
             {
-                if (stream is IAudioPlaybackStateSource playbackSource)
-                    SubscribePlaybackHandlers(descriptor.CharacterId, playbackSource);
-                _characterAudioStreams[descriptor.CharacterId] = stream;
+                if (stream is not IAudioPlaybackStateSource)
+                {
+                    _logger?.Warning(
+                        $"Audio stream does not expose playback-state source: character='{characterId}', streamType='{stream.GetType().Name}'.");
+                }
+
+                string registrationSid = !string.IsNullOrEmpty(participantSid)
+                    ? participantSid
+                    : audioTrack?.Participant?.Sid;
+                if (string.IsNullOrEmpty(registrationSid))
+                {
+                    stream.Dispose();
+                    _logger?.Error(
+                        $"Remote audio registration requires participant SID: character='{characterId}'.");
+                    return;
+                }
+
+                if (_remoteAudioRegistrations.TryGetValue(
+                        registrationSid,
+                        out RemoteAudioPlaybackRegistration participantRegistration))
+                    RemoveRegistration(participantRegistration, stopOutput: false);
+
+                Action startedHandler = () =>
+                    _eventHub?.Publish(CharacterAudioPlaybackStateChanged.Started(characterId));
+                Action stoppedHandler = () =>
+                    _eventHub?.Publish(CharacterAudioPlaybackStateChanged.Stopped(characterId));
+                var registration = new RemoteAudioPlaybackRegistration(
+                    registrationSid,
+                    characterId,
+                    audioTrack,
+                    audioTrack?.Participant,
+                    targetSource,
+                    stream,
+                    startedHandler,
+                    stoppedHandler);
+                _remoteAudioRegistrations.Add(registrationSid, registration);
+                // WebGL invokes PlaybackStarted immediately when an already-playing element gains
+                // its first subscriber. Make the timing source discoverable before allowing that
+                // callback to reach lip sync so the first response gets the same media clock as
+                // all subsequent responses.
+                registration.StartPlaybackTracking();
                 _logger?.Info(
-                    $"[AudioTrackManager] AudioStream created successfully for Character '{descriptor.CharacterId}'");
+                    $"AudioStream created successfully for Character '{characterId}'");
             }
             else
             {
-                _characterAudioStreams.Remove(descriptor.CharacterId);
                 _logger?.Error(
-                    $"[AudioTrackManager] FAILED! AudioStream factory returned null for Character '{descriptor.CharacterId}'. Audio will NOT play!");
+                    $"FAILED! AudioStream factory returned null for Character '{characterId}'. Audio will NOT play!");
             }
 
-            _characterRegistry.RegisterCharacter(updatedDescriptor);
             _logger?.Info(
-                $"[AudioTrackManager] Audio track subscription completed for participant: {participantIdentity}");
+                $"Audio track subscription completed for participant: {participantIdentity}");
 
             // Fire abstraction-based event
             if (audioTrack?.Participant != null)
             {
-                string mapKey = !string.IsNullOrEmpty(participantSid)
-                    ? participantSid
-                    : audioTrack.Participant.Sid;
-
-                if (!string.IsNullOrEmpty(mapKey))
-                    _remoteAudioTrackByParticipantSid[mapKey] = (audioTrack, audioTrack.Participant);
-
                 OnAudioTrackSubscribed?.Invoke(audioTrack, audioTrack.Participant);
             }
         }
@@ -689,29 +924,13 @@ namespace Convai.Runtime.Networking.Media
 
             if (string.IsNullOrEmpty(participantSid)) return;
 
-            if (!_characterRegistry.TryGetCharacterByParticipantId(participantSid, out CharacterDescriptor descriptor))
-                return;
+            if (!_remoteAudioRegistrations.TryGetValue(
+                    participantSid,
+                    out RemoteAudioPlaybackRegistration registration)) return;
 
-            if (_characterAudioStreams.TryGetValue(descriptor.CharacterId, out IDisposable stream))
-            {
-                UnsubscribePlaybackHandlers(descriptor.CharacterId);
-                stream?.Dispose();
-                _characterAudioStreams.Remove(descriptor.CharacterId);
-            }
-
-            AudioSource audioSource = _audioSourceResolver(descriptor.CharacterId);
-            if (audioSource != null)
-            {
-                audioSource.Stop();
-                audioSource.clip = null;
-            }
-
-            if (_remoteAudioTrackByParticipantSid.TryGetValue(participantSid,
-                    out (IRemoteAudioTrack track, IRemoteParticipant participant) entry))
-            {
-                _remoteAudioTrackByParticipantSid.Remove(participantSid);
-                OnAudioTrackUnsubscribed?.Invoke(entry.track, entry.participant);
-            }
+            RemoveRegistration(registration, stopOutput: true);
+            if (registration.Track != null && registration.Participant != null)
+                OnAudioTrackUnsubscribed?.Invoke(registration.Track, registration.Participant);
         }
 
         /// <summary>
@@ -720,15 +939,11 @@ namespace Convai.Runtime.Networking.Media
         /// </summary>
         public void ClearRemoteAudio()
         {
-            foreach (KeyValuePair<string, IDisposable> entry in _characterAudioStreams)
-            {
-                UnsubscribePlaybackHandlers(entry.Key);
-                entry.Value?.Dispose();
-            }
+            foreach (KeyValuePair<string, RemoteAudioPlaybackRegistration> entry in _remoteAudioRegistrations)
+                entry.Value.Dispose();
 
-            _characterAudioStreams.Clear();
-            _playbackHandlers.Clear();
-            _remoteAudioTrackByParticipantSid.Clear();
+            _remoteAudioRegistrations.Clear();
+            _unresolvedParticipantRouteLogged = false;
         }
 
         #endregion

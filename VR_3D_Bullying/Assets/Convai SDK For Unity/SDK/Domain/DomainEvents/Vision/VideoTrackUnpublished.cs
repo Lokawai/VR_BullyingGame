@@ -10,25 +10,7 @@ namespace Convai.Domain.DomainEvents.Vision
     ///     This event is published via EventHub whenever a video track is unpublished
     ///     from the LiveKit room. It indicates that visual context is no longer being
     ///     sent to the Convai server.
-    ///     Integration Example:
-    ///     <code>
-    /// 
-    /// private readonly IEventHub _eventHub;
-    /// 
-    /// private void OnTrackUnpublished(string trackSid, string trackName)
-    /// {
-    ///     _eventHub.Publish(VideoTrackUnpublished.Create(trackSid, trackName, reason));
-    /// }
-    /// 
-    /// 
-    /// _eventHub.Subscribe&lt;VideoTrackUnpublished&gt;(this, e =>
-    /// {
-    ///     Debug.Log($"Video track '{e.TrackName}' unpublished: {e.Reason}");
-    ///     DisableVisionIndicator();
-    /// });
-    /// </code>
-    ///     Delivery Policy:
-    ///     - Use EventDeliveryPolicy.MainThread for UI updates
+    ///     Use EventDeliveryPolicy.MainThread for UI updates.
     /// </remarks>
     public readonly struct VideoTrackUnpublished
     {

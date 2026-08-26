@@ -4,6 +4,8 @@ using LiveKit.Internal.FFIClients.Pools.Memory;
 
 namespace LiveKit.Internal
 {
+    // Basic RingBuffer implementation (used WebRtc_RingBuffer as reference)
+    // The one from com.unity.collections is dealing element per element, which is not efficient when dealing with bytes
     public class RingBuffer : IDisposable
     {
         private MemoryWrap _buffer;
@@ -38,6 +40,13 @@ namespace LiveKit.Internal
             return write;
         }
 
+        /// <summary>Writes the whole span or leaves the buffer unchanged.</summary>
+        public bool WriteExact(ReadOnlySpan<byte> data)
+        {
+            if (data.Length > AvailableWrite()) return false;
+            return Write(data) == data.Length;
+        }
+
         public int Read(Span<byte> data)
         {
             int readCount = GetBufferReadRegions(data.Length, out int dataIndex1, out int dataLen1, out int dataIndex2, out int dataLen2);
@@ -48,11 +57,17 @@ namespace LiveKit.Internal
             }
             else
             {
+                // TODO(theomonnom): Don't always copy in this case?
                 _buffer.Span().Slice(dataIndex1, dataLen1).CopyTo(data);
             }
 
             MoveReadPtr(readCount);
             return readCount;
+        }
+
+        public int SkipRead(int len)
+        {
+            return MoveReadPtr(len);
         }
 
         private int MoveReadPtr(int len)
@@ -91,6 +106,7 @@ namespace LiveKit.Internal
 
             if (read > margin)
             {
+                // Not contiguous
                 dataIndex1 = _readPos;
                 dataLen1 = margin;
                 dataIndex2 = 0;
@@ -98,6 +114,7 @@ namespace LiveKit.Internal
             }
             else
             {
+                // Contiguous
                 dataIndex1 = _readPos;
                 dataLen1 = read;
                 dataIndex2 = 0;
@@ -118,6 +135,29 @@ namespace LiveKit.Internal
         public int AvailableWrite()
         {
             return _buffer.Length - AvailableRead();
+        }
+
+        public float AvailableReadInPercent()
+        {
+            return (float)AvailableRead() / _buffer.Length;
+        }
+
+        public int Capacity => _buffer.Length;
+
+        public float AvailableWriteInPercent()
+        {
+            return (float)AvailableWrite() / _buffer.Length;
+        }
+
+        /// <summary>
+        /// Clears all data from the ring buffer, resetting read and write positions.
+        /// Useful when resuming from background to discard stale audio data.
+        /// </summary>
+        public void Clear()
+        {
+            _writePos = 0;
+            _readPos = 0;
+            _sameWrap = true;
         }
 
         public void Dispose()

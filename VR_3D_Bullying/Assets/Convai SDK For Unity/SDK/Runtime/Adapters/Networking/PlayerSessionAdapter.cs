@@ -34,7 +34,7 @@ namespace Convai.Runtime.Adapters.Networking
     ///         to display player ASR results alongside character transcripts.
     ///     </para>
     /// </remarks>
-    internal class PlayerSessionAdapter : IPlayerSession, IDisposable
+    internal class PlayerSessionAdapter : IPlayerSession, IPlayerTypedTranscriptSink, IDisposable
     {
         private readonly IConvaiPlayerAgent _player;
         private readonly PlayerTranscriptAdapter _transcriptAdapter;
@@ -61,7 +61,7 @@ namespace Convai.Runtime.Adapters.Networking
             {
                 _transcriptAdapter = new PlayerTranscriptAdapter(
                     eventHub,
-                    player.SpeakerId,
+                    player.PlayerId,
                     player.PlayerName,
                     () => player.PlayerName
                 );
@@ -72,7 +72,7 @@ namespace Convai.Runtime.Adapters.Networking
         public void Dispose() => _transcriptAdapter?.Dispose();
 
         /// <inheritdoc />
-        public string PlayerId => _player.SpeakerId;
+        public string PlayerId => _player.PlayerId;
 
         /// <inheritdoc />
         public string PlayerName => _player.PlayerName;
@@ -101,7 +101,10 @@ namespace Convai.Runtime.Adapters.Networking
         /// <inheritdoc />
         public void OnPlayerTranscriptionReceived(string transcript, TranscriptionPhase transcriptionPhase)
         {
-            _transcriptAdapter?.OnPlayerTranscriptionReceived(transcript, transcriptionPhase);
+            // final-user-transcription is the canonical domain event for processed text.
+            // Keep this legacy phase callback for the player without publishing a second reducer input.
+            if (transcriptionPhase != TranscriptionPhase.ProcessedFinal)
+                _transcriptAdapter?.OnPlayerTranscriptionReceived(transcript, transcriptionPhase);
 
             if (_player is IConvaiPlayerEvents playerEvents)
                 playerEvents.OnPlayerTranscriptionReceived(transcript, transcriptionPhase);
@@ -111,7 +114,8 @@ namespace Convai.Runtime.Adapters.Networking
         public void OnPlayerTranscriptionReceived(string transcript, TranscriptionPhase transcriptionPhase,
             SpeakerInfo speakerInfo)
         {
-            _transcriptAdapter?.OnPlayerTranscriptionReceived(transcript, transcriptionPhase, speakerInfo);
+            if (transcriptionPhase != TranscriptionPhase.ProcessedFinal)
+                _transcriptAdapter?.OnPlayerTranscriptionReceived(transcript, transcriptionPhase, speakerInfo);
 
             if (_player is IConvaiPlayerEvents playerEvents)
                 playerEvents.OnPlayerTranscriptionReceived(transcript, transcriptionPhase, speakerInfo);
@@ -133,6 +137,9 @@ namespace Convai.Runtime.Adapters.Networking
             if (_player is IConvaiPlayerEvents playerEvents)
                 playerEvents.OnPlayerStoppedSpeaking(sessionId, didProduceFinalTranscript);
         }
+
+        public void PublishTypedText(string transcript, string messageId, SpeakerInfo speakerInfo = default) =>
+            _transcriptAdapter?.PublishTypedText(transcript, messageId, speakerInfo);
 
 #pragma warning disable CS0067
         /// <inheritdoc />

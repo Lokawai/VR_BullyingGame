@@ -22,17 +22,10 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.ServerAnimation
         private readonly ConfigurationWindowContext _context;
         private ServerAnimationLogic _logic;
 
-        /// <summary>
-        /// Initializes a new instance of the <see cref="ConvaiServerAnimationSection"/> class.
-        /// </summary>
         public ConvaiServerAnimationSection() : this(null)
         {
         }
 
-        /// <summary>
-        /// Initializes a new instance of the <see cref="ConvaiServerAnimationSection"/> class.
-        /// </summary>
-        /// <param name="context">Shared window context.</param>
         public ConvaiServerAnimationSection(ConfigurationWindowContext context)
         {
             _context = context;
@@ -47,16 +40,12 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.ServerAnimation
             });
         }
 
-        /// <summary>Gets the refresh button.</summary>
         public Button RefreshButton { get; private set; }
 
-        /// <summary>Gets the previous-page button.</summary>
         public Button PreviousButton { get; private set; }
 
-        /// <summary>Gets the next-page button.</summary>
         public Button NextButton { get; private set; }
 
-        /// <summary>Gets the import button.</summary>
         public Button ImportButton { get; private set; }
 
         /// <summary>Gets the container that holds animation cards.</summary>
@@ -166,16 +155,13 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.ServerAnimation
             });
         }
 
-        /// <summary>Gets the thumbnail image element.</summary>
         public Image Thumbnail { get; private set; }
 
         /// <summary>Gets the label used to display the animation name.</summary>
         public Label Name { get; private set; }
 
-        /// <summary>Gets or sets a value indicating whether the card can be selected.</summary>
         public bool CanBeSelected { get; set; } = true;
 
-        /// <summary>Gets or sets a value indicating whether the card is selected.</summary>
         public bool IsSelected
         {
             get => _isSelected;

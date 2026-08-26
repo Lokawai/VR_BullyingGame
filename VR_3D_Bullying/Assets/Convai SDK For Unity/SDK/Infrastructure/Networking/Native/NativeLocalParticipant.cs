@@ -3,10 +3,10 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Convai.Infrastructure.Networking;
 using LiveKit;
 using LiveKit.Proto;
 
-// CS0067: Event required by IParticipant interface but not yet raised (future metadata update tracking)
 #pragma warning disable CS0067
 
 namespace Convai.Infrastructure.Networking.Native
@@ -24,10 +24,6 @@ namespace Convai.Infrastructure.Networking.Native
 
         #region Constructor
 
-        /// <summary>
-        ///     Creates a new native local participant wrapper.
-        /// </summary>
-        /// <param name="participant">The LiveKit local participant to wrap.</param>
         public NativeLocalParticipant(LocalParticipant participant)
         {
             UnderlyingParticipant = participant ?? throw new ArgumentNullException(nameof(participant));
@@ -85,16 +81,17 @@ namespace Convai.Infrastructure.Networking.Native
             AudioPublishOptions options = default,
             CancellationToken ct = default)
         {
-            if (source is not NativeMicrophoneSource nativeMicSource)
-                throw new ArgumentException("Source must be a NativeMicrophoneSource", nameof(source));
+            if (source == null)
+                throw new ArgumentNullException(nameof(source));
 
             if (!UnderlyingParticipant.Room.TryGetTarget(out Room room))
                 throw new InvalidOperationException("Participant room reference is unavailable.");
 
-            nativeMicSource.StartCapture();
+            RtcAudioSource rtcSource = ResolveRtcAudioSource(source);
+            source.StartCapture();
 
             string trackName = string.IsNullOrWhiteSpace(source.Name) ? "microphone" : source.Name;
-            var track = LocalAudioTrack.CreateAudioTrack(trackName, nativeMicSource.UnderlyingSource, room);
+            var track = LocalAudioTrack.CreateAudioTrack(trackName, rtcSource, room);
 
             var publishOptions = new TrackPublishOptions
             {
@@ -109,16 +106,26 @@ namespace Convai.Infrastructure.Networking.Native
 
             if (publishInstruction.IsError)
             {
-                nativeMicSource.StopCapture();
+                source.StopCapture();
                 throw new InvalidOperationException("Failed to publish audio track.");
             }
 
-            var wrapper = new NativeLocalAudioTrack(track, nativeMicSource);
+            var wrapper = new NativeLocalAudioTrack(track, source);
             _localTracks.Add(wrapper);
             TrackPublished?.Invoke(wrapper);
 
             return wrapper;
         }
+
+        private static RtcAudioSource ResolveRtcAudioSource(IAudioSource source) =>
+            source switch
+            {
+                NativeMicrophoneSource nativeMicSource => nativeMicSource.UnderlyingSource,
+                NativeAudioClipMicrophoneSource clipSource => clipSource.UnderlyingSource,
+                _ => throw new ArgumentException(
+                    "Source must be a NativeMicrophoneSource or NativeAudioClipMicrophoneSource",
+                    nameof(source))
+            };
 
         /// <inheritdoc />
         public async Task<ILocalVideoTrack> PublishVideoTrackAsync(
@@ -244,9 +251,6 @@ namespace Convai.Infrastructure.Networking.Native
             }
         }
 
-        /// <summary>
-        ///     Gets the underlying LiveKit local participant (for internal use only).
-        /// </summary>
         internal LocalParticipant UnderlyingParticipant { get; }
 
         #endregion

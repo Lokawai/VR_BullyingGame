@@ -1,17 +1,21 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using Convai.Application.Services.Narrative;
+using Convai.Domain.Abstractions;
 using Convai.Domain.DomainEvents.Narrative;
 using Convai.Domain.EventSystem;
 using Convai.Domain.Logging;
 using Convai.Domain.Narrative;
 using Convai.RestAPI.Internal.Models;
 using Convai.Runtime.Behaviors;
+using Convai.Runtime.Components;
+using Convai.Runtime.Core;
+using Convai.Runtime.Core.Configuration;
+using Convai.Runtime.Core.Modules;
 using Convai.Runtime.Logging;
 using Convai.Runtime.Utilities;
-using Convai.Shared;
-using Convai.Shared.DependencyInjection;
 using UnityEngine;
 using UnityEngine.Events;
 
@@ -134,7 +138,8 @@ namespace Convai.Modules.Narrative
     ///     - Supports auto-fetching and syncing sections from the backend
     /// </remarks>
     [AddComponentMenu("Convai/Narrative Design Manager")]
-    public class ConvaiNarrativeDesignManager : MonoBehaviour, IInjectable
+    public class ConvaiNarrativeDesignManager : MonoBehaviour, INarrativeSectionNameResolver,
+        IConvaiModule
     {
         [Header("Character Reference")]
         [Tooltip(
@@ -165,9 +170,12 @@ namespace Convai.Modules.Narrative
         [Tooltip("Error message from the last fetch attempt, if any.")] [SerializeField]
         private string _lastFetchError;
 
+        private ICredentialProvider _credentialProvider;
+
         private IEventHub _eventHub;
         private bool _isSubscribed;
         private SubscriptionToken _sectionChangedToken;
+        private NarrativeSectionNameResolverAdapter _sectionNameResolverRegistry;
 
         /// <summary>
         ///     Gets the engine-agnostic narrative design controller.
@@ -277,6 +285,7 @@ namespace Convai.Modules.Narrative
 
         private void Awake()
         {
+            ConvaiManager.ActiveManager?.RegisterModule(this);
             Controller = new NarrativeDesignController
             {
                 LogInfo = msg => ConvaiLogger.Info($"[Narrative Design] {msg}", LogCategory.Narrative),
@@ -299,12 +308,14 @@ namespace Convai.Modules.Narrative
 
         private void OnDestroy()
         {
+            ConvaiManager.ActiveManager?.UnregisterModule(this);
             if (Controller != null)
             {
                 Controller.OnTemplateKeysUpdateRequested -= OnTemplateKeysUpdateRequested;
                 Controller.OnSectionChanged -= OnControllerSectionChanged;
             }
 
+            _sectionNameResolverRegistry?.RemoveResolver(this);
             UnsubscribeFromEventHub();
         }
 
@@ -329,19 +340,31 @@ namespace Convai.Modules.Narrative
         #endregion
 
         /// <inheritdoc />
-        public void InjectServices(IServiceContainer container) => Inject(container.Get<IEventHub>());
+        public bool TryGetSectionName(string sectionId, out string sectionName)
+        {
+            sectionName = null;
+
+            UnitySectionEventConfig config = FindSectionConfig(sectionId);
+            if (config == null || string.IsNullOrWhiteSpace(config.SectionName))
+                return false;
+
+            sectionName = config.SectionName;
+            return true;
+        }
 
         /// <summary>
         ///     Injects the EventHub dependency. Called by the ConvaiManager pipeline.
         /// </summary>
         /// <param name="eventHub">The event hub to subscribe to.</param>
-        public void Inject(IEventHub eventHub)
+        /// <param name="credentialProvider">Optional credential provider for API access.</param>
+        public void Inject(IEventHub eventHub, ICredentialProvider credentialProvider = null)
         {
             ConvaiLogger.Debug(
-                $"[ConvaiNarrativeDesignManager] Inject called with eventHub={(eventHub != null ? "valid" : "null")}",
+                $"Inject called with eventHub={(eventHub != null ? "valid" : "null")}",
                 LogCategory.Narrative);
             UnsubscribeFromEventHub();
             _eventHub = eventHub;
+            _credentialProvider = credentialProvider;
             SubscribeToEventHub();
         }
 
@@ -361,7 +384,7 @@ namespace Convai.Modules.Narrative
 
             _sectionChangedToken = _eventHub.Subscribe<NarrativeSectionChanged>(OnNarrativeSectionChanged);
             _isSubscribed = true;
-            ConvaiLogger.Debug("[ConvaiNarrativeDesignManager] Subscribed to NarrativeSectionChanged events",
+            ConvaiLogger.Debug("Subscribed to NarrativeSectionChanged events",
                 LogCategory.Narrative);
         }
 
@@ -375,7 +398,7 @@ namespace Convai.Modules.Narrative
 
         private void OnNarrativeSectionChanged(NarrativeSectionChanged evt)
         {
-            ConvaiLogger.Debug("[ConvaiNarrativeDesignManager] Received NarrativeSectionChanged event: " +
+            ConvaiLogger.Debug("Received NarrativeSectionChanged event: " +
                                $"SectionId={evt.SectionId}, CharacterId={evt.CharacterId}, " +
                                $"HasBTCode={!string.IsNullOrEmpty(evt.BehaviorTreeCode)}, HasBTConstants={!string.IsNullOrEmpty(evt.BehaviorTreeConstants)}",
                 LogCategory.Narrative);
@@ -384,7 +407,7 @@ namespace Convai.Modules.Narrative
             {
                 if (!string.IsNullOrEmpty(evt.CharacterId) && evt.CharacterId != Character.CharacterId)
                 {
-                    ConvaiLogger.Debug("[ConvaiNarrativeDesignManager] Ignoring event for different character. " +
+                    ConvaiLogger.Debug("Ignoring event for different character. " +
                                        $"Expected={Character.CharacterId}, Received={evt.CharacterId}",
                         LogCategory.Narrative);
                     return;
@@ -402,14 +425,14 @@ namespace Convai.Modules.Narrative
             _onAnySectionChanged?.Invoke(evt.SectionId);
             _onSectionDataReceived?.Invoke(sectionData);
 
-            ConvaiLogger.Debug($"[ConvaiNarrativeDesignManager] Processed section change: SectionId={evt.SectionId}",
+            ConvaiLogger.Debug($"Processed section change: SectionId={evt.SectionId}",
                 LogCategory.Narrative);
         }
 
         private void OnControllerSectionChanged(string previousSectionId, string newSectionId)
         {
             ConvaiLogger.Debug(
-                $"[ConvaiNarrativeDesignManager] Section transition: Previous={previousSectionId ?? "(none)"} → New={newSectionId ?? "(none)"}",
+                $"Section transition: Previous={previousSectionId ?? "(none)"} → New={newSectionId ?? "(none)"}",
                 LogCategory.Narrative);
 
             if (!string.IsNullOrEmpty(previousSectionId))
@@ -418,14 +441,14 @@ namespace Convai.Modules.Narrative
                 if (prevConfig != null)
                 {
                     ConvaiLogger.Debug(
-                        $"[ConvaiNarrativeDesignManager] Invoking OnSectionEnd for '{prevConfig.SectionName}' ({previousSectionId})",
+                        $"Invoking OnSectionEnd for '{prevConfig.SectionName}' ({previousSectionId})",
                         LogCategory.Narrative);
                     prevConfig.OnSectionEnd?.Invoke();
                 }
                 else
                 {
                     ConvaiLogger.Warning(
-                        $"[ConvaiNarrativeDesignManager] No config found for previous section: {previousSectionId}",
+                        $"No config found for previous section: {previousSectionId}",
                         LogCategory.Narrative);
                 }
             }
@@ -436,14 +459,14 @@ namespace Convai.Modules.Narrative
                 if (newConfig != null)
                 {
                     ConvaiLogger.Debug(
-                        $"[ConvaiNarrativeDesignManager] Invoking OnSectionStart for '{newConfig.SectionName}' ({newSectionId})",
+                        $"Invoking OnSectionStart for '{newConfig.SectionName}' ({newSectionId})",
                         LogCategory.Narrative);
                     newConfig.OnSectionStart?.Invoke();
                 }
                 else
                 {
                     ConvaiLogger.Warning(
-                        $"[ConvaiNarrativeDesignManager] No config found for new section: {newSectionId}. " +
+                        $"No config found for new section: {newSectionId}. " +
                         $"Available sections: {string.Join(", ", GetSectionIds())}", LogCategory.Narrative);
                 }
             }
@@ -461,12 +484,15 @@ namespace Convai.Modules.Narrative
         {
             if (Character == null)
             {
-                ConvaiLogger.Warning("[ConvaiNarrativeDesignManager] Cannot send template keys: no character assigned.",
+                ConvaiLogger.Warning("Cannot send template keys: no character assigned.",
                     LogCategory.Narrative);
                 return;
             }
 
-            Character.UpdateTemplateKeys(keys);
+            if (Character is ConvaiCharacter convaiCharacter)
+                convaiCharacter.NarrativeDesign.SetTemplateKeys(keys);
+            else
+                Character.UpdateTemplateKeys(keys);
         }
 
         /// <summary>
@@ -477,6 +503,71 @@ namespace Convai.Modules.Narrative
         public UnitySectionEventConfig FindSectionConfig(string sectionId) => string.IsNullOrEmpty(sectionId)
             ? null
             : _sectionConfigs.Find(c => c.SectionId == sectionId);
+
+        #region IConvaiModule Implementation
+
+        /// <inheritdoc />
+        public string ModuleId => "convai.narrative";
+
+        /// <inheritdoc />
+        public string DisplayName => "Narrative Design";
+
+        /// <inheritdoc />
+        public IReadOnlyList<string> RequiredModules => Array.Empty<string>();
+
+        /// <inheritdoc />
+        public IReadOnlyList<Type> RequiredServices => Array.Empty<Type>();
+
+        /// <inheritdoc />
+        public IReadOnlyList<Type> ProvidedServices { get; } = new[] { typeof(INarrativeSectionNameResolver) };
+
+        /// <inheritdoc />
+        public bool IsActive => enabled && isActiveAndEnabled;
+
+        /// <inheritdoc />
+        public ValueTask RegisterAsync(IModuleContext context, CancellationToken ct = default)
+        {
+            if (context == null) return default;
+
+            // Check if a resolver registry already exists (another NarrativeDesignManager registered it)
+            if (context.TryGetModuleService(out NarrativeSectionNameResolverAdapter resolverRegistry))
+            {
+                _sectionNameResolverRegistry = resolverRegistry;
+                _sectionNameResolverRegistry.AddResolver(this);
+                return default;
+            }
+
+            // Create and register the resolver registry
+            _sectionNameResolverRegistry = new NarrativeSectionNameResolverAdapter();
+            _sectionNameResolverRegistry.AddResolver(this);
+            context.ProvideModuleService(_sectionNameResolverRegistry);
+            context.ProvideModuleService<INarrativeSectionNameResolver>(_sectionNameResolverRegistry);
+            return default;
+        }
+
+        /// <inheritdoc />
+        public ValueTask StartAsync(IModuleContext context, CancellationToken ct = default)
+        {
+            if (context == null) return default;
+
+            IEventHub eventHub = context.Events;
+            ICredentialProvider credentialProvider = context.Credentials;
+
+            if (eventHub != null) Inject(eventHub, credentialProvider);
+
+            return default;
+        }
+
+        /// <inheritdoc />
+        public ValueTask PauseAsync(RuntimePauseReason reason, CancellationToken ct = default) => default;
+
+        /// <inheritdoc />
+        public ValueTask ResumeAsync(CancellationToken ct = default) => default;
+
+        /// <inheritdoc />
+        public ValueTask StopAsync(CancellationToken ct = default) => default;
+
+        #endregion
 
 #pragma warning disable CS0649
         [Header("Events")]
@@ -568,19 +659,25 @@ namespace Convai.Modules.Narrative
         ///     Fetches sections from the backend and syncs them with the local list.
         ///     This method preserves user-configured Unity Events while updating section data.
         /// </summary>
-        /// <param name="apiKey">Optional API key. If null, uses ConvaiSettings.Instance.ApiKey.</param>
+        /// <param name="apiKey">
+        ///     Optional API key. If null, runtime callers use the registered runtime credential provider
+        ///     when available; otherwise the fetcher falls back to project settings for editor/default flows.
+        /// </param>
         public void FetchAndSyncFromBackend(string apiKey = null) => _ = FetchAndSyncFromBackendAsync(apiKey);
 
         /// <summary>
         ///     Fetches sections from the backend and syncs them with the local list.
         /// </summary>
-        /// <param name="apiKey">Optional API key. If null, uses ConvaiSettings.Instance.ApiKey.</param>
+        /// <param name="apiKey">
+        ///     Optional API key. If null, runtime callers use the registered runtime credential provider
+        ///     when available; otherwise the fetcher falls back to project settings for editor/default flows.
+        /// </param>
         /// <returns>Sync result describing changes applied to the local config list.</returns>
         public async Task<SectionSyncResult> FetchAndSyncFromBackendAsync(string apiKey = null)
         {
             if (_isFetching)
             {
-                ConvaiLogger.Warning("[ConvaiNarrativeDesignManager] Fetch already in progress.",
+                ConvaiLogger.Warning("Fetch already in progress.",
                     LogCategory.Narrative);
                 return new SectionSyncResult { Success = false, Error = "Fetch already in progress." };
             }
@@ -589,7 +686,7 @@ namespace Convai.Modules.Narrative
             if (string.IsNullOrEmpty(characterId))
             {
                 _lastFetchError = "No character assigned or character has no ID.";
-                ConvaiLogger.Error($"[ConvaiNarrativeDesignManager] {_lastFetchError}", LogCategory.Narrative);
+                ConvaiLogger.Error($"{_lastFetchError}", LogCategory.Narrative);
                 return new SectionSyncResult { Success = false, Error = _lastFetchError };
             }
 
@@ -598,8 +695,12 @@ namespace Convai.Modules.Narrative
 
             try
             {
+                string resolvedApiKey = apiKey;
+                if (string.IsNullOrWhiteSpace(resolvedApiKey) && _credentialProvider != null)
+                    resolvedApiKey = _credentialProvider.GetApiKey();
+
                 FetchResult<List<SectionData>> result =
-                    await NarrativeDesignFetcher.FetchSectionsAsync(characterId, apiKey);
+                    await NarrativeDesignFetcher.FetchSectionsAsync(characterId, resolvedApiKey);
 
                 if (result.Success)
                 {
@@ -614,7 +715,7 @@ namespace Convai.Modules.Narrative
                     _lastSyncedCharacterId = characterId;
                     _lastFetchError = null;
 
-                    ConvaiLogger.Debug($"[ConvaiNarrativeDesignManager] {syncResult}", LogCategory.Narrative);
+                    ConvaiLogger.Debug($"{syncResult}", LogCategory.Narrative);
 
                     _onSectionsSynced?.Invoke(syncResult);
 
@@ -623,7 +724,7 @@ namespace Convai.Modules.Narrative
                 else
                 {
                     _lastFetchError = result.Error;
-                    ConvaiLogger.Error($"[ConvaiNarrativeDesignManager] Fetch failed: {result.Error}",
+                    ConvaiLogger.Error($"Fetch failed: {result.Error}",
                         LogCategory.Narrative);
 
                     return new SectionSyncResult { Success = false, Error = result.Error };
@@ -632,7 +733,7 @@ namespace Convai.Modules.Narrative
             catch (Exception ex)
             {
                 _lastFetchError = ex.Message;
-                ConvaiLogger.Error($"[ConvaiNarrativeDesignManager] Fetch exception: {ex.Message}",
+                ConvaiLogger.Error($"Fetch exception: {ex.Message}",
                     LogCategory.Narrative);
 
                 return new SectionSyncResult { Success = false, Error = ex.Message };
@@ -750,7 +851,7 @@ namespace Convai.Modules.Narrative
             _lastSyncedCharacterId = null;
             _lastSyncTime = null;
             Controller?.ClearSections();
-            ConvaiLogger.Debug("[ConvaiNarrativeDesignManager] All section configurations cleared.",
+            ConvaiLogger.Debug("All section configurations cleared.",
                 LogCategory.Narrative);
         }
 

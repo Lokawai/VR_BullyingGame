@@ -21,6 +21,7 @@ namespace LiveKit
         GATHER_CONTINUALLY = 1
     }
 
+
     public class IceServer
     {
         public string[] Urls;
@@ -80,6 +81,7 @@ namespace LiveKit
         }
     }
 
+
     public class RoomOptions
     {
         public bool AutoSubscribe = true;
@@ -98,15 +100,16 @@ namespace LiveKit
             proto.AdaptiveStream = AdaptiveStream;
             proto.JoinRetries = JoinRetries;
             proto.RtcConfig = RtcConfig?.ToProto();
-            proto.Encryption = E2EE?.ToProto();
+            proto.E2Ee = E2EE?.ToProto();
 
             return proto;
         }
     }
 
-    public class Room
+    public class Room : IDisposable
     {
         internal FfiHandle RoomHandle = null;
+        private bool _disposed = false;
         private readonly Dictionary<string, RemoteParticipant> _participants = new();
         private StreamHandlerRegistry _streamHandlers = new();
 
@@ -124,6 +127,8 @@ namespace LiveKit
         public delegate void ConnectionStateChangeDelegate(ConnectionState connectionState);
         public delegate void ConnectionDelegate(Room room);
         public delegate void E2EeStateChangedDelegate(Participant participant, EncryptionState state);
+        public delegate void DataTrackPublishedDelegate(RemoteDataTrack track);
+        public delegate void DataTrackUnpublishedDelegate(string sid);
 
         public string Sid { private set; get; }
         public string Name { private set; get; }
@@ -159,24 +164,66 @@ namespace LiveKit
         public event ParticipantDelegate ParticipantMetadataChanged;
         public event ParticipantDelegate ParticipantNameChanged;
         public event ParticipantDelegate ParticipantAttributesChanged;
+        public event DataTrackPublishedDelegate DataTrackPublished;
+        public event DataTrackUnpublishedDelegate DataTrackUnpublished;
 
         public ConnectInstruction Connect(string url, string token, RoomOptions options)
         {
-            using var response = FFIBridge.Instance.SendConnectRequest(url, token, options);
             Utils.Debug("Connect....");
-            FfiResponse res = response;
+            using var request = FFIBridge.Instance.NewRequest<ConnectRequest>();
+            var connect = request.request;
+            connect.Url = url;
+            connect.Token = token;
+            connect.Options = options.ToProto();
+
+            var instruction = new ConnectInstruction(request.RequestAsyncId, this, options);
+            using var response = request.Send();
             Utils.Debug($"Connect response.... {response}");
-            return new ConnectInstruction(res.Connect.AsyncId, this, options);
+            return instruction;
         }
 
         public void Disconnect()
         {
-            if (this.RoomHandle == null)
+            if (_disposed || RoomHandle == null)
                 return;
-            using var response = FFIBridge.Instance.SendDisconnectRequest(this);
-            Utils.Debug($"Disconnect.... {RoomHandle}");
-            FfiResponse resp = response;
-            Utils.Debug($"Disconnect response.... {resp}");
+            var (response, _) = FFIBridge.Instance.SendDisconnectRequest(this);
+            using (response)
+            {
+                Utils.Debug($"Disconnect.... {RoomHandle}");
+                Utils.Debug($"Disconnect response.... {response}");
+            }
+            // Release the Rust-side room synchronously. Without this the FfiRoom
+            // (peer connection, signaling client, libwebrtc state) lingers in the
+            // FFI handle table until the SafeHandle finalizer runs.
+            Cleanup();
+        }
+
+        public void Dispose()
+        {
+            Disconnect();
+            GC.SuppressFinalize(this);
+        }
+
+        private void Cleanup()
+        {
+            if (_disposed)
+                return;
+            _disposed = true;
+
+            FfiClient.Instance.RoomEventReceived -= OnEventReceived;
+            FfiClient.Instance.RpcMethodInvocationReceived -= OnRpcMethodInvocationReceived;
+            FfiClient.Instance.DisconnectReceived -= OnDisconnectReceived;
+
+            // Participant + track + publication FFI handles are independent entries in the
+            // Rust handle table — dropping the room handle alone does not cascade to them, so
+            // they would otherwise linger until C# GC finalizes each SafeHandle.
+            LocalParticipant?.DisposeHandles();
+            foreach (var p in _participants.Values)
+                p.DisposeHandles();
+            _participants.Clear();
+
+            RoomHandle?.Dispose();
+            RoomHandle = null;
         }
 
         /// <summary>
@@ -239,6 +286,7 @@ namespace LiveKit
         {
             if (e.LocalParticipantHandle == (ulong)LocalParticipant.Handle.DangerousGetHandle())
             {
+                // Async but no need to await the response
                 LocalParticipant.HandleRpcMethodInvocation(
                     e.InvocationId,
                     e.Method,
@@ -251,6 +299,10 @@ namespace LiveKit
 
         internal void OnEventReceived(RoomEvent e)
         {
+            // After Cleanup() the handle is null but late events may still flow
+            // through the FfiClient before the unsubscribe fully takes effect.
+            if (RoomHandle == null)
+                return;
             if (e.RoomHandle != (ulong)RoomHandle.DangerousGetHandle())
                 return;
 
@@ -378,7 +430,7 @@ namespace LiveKit
                         }
                         else
                         {
-                            Utils.Debug("Unable to find local track after unpublish: " + e.LocalTrackPublished.TrackSid);
+                            Utils.Debug("Unable to find local track after unpublish: " + e.LocalTrackUnpublished.PublicationSid);
                         }
                     }
                     break;
@@ -436,24 +488,25 @@ namespace LiveKit
                         switch (valueType)
                         {
                             case DataPacketReceived.ValueOneofCase.None:
+                                //do nothing.
                                 break;
                             case DataPacketReceived.ValueOneofCase.User:
                                 {
                                     var dataInfo = e.DataPacketReceived.User;
                                     var data = new byte[dataInfo.Data.Data.DataLen];
                                     Marshal.Copy((IntPtr)dataInfo.Data.Data.DataPtr, data, 0, data.Length);
-#pragma warning disable CS0612
+#pragma warning disable CS0612 // Type or member is obsolete
                                     var participant = GetParticipant(e.DataPacketReceived.ParticipantIdentity);
-#pragma warning restore CS0612
+#pragma warning restore CS0612 // Type or member is obsolete
                                     DataReceived?.Invoke(data, participant, e.DataPacketReceived.Kind, dataInfo.Topic);
                                 }
                                 break;
                             case DataPacketReceived.ValueOneofCase.SipDtmf:
                                 {
                                     var dtmfInfo = e.DataPacketReceived.SipDtmf;
-#pragma warning disable CS0612
+#pragma warning disable CS0612 // Type or member is obsolete
                                     var participant = GetParticipant(e.DataPacketReceived.ParticipantIdentity);
-#pragma warning restore CS0612
+#pragma warning restore CS0612 // Type or member is obsolete
                                     SipDtmfReceived?.Invoke(participant, dtmfInfo.Code, dtmfInfo.Digit);
                                 }
                                 break;
@@ -461,12 +514,22 @@ namespace LiveKit
                     }
                     break;
                 case RoomEvent.MessageOneofCase.ByteStreamOpened:
-                    var byteReader = new ByteStreamReader(e.ByteStreamOpened.Reader);
-                    _streamHandlers.Dispatch(byteReader, e.ByteStreamOpened.ParticipantIdentity);
+                    {
+                        var byteReader = new ByteStreamReader(e.ByteStreamOpened.Reader);
+                        if (!_streamHandlers.Dispatch(byteReader, e.ByteStreamOpened.ParticipantIdentity))
+                        {
+                            byteReader.Dispose();
+                        }
+                    }
                     break;
                 case RoomEvent.MessageOneofCase.TextStreamOpened:
-                    var textReader = new TextStreamReader(e.TextStreamOpened.Reader);
-                    _streamHandlers.Dispatch(textReader, e.TextStreamOpened.ParticipantIdentity);
+                    {
+                        var textReader = new TextStreamReader(e.TextStreamOpened.Reader);
+                        if (!_streamHandlers.Dispatch(textReader, e.TextStreamOpened.ParticipantIdentity))
+                        {
+                            textReader.Dispose();
+                        }
+                    }
                     break;
                 case RoomEvent.MessageOneofCase.ConnectionStateChanged:
                     ConnectionState = e.ConnectionStateChanged.State;
@@ -498,6 +561,17 @@ namespace LiveKit
                         UpdateFromInfo(e.Moved);
                     }
                     break;
+                case RoomEvent.MessageOneofCase.DataTrackPublished:
+                    {
+                        var track = new RemoteDataTrack(e.DataTrackPublished.Track);
+                        DataTrackPublished?.Invoke(track);
+                    }
+                    break;
+                case RoomEvent.MessageOneofCase.DataTrackUnpublished:
+                    {
+                        DataTrackUnpublished?.Invoke(e.DataTrackUnpublished.Sid);
+                    }
+                    break;
             }
         }
 
@@ -508,12 +582,23 @@ namespace LiveKit
             UpdateFromInfo(info.Result.Room.Info);
             LocalParticipant = new LocalParticipant(info.Result.LocalParticipant, this);
 
+            // Add already connected participant
             foreach (var p in info.Result.Participants)
                 CreateRemoteParticipantWithTracks(p);
 
             FfiClient.Instance.RoomEventReceived += OnEventReceived;
             FfiClient.Instance.DisconnectReceived += OnDisconnectReceived;
             FfiClient.Instance.RpcMethodInvocationReceived += OnRpcMethodInvocationReceived;
+
+            // Signal Rust that listeners are installed and it can start forwarding room events.
+            // Without this the FFI side parks for 1s after ConnectCallback and then drops the room
+            // with ConnectionTimeout. Must run after the FfiClient.RoomEventReceived subscription
+            // above so no event can race ahead of OnEventReceived.
+            using (var readyRequest = FFIBridge.Instance.NewRequest<ReadyForRoomEventRequest>())
+            {
+                readyRequest.request.RoomHandle = (ulong)RoomHandle.DangerousGetHandle();
+                using var readyResponse = readyRequest.Send();
+            }
 
             Connected?.Invoke(this);
         }
@@ -526,7 +611,7 @@ namespace LiveKit
 
         private void OnDisconnect()
         {
-            FfiClient.Instance.RoomEventReceived -= OnEventReceived;
+            Cleanup();
         }
 
         internal RemoteParticipant CreateRemoteParticipantWithTracks(ConnectCallback.Types.ParticipantWithTracks item)
@@ -572,15 +657,16 @@ namespace LiveKit
             _asyncId = asyncId;
             _room = room;
             _roomOptions = options;
-            FfiClient.Instance.ConnectReceived += OnConnect;
+            // Register before the request is sent so a fast native completion cannot race ahead
+            // of Unity's listener setup. The callback later arrives with AsyncId equal to the
+            // request's RequestAsyncId.
+            FfiClient.Instance.RegisterPendingCallback(asyncId, static e => e.Connect, OnConnect, OnCanceled);
         }
 
         void OnConnect(ConnectCallback e)
         {
             if (_asyncId != e.AsyncId)
                 return;
-
-            FfiClient.Instance.ConnectReceived -= OnConnect;
 
             bool success = string.IsNullOrEmpty(e.Error);
             if (success)
@@ -594,6 +680,12 @@ namespace LiveKit
             }
 
             IsError = !success;
+            IsDone = true;
+        }
+
+        void OnCanceled()
+        {
+            IsError = true;
             IsDone = true;
         }
     }

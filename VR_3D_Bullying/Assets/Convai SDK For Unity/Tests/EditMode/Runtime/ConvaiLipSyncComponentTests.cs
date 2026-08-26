@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Threading.Tasks;
 using Convai.Domain.DomainEvents.LipSync;
 using Convai.Domain.EventSystem;
 using Convai.Domain.Models.LipSync;
 using Convai.Modules.LipSync;
 using Convai.Modules.LipSync.Profiles;
+using Convai.Runtime.Core;
 using Convai.Shared.Interfaces;
 using Convai.Shared.Types;
 using NUnit.Framework;
@@ -108,6 +110,18 @@ namespace Convai.Tests.EditMode.Runtime
         }
 
         [Test]
+        public void RuntimePause_Freezes_And_Resume_Restores_PresentationTicks()
+        {
+            ConvaiLipSyncComponent component = CreateComponentGameObject(true);
+
+            component.PauseAsync(RuntimePauseReason.ApplicationBackground).GetAwaiter().GetResult();
+            Assert.IsTrue(component.IsPresentationPaused);
+
+            component.ResumeAsync().GetAwaiter().GetResult();
+            Assert.IsFalse(component.IsPresentationPaused);
+        }
+
+        [Test]
         public void Inject_WhenPackedDataArrivesForBoundCharacter_BuffersStreamWithoutTargetMeshes()
         {
             ConvaiLipSyncComponent component = CreateComponentGameObject(true);
@@ -204,7 +218,7 @@ namespace Convai.Tests.EditMode.Runtime
         }
 
         [Test]
-        public void Awake_WithValidSetup_CoordinatorUsesDspTimePlaybackClock()
+        public void Awake_WithValidSetup_RuntimeControllerUsesDspTimePlaybackClock()
         {
             ConvaiLipSyncComponent component = CreateComponentGameObject(true);
             EnsureProfileCatalogContains("arkit", "arkit");
@@ -237,6 +251,24 @@ namespace Convai.Tests.EditMode.Runtime
             Assert.AreEqual("arkit", updatedOptions.ProfileId.Value);
         }
 
+        [Test]
+        public async Task StopAsync_AfterBufferedStream_ResetsRuntimeState()
+        {
+            ConvaiLipSyncComponent component = CreateComponentGameObject(true);
+            EnsureProfileCatalogContains("arkit", "arkit");
+            InvokePrivateInstanceMethod(component, "Awake");
+            EventHub eventHub = new(new ImmediateScheduler());
+            component.Inject(eventHub);
+            eventHub.Publish(LipSyncPackedDataReceived.Create("char-1", "participant-1",
+                CreateChunk(LipSyncProfileId.ARKit, 4)));
+            Assert.AreEqual(PlaybackState.Buffering, component.EngineState);
+
+            await component.StopAsync();
+
+            Assert.AreEqual(PlaybackState.Idle, component.EngineState);
+            Assert.AreEqual(0f, component.GetTotalBufferedDuration(), 0.0001f);
+        }
+
         private ConvaiLipSyncComponent CreateComponentGameObject(bool withIdentitySource,
             string identityCharacterId = "char-1")
         {
@@ -258,7 +290,7 @@ namespace Convai.Tests.EditMode.Runtime
         {
             if (profilesToRegister == null || profilesToRegister.Length == 0) return;
 
-            var registry = ScriptableObject.CreateInstance<ConvaiLipSyncProfileRegistryAsset>();
+            var registry = ScriptableObject.CreateInstance<ConvaiLipSyncProfileRegistry>();
             Track(registry);
             SerializedObject registrySerialized = new(registry);
             registrySerialized.FindProperty("_priority").intValue = 0;
@@ -267,7 +299,7 @@ namespace Convai.Tests.EditMode.Runtime
             for (int i = 0; i < profilesToRegister.Length; i++)
             {
                 (string profileId, string format) descriptor = profilesToRegister[i];
-                var profile = ScriptableObject.CreateInstance<ConvaiLipSyncProfileAsset>();
+                var profile = ScriptableObject.CreateInstance<ConvaiLipSyncProfile>();
                 Track(profile);
                 SerializedObject profileSerialized = new(profile);
                 profileSerialized.FindProperty("_profileId").stringValue = descriptor.profileId;
@@ -279,7 +311,7 @@ namespace Convai.Tests.EditMode.Runtime
 
             registrySerialized.ApplyModifiedPropertiesWithoutUndo();
 
-            LipSyncProfileCatalog.SetRegistryOverridesForTests(registry, new ConvaiLipSyncProfileRegistryAsset[0]);
+            LipSyncProfileCatalog.SetRegistryOverridesForTests(registry, new ConvaiLipSyncProfileRegistry[0]);
         }
 
         private ConvaiLipSyncMapAsset CreateMapAssetWithProfile(string profileId)
@@ -329,15 +361,12 @@ namespace Convai.Tests.EditMode.Runtime
         private static IPlaybackClock GetActiveClockForTest(ConvaiLipSyncComponent component)
         {
             object runtimeController = GetPrivateField<object>(component, "_runtimeController");
-            object coordinator = GetPrivateField<object>(runtimeController, "_clockCoordinator");
-
-            PropertyInfo currentClockProperty = coordinator.GetType().GetProperty(
+            PropertyInfo currentClockProperty = runtimeController.GetType().GetProperty(
                 "CurrentClock", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (currentClockProperty == null)
+                throw new MissingMemberException(runtimeController.GetType().Name, "CurrentClock");
 
-            if (currentClockProperty != null)
-                return (IPlaybackClock)currentClockProperty.GetValue(coordinator);
-
-            return GetPrivateField<IPlaybackClock>(coordinator, "_clock");
+            return (IPlaybackClock)currentClockProperty.GetValue(runtimeController);
         }
 
         private static T GetPrivateField<T>(object target, string fieldName)
@@ -348,11 +377,9 @@ namespace Convai.Tests.EditMode.Runtime
             return (T)field.GetValue(target);
         }
 
-        private T Track<T>(T obj) where T : Object
+        private void Track<T>(T obj) where T : Object
         {
             if (obj != null) _cleanup.Add(obj);
-
-            return obj;
         }
     }
 }

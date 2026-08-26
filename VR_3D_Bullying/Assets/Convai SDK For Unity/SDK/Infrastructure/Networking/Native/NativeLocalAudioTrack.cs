@@ -6,18 +6,15 @@ namespace Convai.Infrastructure.Networking.Native
 {
     internal sealed class NativeLocalAudioTrack : ILocalAudioTrack
     {
-        private readonly NativeMicrophoneSource _source;
+        private readonly IAudioSource _source;
 
-        public NativeLocalAudioTrack(LocalAudioTrack track, NativeMicrophoneSource source)
+        public NativeLocalAudioTrack(LocalAudioTrack track, IAudioSource source)
         {
             UnderlyingTrack = track ?? throw new ArgumentNullException(nameof(track));
             _source = source ?? throw new ArgumentNullException(nameof(source));
             IsPublished = true;
         }
 
-        /// <summary>
-        ///     Gets the underlying LiveKit local audio track.
-        /// </summary>
         public LocalAudioTrack UnderlyingTrack { get; }
 
         public string Sid => UnderlyingTrack.Sid;

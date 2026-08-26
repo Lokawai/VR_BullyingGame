@@ -1,57 +1,113 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Convai.Domain.DomainEvents.Runtime;
+using Convai.Domain.DomainEvents.Narrative;
 using Convai.Domain.DomainEvents.Session;
+using Convai.Domain.Emotion;
 using Convai.Domain.EventSystem;
+using Convai.Runtime.Emotion;
 using Convai.Domain.Logging;
+using Convai.Runtime.Actions;
 using Convai.Runtime.Behaviors;
+using Convai.Runtime.Core.Async;
+using Convai.Runtime.Core.Coordinators;
+using Convai.Runtime.Core.DependencyInjection;
+using Convai.Runtime.DynamicContext;
 using Convai.Runtime.Logging;
 using Convai.Runtime.Room;
-using Convai.Runtime.Services.CharacterLocator;
-using Convai.Shared;
-using Convai.Shared.DependencyInjection;
+using Convai.Shared.Actions;
+using Convai.Runtime.Utilities;
 using Convai.Shared.Interfaces;
+using Convai.Shared.Types;
 using UnityEngine;
+using UnityEngine.Serialization;
 using ILogger = Convai.Domain.Logging.ILogger;
 
 namespace Convai.Runtime.Components
 {
     /// <summary>
-    ///     Canonical per-character API for conversation lifecycle and character-specific runtime events.
-    ///     Designed for strict dependency injection with no service locator fallback.
+    ///     Unity-facing character component for conversation control, transcript callbacks, and character-scoped runtime
+    ///     state.
     /// </summary>
     /// <remarks>
-    ///     This component replaces the legacy ConvaiCharacter with a cleaner, focused implementation:
-    ///     - ~150 lines vs ~1000+ lines in legacy ConvaiCharacter
-    ///     - Strict DI: requires Inject() before use, no fallback patterns
-    ///     - Uses room connection/audio services for transport operations
-    ///     - Event-based communication via IEventHub
-    ///     Usage:
-    ///     1. Add to a GameObject in scene
-    ///     2. Configure CharacterId and CharacterName in Inspector
-    ///     3. ConvaiManager bootstraps and injects dependencies
-    ///     4. Call StartConversationAsync() to begin conversation
-    ///     Remote Audio Control:
-    ///     By default, remote audio is ENABLED for all characters.
-    ///     To disable audio playback for a character (text-only mode), call DisableRemoteAudio() or
-    ///     SetRemoteAudioEnabled(false).
-    ///     Text-only mode reduces bandwidth usage while still receiving transcript responses from the character.
+    ///     Add this to each NPC or agent you want to connect to Convai.
+    ///     The component is configured either from inline values or from a Character Profile asset, depending on
+    ///     <see cref="_configurationSource" />.
     /// </remarks>
     [AddComponentMenu("Convai/Convai Character")]
-    public class ConvaiCharacter : MonoBehaviour, IConvaiCharacterAgent, IInjectable, ICharacterIdentitySource
+    public partial class ConvaiCharacter : MonoBehaviour, IConvaiCharacterAgent, IConvaiActionRuntimeSource,
+        IConvaiActionDefinitionCatalogSource,
+        IConvaiActionResolutionSource,
+        IInjectable<IConvaiCharacterDependencies>, ICharacterIdentitySource
     {
+        #region Dependency Injection
+
+        /// <inheritdoc cref="IInjectable{TDependencies}.InjectDependencies" />
+        public void InjectDependencies(IConvaiCharacterDependencies dependencies)
+        {
+            _deps = dependencies ?? throw new ArgumentNullException(nameof(dependencies));
+
+            IsInjected = true;
+            Logger?.Debug($"[{_characterName}] Dependencies injected (typed bundle)");
+
+            PropagateCharacterDependencyConsumers();
+
+            if (enabled && isActiveAndEnabled) InitializeAfterInjection();
+        }
+
+        private void PropagateCharacterDependencyConsumers()
+        {
+            MonoBehaviour[] behaviours = GetComponentsInChildren<MonoBehaviour>(true);
+            var consumers = new List<IInjectable<IConvaiCharacterDependencies>>();
+            for (int i = 0; i < behaviours.Length; i++)
+            {
+                MonoBehaviour behaviour = behaviours[i];
+                if (behaviour == null || ReferenceEquals(behaviour, this)) continue;
+                if (behaviour.GetComponentInParent<ConvaiCharacter>(true) != this) continue;
+                if (behaviour is IInjectable<IConvaiCharacterDependencies> consumer)
+                    consumers.Add(consumer);
+            }
+
+            consumers.Sort((left, right) =>
+            {
+                int order = left.InjectionOrder.CompareTo(right.InjectionOrder);
+                return order != 0
+                    ? order
+                    : string.Compare(left.GetType().FullName, right.GetType().FullName,
+                        StringComparison.Ordinal);
+            });
+
+            for (int i = 0; i < consumers.Count; i++)
+                consumers[i].InjectDependencies(_deps);
+        }
+
+        #endregion
+
         #region Serialized Fields
 
         [Header("Character Configuration")]
+        [SerializeField]
+        [Tooltip(
+            "Choose whether this component uses inline character settings or a reusable Character Profile asset.")]
+        private ConvaiConfigSourceMode _configurationSource = ConvaiConfigSourceMode.Inline;
+
+        [SerializeField] [HideInInspector] private bool _configurationSourceInitialized;
+
+        [SerializeField]
+        [Tooltip(
+            "Optional reusable Character Profile asset. Switch Character Setup Source to Character Profile Asset to make this the active source of truth.")]
+        [FormerlySerializedAs("_agentDefinition")]
+        private ConvaiCharacterProfile _characterConfigAsset;
+
         [SerializeField]
         [Tooltip("The unique Character ID from your Convai dashboard (https://convai.com). " +
                  "This is required for connecting to the character.")]
         private string _characterId;
 
-        [SerializeField] [Tooltip("Display name for this character, used in transcripts and debug logs.")]
+        [SerializeField] [Tooltip("Display name used in transcripts and debug logs.")]
         private string _characterName;
 
         [SerializeField] private Color _nameTagColor = Color.white;
@@ -66,18 +122,32 @@ namespace Convai.Runtime.Components
 
         [Header("Remote Audio (Default ON)")]
         [SerializeField]
-        [Tooltip("If enabled, remote audio playback will be enabled for this character after dependency injection. " +
-                 "Default is ON. Disable for text-only mode. You can also toggle at runtime via EnableRemoteAudio()/DisableRemoteAudio()/ToggleRemoteAudio().")]
+        [Tooltip("Whether this character should start with remote audio playback enabled. Disable for text-only mode.")]
         private bool _enableRemoteAudio = true;
 
         [SerializeField] [Tooltip("If enabled, this character attempts to resume previous sessions when reconnecting.")]
-        private bool _enableSessionResume = true;
+        private bool _enableSessionResume = false;
+
+        [SerializeField]
+        [Tooltip("Character session ID used when Session Resume is enabled. Leave empty to start a fresh session.")]
+        private string _characterSessionId = string.Empty;
+
+        [Header("Ownership")]
+        [SerializeField]
+        [Tooltip("Optional owner id for multi-character scenarios. Leave empty to use the local player.")]
+        private string _ownerId = "";
+
+        [Header("Dynamic Info (Connection Request)")]
+        [SerializeField]
+        [Tooltip("Initial dynamic info text sent in the room connection request.")]
+        private string _initialDynamicInfoText = string.Empty;
+
+        [SerializeField] [Tooltip("When true, dynamic info is kept in context by the server.")]
+        private bool _initialDynamicInfoKeepInContext;
 
         [Header("Connection Settings")]
         [SerializeField]
-        [Tooltip("Timeout in seconds to wait for the character ready signal after connection. " +
-                 "If the character doesn't become ready within this time, StartConversationAsync returns false. " +
-                 "Set to 0 to disable timeout (wait indefinitely).")]
+        [Tooltip("How long to wait for the character ready signal after connection. Set to 0 to wait indefinitely.")]
         [Range(0, 120)]
         private float _characterReadyTimeoutSeconds = 30f;
 
@@ -85,19 +155,25 @@ namespace Convai.Runtime.Components
 
         #region Dependencies
 
-        private IEventHub _eventHub;
-        private IConvaiRoomConnectionService _connectionService;
-        private IConvaiRoomAudioService _audioService;
-        private IConvaiCharacterLocatorService _locatorService;
-        private ILogger _logger;
+        /// <summary>
+        ///     Typed dependency bundle owned by the manager/runtime binding path.
+        /// </summary>
+        private IConvaiCharacterDependencies _deps;
 
-        private bool _isRegisteredWithLocator;
+        private IEventHub EventHub => _deps?.EventHub;
+        private IConvaiRoomConnectionService ConnectionService => _deps?.ConnectionService;
+        private IConvaiRoomAudioService AudioService => _deps?.AudioService;
+        private IAgentRegistry AgentRegistry => _deps?.AgentRegistry;
+        private ILogger Logger => _deps?.Logger;
 
         private SubscriptionToken _ttsTextToken;
         private SubscriptionToken _speechStateToken;
         private SubscriptionToken _characterReadyToken;
         private SubscriptionToken _turnCompletedToken;
         private SubscriptionToken _emotionToken;
+        private SubscriptionToken _actionReceivedToken;
+        private SubscriptionToken _dynamicContextUpdateResultToken;
+        private SubscriptionToken _narrativeSectionChangedToken;
 
         private volatile bool _isSpeaking;
         private readonly object _emotionStateLock = new();
@@ -109,30 +185,52 @@ namespace Convai.Runtime.Components
 
         private bool _isCharacterReady;
         private readonly object _characterReadyLock = new();
+        private ConvaiActionConfig _resolvedSessionActionConfig;
+        private bool _hasResolvedSessionActionConfig;
+        private ConvaiActionConfig _sessionLocalResolutionConfig;
+        private bool _hasSessionLocalResolutionConfig;
+        private List<ConvaiActionDefinition> _resolvedSessionActionDefinitions;
+        private List<ConvaiActionDefinition> _resolvedSessionActionDefinitionCatalog;
 
         private CancellationTokenSource _destroyCts;
 
         private TaskCompletionSource<bool> _characterReadyTcs;
         private readonly object _characterReadyTcsLock = new();
+        private bool _isInitializedAfterInjection;
 
         #endregion
 
         #region Public Properties
 
         /// <summary>Character ID configured in the Convai dashboard.</summary>
-        public string CharacterId => _characterId;
+        public ConvaiConfigSourceMode ConfigurationSource => ResolveConfigurationSourceMode();
+
+        public ConvaiCharacterProfile CharacterConfigAsset => _characterConfigAsset;
+
+        public string CharacterId =>
+            UsesCharacterConfigAsset && !string.IsNullOrWhiteSpace(_characterConfigAsset.CharacterId)
+                ? _characterConfigAsset.CharacterId
+                : _characterId;
 
         /// <summary>Display name for the character.</summary>
-        public string CharacterName => _characterName;
+        public string CharacterName =>
+            UsesCharacterConfigAsset && !string.IsNullOrWhiteSpace(_characterConfigAsset.CharacterName)
+                ? _characterConfigAsset.CharacterName
+                : _characterName;
 
         /// <summary>Name tag color for transcript display.</summary>
-        public Color NameTagColor => _nameTagColor;
+        public Color NameTagColor => UsesCharacterConfigAsset ? _characterConfigAsset.NameTagColor : _nameTagColor;
+
+        /// <summary>
+        ///     Owner ID for multi-character support.
+        ///     Empty string indicates the local player owns this character.
+        /// </summary>
+        public string OwnerId => _ownerId ?? string.Empty;
 
         /// <summary>
         ///     Current session state from the connection service.
-        ///     Replaces the legacy character state property for direct room state access.
         /// </summary>
-        public SessionState SessionState => _connectionService?.CurrentState ?? SessionState.Disconnected;
+        public SessionState SessionState => ConnectionService?.CurrentState ?? SessionState.Disconnected;
 
         /// <summary>
         ///     Whether the character has received the bot-ready signal from the server.
@@ -158,7 +256,11 @@ namespace Convai.Runtime.Components
                     if (value)
                     {
                         lock (_characterReadyTcsLock) _characterReadyTcs?.TrySetResult(true);
-                        OnCharacterReady?.Invoke();
+                        SafeEventInvoker.Invoke(
+                            OnCharacterReady,
+                            Logger,
+                            "ConvaiCharacter.OnCharacterReady",
+                            LogCategory.Character);
                     }
                 }
             }
@@ -179,12 +281,30 @@ namespace Convai.Runtime.Components
         ///     Inspector-configured remote audio preference for this character.
         ///     This is applied after injection; default is true (audio enabled).
         /// </summary>
-        public bool EnableRemoteAudioOnStart => _enableRemoteAudio;
+        public bool EnableRemoteAudioOnStart =>
+            UsesCharacterConfigAsset ? _characterConfigAsset.EnableRemoteAudioOnStart : _enableRemoteAudio;
 
         /// <summary>
         ///     Whether session resume should be attempted for this character.
         /// </summary>
-        public bool EnableSessionResume => _enableSessionResume;
+        public bool EnableSessionResume =>
+            UsesCharacterConfigAsset ? _characterConfigAsset.EnableSessionResume : _enableSessionResume;
+
+        /// <summary>
+        ///     Character session ID used for the next room connection when session resume is enabled.
+        ///     Successful connections write the server-returned character_session_id back to this value.
+        /// </summary>
+        public string CharacterSessionId => NormalizeCharacterSessionId(_characterSessionId);
+
+        /// <summary>
+        ///     Initial dynamic info text included in room connection request payload.
+        /// </summary>
+        public string InitialDynamicInfoText => _initialDynamicInfoText;
+
+        /// <summary>
+        ///     Whether initial dynamic info should be kept in context by the server.
+        /// </summary>
+        public bool InitialDynamicInfoKeepInContext => _initialDynamicInfoKeepInContext;
 
         /// <summary>
         ///     Timeout in seconds to wait for the character ready signal after connection.
@@ -219,21 +339,37 @@ namespace Convai.Runtime.Components
 
         #endregion
 
+        /// <summary>
+        ///     Sets the character_session_id used by the next connection when session resume is enabled.
+        ///     Passing null, empty, or whitespace clears the value so the next connection starts fresh.
+        /// </summary>
+        public void SetCharacterSessionId(string characterSessionId) =>
+            _characterSessionId = NormalizeCharacterSessionId(characterSessionId);
+
+        /// <summary>Clears the configured character_session_id so the next connection starts fresh.</summary>
+        public void ClearCharacterSessionId() => _characterSessionId = string.Empty;
+
+        internal void SetCurrentCharacterSessionId(string characterSessionId) =>
+            SetCharacterSessionId(characterSessionId);
+
+        private static string NormalizeCharacterSessionId(string characterSessionId) =>
+            string.IsNullOrWhiteSpace(characterSessionId) ? string.Empty : characterSessionId.Trim();
+
         #region Events
 
-        /// <summary>Raised when transcript text is received from the character.</summary>
+        /// <summary>Raised when transcript text is received from this character's local TTS stream.</summary>
         public event Action<string, bool> OnTranscriptReceived;
 
-        /// <summary>Raised when the character begins speaking.</summary>
+        /// <summary>Raised when this character begins speaking.</summary>
         public event Action OnSpeechStarted;
 
-        /// <summary>Raised when the character stops speaking.</summary>
+        /// <summary>Raised when this character stops speaking.</summary>
         public event Action OnSpeechStopped;
 
-        /// <summary>Raised when the character completes its full turn.</summary>
+        /// <summary>Raised when this character completes its full turn.</summary>
         public event Action<bool> OnTurnCompleted;
 
-        /// <summary>Raised when the character is ready to interact.</summary>
+        /// <summary>Raised when this character is ready to interact.</summary>
         public event Action OnCharacterReady;
 
         /// <summary>Raised when the session state changes.</summary>
@@ -242,144 +378,169 @@ namespace Convai.Runtime.Components
         /// <summary>Raised when the remote audio enabled state changes for this character.</summary>
         public event Action<bool> OnRemoteAudioEnabledChanged;
 
-        /// <summary>Raised when the character emotion changes. Parameters: (emotion, intensity).</summary>
+        /// <summary>Raised when this character's emotion changes. Parameters: (emotion, intensity).</summary>
         public event Action<string, int> OnEmotionChanged;
 
-        #endregion
-
-        #region Remote Audio Control
-
-        /// <summary>
-        ///     Gets whether remote audio playback is enabled for this character.
-        ///     When false (default), the character's audio track is unsubscribed and no audio packets are received.
-        ///     When true, the character's audio track is subscribed and routed to the AudioSource.
-        /// </summary>
-        public bool IsRemoteAudioEnabled
-        {
-            get
-            {
-                if (!IsInjected || _audioService == null) return false;
-
-                return _audioService.IsRemoteAudioEnabled(_characterId);
-            }
-        }
-
-        /// <summary>
-        ///     Enables or disables remote audio playback for this character.
-        ///     When disabled (default), the character's audio track is unsubscribed (no audio packets received).
-        ///     When enabled, the character's audio track is subscribed and routed to the AudioSource.
-        /// </summary>
-        /// <param name="enabled">True to enable audio playback; false to disable.</param>
-        /// <returns>True when the operation succeeds; otherwise false.</returns>
-        public bool SetRemoteAudioEnabled(bool enabled)
-        {
-            if (!IsInjected)
-            {
-                _logger?.Warning(
-                    $"[ConvaiCharacter] [{_characterName}] Cannot set remote audio: dependencies not injected");
-                return false;
-            }
-
-            if (_audioService == null)
-            {
-                _logger?.Warning(
-                    $"[ConvaiCharacter] [{_characterName}] Cannot set remote audio: audio service not available");
-                return false;
-            }
-
-            bool result = _audioService.SetRemoteAudioEnabled(_characterId, enabled);
-            if (result)
-            {
-                _logger?.Debug(
-                    $"[ConvaiCharacter] [{_characterName}] Remote audio {(enabled ? "enabled" : "disabled")}");
-                OnRemoteAudioEnabledChanged?.Invoke(enabled);
-            }
-
-            return result;
-        }
-
-        /// <summary>
-        ///     Enables remote audio playback for this character.
-        ///     The character's audio track will be subscribed and routed to the AudioSource.
-        /// </summary>
-        /// <returns>True when the operation succeeds; otherwise false.</returns>
-        public bool EnableRemoteAudio() => SetRemoteAudioEnabled(true);
-
-        /// <summary>
-        ///     Disables remote audio playback for this character.
-        ///     The character's audio track will be unsubscribed (no audio packets received).
-        /// </summary>
-        /// <returns>True when the operation succeeds; otherwise false.</returns>
-        public bool DisableRemoteAudio() => SetRemoteAudioEnabled(false);
-
-        /// <summary>
-        ///     Toggles remote audio playback for this character.
-        ///     Intended for Unity UI button bindings.
-        /// </summary>
-        public void ToggleRemoteAudio() => SetRemoteAudioEnabled(!IsRemoteAudioEnabled);
+        /// <summary>Raised when this character receives backend structured actions for the current turn.</summary>
+        public event Action<IReadOnlyList<ConvaiActionCommand>> OnActionsReceived;
 
         #endregion
 
         #region IConvaiCharacterAgent Implementation
 
-        string IConvaiCharacterAgent.CharacterId => _characterId;
-        string IConvaiCharacterAgent.CharacterName => _characterName;
-        bool IConvaiCharacterAgent.EnableSessionResume => _enableSessionResume;
+        string IConvaiCharacterAgent.CharacterId => CharacterId;
+        string IConvaiCharacterAgent.CharacterName => CharacterName;
+        bool IConvaiCharacterAgent.EnableSessionResume => EnableSessionResume;
+        string IConvaiCharacterAgent.InitialDynamicInfoText => InitialDynamicInfoText;
+        bool IConvaiCharacterAgent.InitialDynamicInfoKeepInContext => InitialDynamicInfoKeepInContext;
+        IConvaiDynamicContext IConvaiCharacterAgent.DynamicContext => DynamicContext;
 
-        void IConvaiCharacterAgent.SendTrigger(string triggerName, string triggerMessage) =>
-            SendTrigger(triggerName, triggerMessage);
+        public EmotionDetectionMode EmotionDetectionMode
+        {
+            // Resolved on demand at connect time (rare). The emotion controller lives in a module
+            // assembly Runtime cannot reference, so it is discovered via the IEmotionDetectionModeSource
+            // interface. No source attached => emotions off.
+            get
+            {
+                IEmotionDetectionModeSource source = GetCharacterScopedEmotionDetectionModeSource();
+                return source?.EmotionDetectionMode ?? EmotionDetectionMode.Off;
+            }
+        }
 
-        void IConvaiCharacterAgent.SendDynamicInfo(string contextText) => SendDynamicInfo(contextText);
+        private IEmotionDetectionModeSource GetCharacterScopedEmotionDetectionModeSource()
+        {
+            IEmotionDetectionModeSource[] sources = GetComponentsInChildren<IEmotionDetectionModeSource>(true);
+            for (int i = 0; i < sources.Length; i++)
+            {
+                if (sources[i] is not Component component) continue;
+                if (component.GetComponentInParent<ConvaiCharacter>(true) == this)
+                    return sources[i];
+            }
+
+            return null;
+        }
+
+        void IConvaiCharacterAgent.SendTrigger(string triggerName) =>
+            SendTrigger(triggerName);
+
+        void IConvaiCharacterAgent.SendNarrativeEvent(string eventMessage) =>
+            SendNarrativeEvent(eventMessage);
+
+        void IConvaiCharacterAgent.SendNarrativeSpeech(string speechText) =>
+            SendNarrativeSpeech(speechText);
 
         void IConvaiCharacterAgent.UpdateTemplateKeys(Dictionary<string, string> templateKeys) =>
             UpdateTemplateKeys(templateKeys);
 
         #endregion
 
-        #region Dependency Injection
+        /// <summary>
+        ///     Wire-facing action config for the current session — what the backend has been told
+        ///     this character can do. Advanced only by the connect payload and by
+        ///     <b>acknowledged</b> runtime action-config patches, so an unacknowledged local
+        ///     mutation never appears here. For the local name-to-scene-object view that also folds
+        ///     in <see cref="ConvaiActionTarget" /> components, target groups and runtime target
+        ///     registrations, use <see cref="IConvaiActionResolutionSource.ResolutionActionConfig" />.
+        /// </summary>
+        public ConvaiActionConfig ActionConfig => GetServerSharedActionConfig()?.Clone();
 
-        /// <inheritdoc />
-        public void InjectServices(IServiceContainer container)
+        ConvaiActionConfig IConvaiActionResolutionSource.ResolutionActionConfig => GetRuntimeActionConfig();
+
+        Vector3? IConvaiActionResolutionSource.ResolutionOrigin => transform.position;
+
+        public IReadOnlyList<ConvaiActionDefinition> ActionDefinitions => GetRuntimeActionDefinitions();
+
+        IReadOnlyList<ConvaiActionDefinition> IConvaiActionDefinitionCatalogSource.ActionDefinitionCatalog =>
+            GetRuntimeActionDefinitionCatalog();
+
+        /// <summary>
+        ///     Gets the authoring component that defines connect-time action affordances for this character.
+        /// </summary>
+        public ConvaiActionConfigSource GetActionConfigSource() => GetComponent<ConvaiActionConfigSource>();
+
+        /// <summary>
+        ///     Local name-to-scene-object resolution config: the server-shared session config
+        ///     (<see cref="GetServerSharedActionConfig" />) plus this scene's local-only lookup aids
+        ///     — explicitly registered runtime targets, enabled <see cref="ConvaiActionTarget" />
+        ///     components, <see cref="ConvaiActionTargetGroup" /> groups, aliases, interaction
+        ///     points and availability overrides. None of those aids are serialized to the backend;
+        ///     they only translate a name the backend already used into a scene object, so keeping
+        ///     them live cannot desynchronize this character from the backend's own view.
+        /// </summary>
+        internal ConvaiActionConfig GetRuntimeActionConfig() => BuildMergedRuntimeActionConfig();
+
+        /// <summary>
+        ///     Action state this character and the backend both agree on: the config resolved for
+        ///     the current connection, advanced only by acknowledged runtime action-config patches.
+        ///     Runtime patch prediction and ACK commit read this — never the locally merged
+        ///     <see cref="GetRuntimeActionConfig" /> — so an unacknowledged local mutation can never
+        ///     be folded into what we believe the backend knows.
+        /// </summary>
+        internal ConvaiActionConfig GetServerSharedActionConfig() =>
+            _hasResolvedSessionActionConfig
+                ? _resolvedSessionActionConfig
+                : GetActionConfigSource()?.BuildActionConfig(_actions);
+
+        internal IReadOnlyList<ConvaiActionDefinition> GetRuntimeActionDefinitions() =>
+            _resolvedSessionActionDefinitions ?? GetActionConfigSource()?.GetEffectiveDefinitions() ??
+            Array.Empty<ConvaiActionDefinition>();
+
+        internal IReadOnlyList<ConvaiActionDefinition> GetRuntimeActionDefinitionCatalog() =>
+            _resolvedSessionActionDefinitionCatalog ??
+            GetActionConfigSource()?.GetEffectiveDefinitions(requireExecutable: true) ??
+            Array.Empty<ConvaiActionDefinition>();
+
+        internal void SetResolvedSessionActionConfig(ConvaiActionConfig actionConfig)
         {
-            container.TryGet(out ILogger logger);
-            Inject(
-                container.Get<IEventHub>(),
-                container.Get<IConvaiRoomConnectionService>(),
-                container.Get<IConvaiRoomAudioService>(),
-                container.Get<IConvaiCharacterLocatorService>(),
-                logger);
+            _resolvedSessionActionConfig = actionConfig?.Clone();
+            _hasResolvedSessionActionConfig = true;
         }
 
         /// <summary>
-        ///     Injects dependencies into the character. Called by the ConvaiManager pipeline.
-        ///     All parameters are required - no fallback to service locator.
+        ///     Stores the wider local-resolution base for this session (see
+        ///     <see cref="GetRuntimeActionConfig" />). Unlike
+        ///     <see cref="SetResolvedSessionActionConfig" /> this is never sent anywhere and keeps
+        ///     disabled actions, so a stale backend command for a disabled action is still
+        ///     classified instead of vanishing as unmatched.
         /// </summary>
-        public void Inject(
-            IEventHub eventHub,
-            IConvaiRoomConnectionService connectionService,
-            IConvaiRoomAudioService audioService,
-            IConvaiCharacterLocatorService locatorService,
-            ILogger logger = null)
+        internal void SetSessionLocalResolutionConfig(ConvaiActionConfig actionConfig)
         {
-            _eventHub = eventHub ?? throw new ArgumentNullException(nameof(eventHub));
-            _connectionService = connectionService ?? throw new ArgumentNullException(nameof(connectionService));
-            _audioService = audioService ?? throw new ArgumentNullException(nameof(audioService));
-            _locatorService = locatorService ?? throw new ArgumentNullException(nameof(locatorService));
-            _logger = logger;
-
-            IsInjected = true;
-            _logger?.Debug($"[ConvaiCharacter] [{_characterName}] Dependencies injected");
-
-            if (enabled && isActiveAndEnabled) InitializeAfterInjection();
+            _sessionLocalResolutionConfig = actionConfig?.Clone();
+            _hasSessionLocalResolutionConfig = true;
         }
 
-        #endregion
+        internal void ClearSessionLocalResolutionConfig()
+        {
+            _sessionLocalResolutionConfig = null;
+            _hasSessionLocalResolutionConfig = false;
+        }
+
+        internal void SetResolvedSessionActionDefinitions(IReadOnlyList<ConvaiActionDefinition> definitions) =>
+            _resolvedSessionActionDefinitions = definitions == null
+                ? null
+                : ConvaiActionDefinition.CloneList(definitions);
+
+        internal void SetResolvedSessionActionDefinitionCatalog(IReadOnlyList<ConvaiActionDefinition> definitions) =>
+            _resolvedSessionActionDefinitionCatalog = definitions == null
+                ? null
+                : ConvaiActionDefinition.CloneList(definitions);
+
+        internal void ClearResolvedSessionActionConfig()
+        {
+            _resolvedSessionActionConfig = null;
+            _hasResolvedSessionActionConfig = false;
+        }
+
+        internal void ClearResolvedSessionActionDefinitions() => _resolvedSessionActionDefinitions = null;
+
+        internal void ClearResolvedSessionActionDefinitionCatalog() =>
+            _resolvedSessionActionDefinitionCatalog = null;
 
         #region Unity Lifecycle
 
         private void Awake() => ValidateSDKSetup();
 
-        private void Start() => ValidateServiceContainerSetup();
+        private void Start() => ValidateRuntimeBootstrapSetup();
 
         private void OnEnable()
         {
@@ -393,55 +554,71 @@ namespace Convai.Runtime.Components
 
         /// <summary>
         ///     Called after dependency injection is complete. Handles registration and event subscription.
-        ///     This is called either from OnEnable (if already injected) or from Inject() (if enabled).
+        ///     This is called from OnEnable or immediately after typed dependency injection when already enabled.
         /// </summary>
         private void InitializeAfterInjection()
         {
+            if (_isInitializedAfterInjection) return;
+
             RegisterWithLocator();
             SubscribeToEvents();
+            _isInitializedAfterInjection = true;
 
-            SetRemoteAudioEnabled(_enableRemoteAudio);
+            SetRemoteAudioEnabled(EnableRemoteAudioOnStart);
 
-            _logger?.Debug(
-                $"[ConvaiCharacter] [{_characterName}] Initialized after injection, autoConnect={_autoConnect}");
+            Logger?.Debug(
+                $"[{_characterName}] Initialized after injection, autoConnect={_autoConnect}");
             if (_autoConnect && SessionState is SessionState.Disconnected or SessionState.Error)
             {
-                _logger?.Debug($"[ConvaiCharacter] [{_characterName}] Starting conversation automatically");
-                StartConversationAsync().ContinueWith(task =>
-                {
-                    if (task.IsFaulted)
-                    {
-                        Exception ex = task.Exception?.GetBaseException();
-                        ConvaiLogger.Error($"[ConvaiCharacter] [{_characterName}] Auto-connect failed: {ex?.Message}",
-                            LogCategory.Character);
-                        _logger?.Error($"[ConvaiCharacter] [{_characterName}] Auto-connect failed: {ex?.Message}");
-                    }
-                    else if (task.IsCompletedSuccessfully && !task.Result)
-                    {
-                        ConvaiLogger.Warning($"[ConvaiCharacter] [{_characterName}] Auto-connect returned false",
-                            LogCategory.Character);
-                        _logger?.Warning($"[ConvaiCharacter] [{_characterName}] Auto-connect returned false");
-                    }
-                }, TaskScheduler.FromCurrentSynchronizationContext());
+                Logger?.Debug(
+                    $"[{_characterName}] Starting conversation automatically (deferred one frame so room manager startup can complete)");
+                StartCoroutine(DelayedAutoConnectCoroutine());
             }
+        }
+
+        /// <summary>
+        ///     Defers auto-connect by one frame so that ConvaiRoomManager.Start() (and SignalStartCompleted) runs first,
+        ///     avoiding "ConnectAsync timed out waiting for startup" when the character is initialized during injection.
+        /// </summary>
+        private IEnumerator DelayedAutoConnectCoroutine()
+        {
+            yield return null;
+
+            if (!this || !isActiveAndEnabled || SessionState is not (SessionState.Disconnected or SessionState.Error))
+                yield break;
+
+            StartConversationAsync().AsTask().ContinueWith(task =>
+            {
+                if (task.IsFaulted)
+                {
+                    Exception ex = task.Exception?.GetBaseException();
+                    ConvaiLogger.Error($"[{_characterName}] Auto-connect failed: {ex?.Message}",
+                        LogCategory.Character);
+                    Logger?.Error($"[{_characterName}] Auto-connect failed: {ex?.Message}");
+                }
+            }, TaskScheduler.FromCurrentSynchronizationContext());
         }
 
         private void OnDisable()
         {
             CancelPendingOperations();
+            ClearPendingRuntimeActionStateUpdates();
 
             UnsubscribeFromEvents();
             UnregisterFromLocator();
+            _isInitializedAfterInjection = false;
         }
 
         private void OnDestroy()
         {
             CancelPendingOperations();
+            ClearPendingRuntimeActionStateUpdates();
             _destroyCts?.Dispose();
             _destroyCts = null;
 
             UnsubscribeFromEvents();
             UnregisterFromLocator();
+            _isInitializedAfterInjection = false;
         }
 
         private void CancelPendingOperations()
@@ -466,6 +643,7 @@ namespace Convai.Runtime.Components
 
         private void OnValidate()
         {
+            EnsureConfigurationSourceInitialized();
             if (!UnityEngine.Application.isPlaying) ValidateEditorSetup();
         }
 
@@ -474,7 +652,9 @@ namespace Convai.Runtime.Components
         /// </summary>
         private void ValidateEditorSetup()
         {
-            if (FindFirstObjectByType<ConvaiManager>() == null)
+            // During domain reloads, ActiveManager may be null even if a manager exists in the scene
+            // because Awake() hasn't run yet. Use FindAnyObjectByType to check for component existence.
+            if (ConvaiManager.ActiveManager == null && FindAnyObjectByType<ConvaiManager>() == null)
             {
                 ConvaiLogger.Warning(
                     $"[Convai SDK] {gameObject.name}: ConvaiManager not found in scene.\n" +
@@ -492,7 +672,7 @@ namespace Convai.Runtime.Components
         {
             List<string> errors = new();
 
-            if (FindFirstObjectByType<ConvaiManager>() == null)
+            if (ConvaiManager.ActiveManager == null)
             {
                 errors.Add(
                     "ConvaiManager not found in scene.\n" +
@@ -504,24 +684,25 @@ namespace Convai.Runtime.Components
             {
                 string fullError = $"[Convai SDK Setup Error] {gameObject.name} ({_characterName}):\n\n" +
                                    string.Join("\n\n", errors.Select((e, i) => $"{i + 1}. {e}")) +
-                                   "\n\n📖 For setup instructions, see: https://docs.convai.com/unity/quickstart" +
+                                   "\n\n📖 For setup instructions, see: https://docs.convai.com/api-docs/plugins-and-integrations/convai-unity-sdk/getting-started/installation" +
                                    "\n💡 Quick fix: Use 'GameObject > Convai > Setup Required Components' menu";
 
                 ConvaiLogger.Error(fullError, LogCategory.Character);
             }
         }
 
-        private void ValidateServiceContainerSetup()
+        private void ValidateRuntimeBootstrapSetup()
         {
-            if (FindFirstObjectByType<ConvaiManager>() == null) return;
+            ConvaiManager manager = ConvaiManager.ActiveManager;
+            if (manager == null) return;
 
-            if (ConvaiServiceLocator.IsInitialized) return;
+            if (manager.IsInitialized) return;
 
             string fullError = $"[Convai SDK Setup Error] {gameObject.name} ({_characterName}):\n\n" +
-                               "1. Convai service container is not initialized after startup.\n" +
+                               "1. Convai runtime bootstrap is not initialized after startup.\n" +
                                "   → Ensure ConvaiManager is active and enabled in the scene\n" +
-                               "   → Check console logs for bootstrap initialization errors\n\n" +
-                               "📖 For setup instructions, see: https://docs.convai.com/unity/quickstart" +
+                               "   → Check console logs for bootstrap or room-session initialization errors\n\n" +
+                               "📖 For setup instructions, see: https://docs.convai.com/api-docs/plugins-and-integrations/convai-unity-sdk/getting-started/installation" +
                                "\n💡 Quick fix: Use 'GameObject > Convai > Setup Required Components' menu";
 
             ConvaiLogger.Error(fullError, LogCategory.Character);
@@ -536,154 +717,9 @@ namespace Convai.Runtime.Components
         ///     Connects to the room if not already connected.
         /// </summary>
         /// <param name="cancellationToken">Token to cancel the operation. Combined with component lifetime token.</param>
-        /// <returns>True if conversation started successfully; otherwise false.</returns>
-        public async Task<bool> StartConversationAsync(CancellationToken cancellationToken = default)
-        {
-            if (string.IsNullOrWhiteSpace(_characterId))
-            {
-                ConvaiLogger.Error($"[ConvaiCharacter] [{_characterName}] Cannot start: CharacterId is empty. " +
-                                   "Set the Character ID in the Inspector (find it on your Convai dashboard at https://convai.com).",
-                    LogCategory.Character);
-                return false;
-            }
-
-            if (!IsInjected)
-            {
-                ConvaiLogger.Error($"[ConvaiCharacter] [{_characterName}] Cannot start: dependencies not injected. " +
-                                   "Ensure ConvaiManager is in the scene and has run before calling StartConversationAsync().",
-                    LogCategory.Character);
-                return false;
-            }
-
-            if (_connectionService == null)
-            {
-                _logger?.Error($"[ConvaiCharacter] [{_characterName}] Cannot start: _connectionService is null");
-                return false;
-            }
-
-            if (SessionState == SessionState.Connected)
-            {
-                _logger?.Debug(
-                    $"[ConvaiCharacter] [{_characterName}] StartConversationAsync ignored: already connected");
-                return true;
-            }
-
-            if (SessionState == SessionState.Disconnecting)
-            {
-                _logger?.Warning($"[ConvaiCharacter] [{_characterName}] Cannot start while disconnecting");
-                return false;
-            }
-
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken, _destroyCts?.Token ?? CancellationToken.None);
-            CancellationToken linkedToken = linkedCts.Token;
-
-            _logger?.Debug($"[ConvaiCharacter] [{_characterName}] Starting conversation...");
-
-            IsCharacterReady = false;
-
-            TaskCompletionSource<bool> readyTcs = new();
-            lock (_characterReadyTcsLock)
-            {
-                _characterReadyTcs?.TrySetCanceled();
-                _characterReadyTcs = readyTcs;
-            }
-
-            try
-            {
-                linkedToken.ThrowIfCancellationRequested();
-
-                _logger?.Debug($"[ConvaiCharacter] [{_characterName}] Awaiting connection service...");
-                bool connected = await _connectionService.ConnectAsync(linkedToken);
-
-                if (!connected)
-                {
-                    _logger?.Error($"[ConvaiCharacter] [{_characterName}] Connection service returned false");
-                    return false;
-                }
-
-                linkedToken.ThrowIfCancellationRequested();
-
-                _logger?.Info(
-                    $"[ConvaiCharacter] [{_characterName}] Connection successful, waiting for character ready signal...");
-
-                return await WaitForCharacterReadyAsync(readyTcs, linkedToken);
-            }
-            catch (OperationCanceledException)
-            {
-                _logger?.Debug($"[ConvaiCharacter] [{_characterName}] StartConversationAsync cancelled");
-                return false;
-            }
-            catch (Exception ex)
-            {
-                _logger?.Error($"[ConvaiCharacter] [{_characterName}] Connection failed with exception: {ex.Message}");
-                return false;
-            }
-            finally
-            {
-                lock (_characterReadyTcsLock)
-                {
-                    if (_characterReadyTcs == readyTcs)
-                        _characterReadyTcs = null;
-                }
-            }
-        }
-
-        /// <summary>
-        ///     Waits for the CharacterReady signal with optional timeout.
-        /// </summary>
-        private async Task<bool> WaitForCharacterReadyAsync(TaskCompletionSource<bool> readyTcs,
-            CancellationToken cancellationToken) =>
-            await WaitForCharacterReadyInternalAsync(readyTcs, _characterReadyTimeoutSeconds, cancellationToken);
-
-        /// <summary>
-        ///     Internal implementation that waits for the CharacterReady signal with a specified timeout.
-        /// </summary>
-        private async Task<bool> WaitForCharacterReadyInternalAsync(TaskCompletionSource<bool> readyTcs,
-            float timeoutSeconds, CancellationToken cancellationToken)
-        {
-            if (IsCharacterReady)
-            {
-                _logger?.Debug($"[ConvaiCharacter] [{_characterName}] Already character ready");
-                return true;
-            }
-
-            if (timeoutSeconds <= 0f)
-            {
-                _logger?.Debug($"[ConvaiCharacter] [{_characterName}] Waiting indefinitely for character ready...");
-                try
-                {
-                    using (cancellationToken.Register(() => readyTcs.TrySetCanceled())) return await readyTcs.Task;
-                }
-                catch (OperationCanceledException)
-                {
-                    return false;
-                }
-            }
-
-            int timeoutMs = (int)(timeoutSeconds * 1000);
-            _logger?.Debug(
-                $"[ConvaiCharacter] [{_characterName}] Waiting for character ready (timeout: {timeoutSeconds}s)...");
-
-            using CancellationTokenSource timeoutCts = new(timeoutMs);
-            using var combinedCts = CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken, timeoutCts.Token);
-
-            try
-            {
-                using (combinedCts.Token.Register(() => readyTcs.TrySetCanceled())) return await readyTcs.Task;
-            }
-            catch (OperationCanceledException)
-            {
-                if (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-                {
-                    _logger?.Warning(
-                        $"[ConvaiCharacter] [{_characterName}] Character ready timeout after {timeoutSeconds}s");
-                }
-
-                return false;
-            }
-        }
+        /// <returns>The completed lifecycle operation.</returns>
+        public IConvaiOperation<Unit> StartConversationAsync(CancellationToken cancellationToken = default) =>
+            ConvaiOperation<Unit>.FromTask(StartConversationAsyncCore(cancellationToken));
 
         /// <summary>
         ///     Waits for the character to become ready. Returns immediately if already ready.
@@ -693,174 +729,74 @@ namespace Convai.Runtime.Components
         ///     Use 0 or negative to wait indefinitely.
         /// </param>
         /// <param name="cancellationToken">Token to cancel the wait operation.</param>
-        /// <returns>True if character became ready; false if timeout expired or cancelled.</returns>
-        public async Task<bool> WaitForCharacterReadyAsync(float? timeoutSeconds = null,
-            CancellationToken cancellationToken = default)
-        {
-            if (IsCharacterReady) return true;
-
-            if (SessionState != SessionState.Connected && SessionState != SessionState.Connecting)
-            {
-                _logger?.Warning(
-                    $"[ConvaiCharacter] [{_characterName}] Cannot wait for CharacterReady: not connected (state={SessionState})");
-                return false;
-            }
-
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken, _destroyCts?.Token ?? CancellationToken.None);
-
-            TaskCompletionSource<bool> readyTcs = new();
-            lock (_characterReadyTcsLock)
-            {
-                if (_characterReadyTcs != null)
-                    readyTcs = _characterReadyTcs;
-                else
-                    _characterReadyTcs = readyTcs;
-            }
-
-            try
-            {
-                float timeout = timeoutSeconds ?? _characterReadyTimeoutSeconds;
-                return await WaitForCharacterReadyInternalAsync(readyTcs, timeout, linkedCts.Token);
-            }
-            finally
-            {
-                lock (_characterReadyTcsLock)
-                {
-                    if (_characterReadyTcs == readyTcs)
-                        _characterReadyTcs = null;
-                }
-            }
-        }
+        /// <returns>The completed lifecycle operation.</returns>
+        public IConvaiOperation<Unit> WaitForCharacterReadyAsync(float? timeoutSeconds = null,
+            CancellationToken cancellationToken = default) =>
+            ConvaiOperation<Unit>.FromTask(WaitForCharacterReadyAsyncCore(timeoutSeconds, cancellationToken));
 
         /// <summary>
         ///     Ends the current conversation gracefully.
         /// </summary>
         /// <param name="cancellationToken">Token to cancel the operation. Combined with component lifetime token.</param>
-        public async Task StopConversationAsync(CancellationToken cancellationToken = default)
+        public IConvaiOperation<Unit> StopConversationAsync(CancellationToken cancellationToken = default) =>
+            ConvaiOperation<Unit>.FromTask(StopConversationAsyncCore(cancellationToken));
+
+        /// <summary>
+        ///     Resets the character from Error state and immediately attempts to reconnect.
+        /// </summary>
+        /// <param name="cancellationToken">Token to cancel the operation.</param>
+        /// <returns>The completed lifecycle operation.</returns>
+        public IConvaiOperation<Unit> ResetAndRetryAsync(CancellationToken cancellationToken = default) =>
+            ConvaiOperation<Unit>.FromTask(ResetAndRetryAsyncCore(cancellationToken));
+
+        /// <summary>
+        ///     Toggles the conversation state. Starts if disconnected, ends if connected.
+        ///     This convenience wrapper exists for Unity UI button bindings.
+        ///     Note: This does NOT toggle remote audio playback. Use EnableRemoteAudio/DisableRemoteAudio/ToggleRemoteAudio for
+        ///     that.
+        ///     Toggle operations are serialized to prevent overlapping Start/Stop calls.
+        /// </summary>
+        public void ToggleSpeech()
         {
-            if (SessionState == SessionState.Disconnected) return;
-
-            lock (_characterReadyTcsLock)
+            lock (_toggleLock)
             {
-                _characterReadyTcs?.TrySetCanceled();
-                _characterReadyTcs = null;
-            }
+                if (_toggleTask != null && !_toggleTask.IsCompleted)
+                {
+                    Logger?.Warning(
+                        $"[{_characterName}] Toggle operation already in progress, ignoring duplicate call");
+                    return;
+                }
 
-            IsCharacterReady = false;
-            _isSpeaking = false;
-            ResetEmotionState();
-
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken, _destroyCts?.Token ?? CancellationToken.None);
-
-            try
-            {
-                await _connectionService.DisconnectAsync(cancellationToken: linkedCts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                _logger?.Debug($"[ConvaiCharacter] [{_characterName}] StopConversationAsync cancelled");
-            }
-            catch (Exception ex)
-            {
-                _logger?.Error($"[ConvaiCharacter] [{_characterName}] Disconnect failed: {ex.Message}");
+                if (SessionState is SessionState.Disconnected or SessionState.Error)
+                {
+                    Logger?.Debug($"[{_characterName}] Starting conversation after toggle");
+                    _toggleTask = ToggleStartAsync();
+                }
+                else if (IsSessionConnected)
+                {
+                    Logger?.Debug($"[{_characterName}] Stopping conversation after toggle");
+                    _toggleTask = ToggleStopAsync();
+                }
+                else
+                {
+                    Logger?.Warning(
+                        $"[{_characterName}] Toggle called in transitional state {SessionState}, ignoring");
+                }
             }
         }
 
         /// <summary>
-        ///     Sends a trigger event to the conversation backend.
+        ///     Awaitable toggle variant for callers that need completion feedback.
         /// </summary>
-        /// <param name="triggerName">Name of the trigger to send.</param>
-        /// <param name="triggerMessage">Optional message payload.</param>
-        public void SendTrigger(string triggerName, string triggerMessage = null)
+        public IConvaiOperation<Unit> ToggleSpeechAsync()
         {
-            if (!IsInConversation)
+            ToggleSpeech();
+            lock (_toggleLock)
             {
-                _logger?.Warning($"[ConvaiCharacter] [{_characterName}] Cannot send trigger: not in conversation");
-                return;
+                return _toggleTask == null
+                    ? ConvaiOperation<Unit>.Succeeded(Unit.Value)
+                    : ConvaiOperation<Unit>.FromTask(WaitForTaskCompletionAsync(_toggleTask));
             }
-
-            if (!_connectionService.SendTrigger(triggerName, triggerMessage))
-            {
-                _logger?.Warning(
-                    $"[ConvaiCharacter] [{_characterName}] Connection not ready for trigger {triggerName}");
-            }
-        }
-
-        /// <summary>
-        ///     Sends dynamic context information to the backend.
-        ///     This is injected as a context update for the character.
-        /// </summary>
-        /// <param name="contextText">The dynamic context text to send.</param>
-        public void SendDynamicInfo(string contextText)
-        {
-            if (string.IsNullOrEmpty(contextText))
-            {
-                _logger?.Warning($"[ConvaiCharacter] [{_characterName}] Cannot send empty dynamic info");
-                return;
-            }
-
-            if (!IsInConversation)
-            {
-                _logger?.Warning($"[ConvaiCharacter] [{_characterName}] Cannot send dynamic info: not in conversation");
-                return;
-            }
-
-            if (!_connectionService.SendDynamicInfo(contextText))
-            {
-                _logger?.Warning($"[ConvaiCharacter] [{_characterName}] Connection not ready for dynamic info");
-                return;
-            }
-
-            _logger?.Debug($"[ConvaiCharacter] [{_characterName}] Sent dynamic info: {contextText}");
-        }
-
-        /// <summary>
-        ///     Updates template keys for narrative design placeholder resolution.
-        ///     Template keys like {PlayerName} in objectives will be replaced with the corresponding value.
-        /// </summary>
-        /// <param name="templateKeys">Dictionary of key-value pairs to update.</param>
-        public void UpdateTemplateKeys(Dictionary<string, string> templateKeys)
-        {
-            if (templateKeys == null || templateKeys.Count == 0)
-            {
-                _logger?.Warning($"[ConvaiCharacter] [{_characterName}] Cannot update empty template keys");
-                return;
-            }
-
-            if (!IsInConversation)
-            {
-                _logger?.Warning(
-                    $"[ConvaiCharacter] [{_characterName}] Cannot update template keys: not in conversation");
-                return;
-            }
-
-            if (!_connectionService.UpdateTemplateKeys(templateKeys))
-            {
-                _logger?.Warning($"[ConvaiCharacter] [{_characterName}] Connection not ready for template keys");
-                return;
-            }
-
-            _logger?.Debug($"[ConvaiCharacter] [{_characterName}] Updated {templateKeys.Count} template keys");
-        }
-
-        /// <summary>
-        ///     Programmatically configures the character ID and name.
-        /// </summary>
-        /// <param name="characterId">The character ID from the Convai dashboard.</param>
-        /// <param name="characterName">Optional display name (defaults to characterId).</param>
-        /// <exception cref="InvalidOperationException">Thrown if called during an active conversation.</exception>
-        public void Configure(string characterId, string characterName = null)
-        {
-            if (IsInConversation)
-            {
-                throw new InvalidOperationException(
-                    "Cannot configure character while in conversation. Call StopConversationAsync() first.");
-            }
-
-            _characterId = characterId;
-            _characterName = characterName ?? characterId;
         }
 
         /// <summary>
@@ -872,258 +808,34 @@ namespace Convai.Runtime.Components
         {
             if (SessionState == SessionState.Error || SessionState == SessionState.Disconnected)
             {
-                _logger?.Debug(
-                    $"[ConvaiCharacter] [{_characterName}] Resetting character ready state from {SessionState}");
+                Logger?.Debug(
+                    $"[{_characterName}] Resetting character ready state from {SessionState}");
                 IsCharacterReady = false;
                 return true;
             }
 
-            _logger?.Debug(
-                $"[ConvaiCharacter] [{_characterName}] Reset called but state is {SessionState}, not Error or Disconnected");
+            Logger?.Debug(
+                $"[{_characterName}] Reset called but state is {SessionState}, not Error or Disconnected");
             return false;
-        }
-
-        /// <summary>
-        ///     Resets the character from Error state and immediately attempts to reconnect.
-        /// </summary>
-        /// <param name="cancellationToken">Token to cancel the operation.</param>
-        /// <returns>True if reset and reconnection succeeded; false otherwise.</returns>
-        public async Task<bool> ResetAndRetryAsync(CancellationToken cancellationToken = default)
-        {
-            if (SessionState != SessionState.Error)
-            {
-                _logger?.Warning(
-                    $"[ConvaiCharacter] [{_characterName}] ResetAndRetryAsync called but state is {SessionState}, not Error");
-                return false;
-            }
-
-            _logger?.Info($"[ConvaiCharacter] [{_characterName}] Resetting from Error and retrying connection...");
-            IsCharacterReady = false;
-            return await StartConversationAsync(cancellationToken);
-        }
-
-        /// <summary>
-        ///     Toggles the conversation state. Starts if disconnected, ends if connected.
-        ///     This method is provided for backward compatibility with UI button bindings.
-        ///     Note: This does NOT toggle remote audio playback. Use EnableRemoteAudio/DisableRemoteAudio/ToggleRemoteAudio for
-        ///     that.
-        ///     Toggle operations are serialized to prevent overlapping Start/Stop calls.
-        /// </summary>
-        public void ToggleSpeech()
-        {
-            lock (_toggleLock)
-            {
-                if (_toggleTask != null && !_toggleTask.IsCompleted)
-                {
-                    _logger?.Warning(
-                        $"[ConvaiCharacter] [{_characterName}] Toggle operation already in progress, ignoring duplicate call");
-                    return;
-                }
-
-                if (SessionState is SessionState.Disconnected or SessionState.Error)
-                {
-                    _logger?.Debug($"[ConvaiCharacter] [{_characterName}] Starting conversation after toggle");
-                    _toggleTask = ToggleStartAsync();
-                }
-                else if (IsSessionConnected)
-                {
-                    _logger?.Debug($"[ConvaiCharacter] [{_characterName}] Stopping conversation after toggle");
-                    _toggleTask = ToggleStopAsync();
-                }
-                else
-                {
-                    _logger?.Warning(
-                        $"[ConvaiCharacter] [{_characterName}] Toggle called in transitional state {SessionState}, ignoring");
-                }
-            }
-        }
-
-        /// <summary>
-        ///     Async toggle variant that returns a task for awaiting.
-        /// </summary>
-        public Task ToggleSpeechAsync()
-        {
-            ToggleSpeech();
-            lock (_toggleLock) return _toggleTask ?? Task.CompletedTask;
-        }
-
-        private async Task ToggleStartAsync()
-        {
-            try
-            {
-                bool remoteAudioEnabled = IsRemoteAudioEnabled;
-                bool started = await StartConversationAsync();
-                if (started && !remoteAudioEnabled)
-                {
-                    _logger?.Info(
-                        $"[ConvaiCharacter] [{_characterName}] Connected in text-only mode (remote audio disabled). " +
-                        "Call EnableRemoteAudio() / ToggleRemoteAudio() to hear speech.");
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger?.Error($"[ConvaiCharacter] [{_characterName}] Toggle start failed: {ex.Message}");
-            }
-        }
-
-        private async Task ToggleStopAsync()
-        {
-            try
-            {
-                await StopConversationAsync();
-            }
-            catch (Exception ex)
-            {
-                _logger?.Error($"[ConvaiCharacter] [{_characterName}] Toggle stop failed: {ex.Message}");
-            }
         }
 
         #endregion
 
         #region Private Helpers
 
+        private static async Task<Unit> WaitForTaskCompletionAsync(Task task)
+        {
+            await task;
+            return Unit.Value;
+        }
+
         private void RegisterWithLocator()
         {
-            if (_isRegisteredWithLocator || _locatorService == null) return;
-
-            _locatorService.AddCharacter(this);
-            _isRegisteredWithLocator = true;
-            _logger?.Debug($"[ConvaiCharacter] [{_characterName}] Registered with locator");
+            AgentRegistry?.RegisterCharacter(this, OwnerId);
+            Logger?.Debug($"[{_characterName}] Registered with agent registry");
         }
 
-        private void UnregisterFromLocator()
-        {
-            if (!_isRegisteredWithLocator || _locatorService == null) return;
-
-            _locatorService.RemoveCharacter(this);
-            _isRegisteredWithLocator = false;
-        }
-
-        private void SubscribeToEvents()
-        {
-            if (_eventHub != null)
-            {
-                _ttsTextToken = _eventHub.Subscribe<CharacterTtsTextChunk>(OnCharacterTtsTextReceived);
-                _speechStateToken = _eventHub.Subscribe<CharacterSpeechStateChanged>(OnSpeechStateChanged);
-                _characterReadyToken = _eventHub.Subscribe<CharacterReady>(OnCharacterReadyReceived);
-                _turnCompletedToken = _eventHub.Subscribe<CharacterTurnCompleted>(OnCharacterTurnCompleted);
-                _emotionToken = _eventHub.Subscribe<CharacterEmotionChanged>(OnCharacterEmotionReceived);
-            }
-            else
-                _logger?.Warning("[ConvaiCharacter] EventHub is null - cannot subscribe to events");
-
-            if (_connectionService != null) _connectionService.OnSessionStateChanged += OnSessionStateChangedInternal;
-        }
-
-        private void UnsubscribeFromEvents()
-        {
-            if (_eventHub != null)
-            {
-                if (_ttsTextToken != default) _eventHub.Unsubscribe(_ttsTextToken);
-                if (_speechStateToken != default) _eventHub.Unsubscribe(_speechStateToken);
-                if (_characterReadyToken != default) _eventHub.Unsubscribe(_characterReadyToken);
-                if (_turnCompletedToken != default) _eventHub.Unsubscribe(_turnCompletedToken);
-                if (_emotionToken != default) _eventHub.Unsubscribe(_emotionToken);
-            }
-
-            _ttsTextToken = default;
-            _speechStateToken = default;
-            _characterReadyToken = default;
-            _turnCompletedToken = default;
-            _emotionToken = default;
-
-            if (_connectionService != null) _connectionService.OnSessionStateChanged -= OnSessionStateChangedInternal;
-        }
-
-        private void OnSessionStateChangedInternal(SessionStateChanged e)
-        {
-            _logger?.Debug($"[ConvaiCharacter] [{_characterName}] Session state changed: {e.OldState} -> {e.NewState}");
-
-            if (e.NewState == SessionState.Disconnected || e.NewState == SessionState.Error)
-            {
-                IsCharacterReady = false;
-                _isSpeaking = false;
-                ResetEmotionState();
-            }
-
-            OnSessionStateChanged?.Invoke(e.NewState);
-        }
-
-        private void OnCharacterReadyReceived(CharacterReady e)
-        {
-            bool matchesCharacterId = string.Equals(e.CharacterId, _characterId, StringComparison.OrdinalIgnoreCase);
-            bool matchesParticipantId =
-                !string.IsNullOrEmpty(e.ParticipantId) &&
-                e.ParticipantId.Contains(_characterId, StringComparison.OrdinalIgnoreCase);
-
-            if (!matchesCharacterId && !matchesParticipantId) return;
-
-            _logger?.Info($"[ConvaiCharacter] [{_characterName}] Received character ready signal");
-            IsCharacterReady = true;
-        }
-
-        private void OnCharacterTtsTextReceived(CharacterTtsTextChunk chunk)
-        {
-            if (!IsMatchingCharacter(chunk.ParticipantId)) return;
-
-            OnTranscriptReceived?.Invoke(chunk.Text, chunk.IsFinal);
-        }
-
-        private void OnSpeechStateChanged(CharacterSpeechStateChanged e)
-        {
-            if (!string.Equals(e.CharacterId, _characterId, StringComparison.OrdinalIgnoreCase)) return;
-
-            _isSpeaking = e.IsSpeaking;
-
-            if (e.IsSpeaking)
-                OnSpeechStarted?.Invoke();
-            else
-                OnSpeechStopped?.Invoke();
-        }
-
-        private void OnCharacterEmotionReceived(CharacterEmotionChanged e)
-        {
-            if (!string.Equals(e.CharacterId, _characterId, StringComparison.OrdinalIgnoreCase)) return;
-
-            SetEmotionState(e.Emotion, e.Intensity);
-            OnEmotionChanged?.Invoke(e.Emotion, e.Intensity);
-        }
-
-        private void SetEmotionState(string emotion, int intensity)
-        {
-            lock (_emotionStateLock)
-            {
-                _currentEmotion = emotion;
-                _currentEmotionIntensity = intensity;
-            }
-        }
-
-        private void ResetEmotionState()
-        {
-            lock (_emotionStateLock)
-            {
-                _currentEmotion = null;
-                _currentEmotionIntensity = 0;
-            }
-        }
-
-        private void OnCharacterTurnCompleted(CharacterTurnCompleted e)
-        {
-            bool matchesCharacterId = string.Equals(e.CharacterId, _characterId, StringComparison.OrdinalIgnoreCase);
-            bool matchesParticipantId = !string.IsNullOrEmpty(e.ParticipantId) &&
-                                        e.ParticipantId.Contains(_characterId, StringComparison.OrdinalIgnoreCase);
-
-            if (!matchesCharacterId && !matchesParticipantId) return;
-
-            _logger?.Debug($"[ConvaiCharacter] [{_characterName}] Turn completed (interrupted={e.WasInterrupted})");
-            OnTurnCompleted?.Invoke(e.WasInterrupted);
-        }
-
-        private bool IsMatchingCharacter(string participantIdOrCharacterId)
-        {
-            return !string.IsNullOrEmpty(participantIdOrCharacterId) &&
-                   participantIdOrCharacterId.Contains(_characterId, StringComparison.OrdinalIgnoreCase);
-        }
+        private void UnregisterFromLocator() => AgentRegistry?.Unregister(this);
 
         #endregion
     }

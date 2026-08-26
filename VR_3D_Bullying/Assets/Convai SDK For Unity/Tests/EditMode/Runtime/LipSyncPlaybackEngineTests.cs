@@ -65,6 +65,42 @@ namespace Convai.Tests.EditMode.Runtime
         }
 
         [Test]
+        public void Tick_WithInsufficientInitialHeadroom_RemainsBufferingUntilMoreFramesArrive()
+        {
+            // Arrange
+            _engine.BeginStream(new[] { "A" }, 60f);
+            FeedRamp(4);
+            _engine.NotifyAudioPlaybackStarted();
+            _clock.SetElapsed(0d);
+
+            // Act
+            bool updated = _engine.Tick(_clock.ElapsedSeconds, 1f / 60f);
+
+            // Assert
+            Assert.IsFalse(updated);
+            Assert.AreEqual(PlaybackState.Buffering, _engine.State);
+        }
+
+        [Test]
+        public void Tick_AfterInsufficientInitialHeadroom_WhenMoreFramesArrive_TransitionsToPlaying()
+        {
+            // Arrange
+            _engine.BeginStream(new[] { "A" }, 60f);
+            FeedRamp(4);
+            _engine.NotifyAudioPlaybackStarted();
+            _clock.SetElapsed(0d);
+            _engine.Tick(_clock.ElapsedSeconds, 1f / 60f);
+            FeedRamp(8);
+
+            // Act
+            bool updated = _engine.Tick(_clock.ElapsedSeconds, 1f / 60f);
+
+            // Assert
+            Assert.IsTrue(updated);
+            Assert.AreEqual(PlaybackState.Playing, _engine.State);
+        }
+
+        [Test]
         public void Tick_WhenPlaybackPassesBufferWithoutStreamEnd_TransitionsToStarving()
         {
             // Arrange
@@ -237,6 +273,34 @@ namespace Convai.Tests.EditMode.Runtime
         }
 
         [Test]
+        public void NotifyAudioPlaybackStopped_WhenPlaying_TransitionsToFadingOut()
+        {
+            // Arrange
+            StartAndEnterPlayingState();
+
+            // Act
+            _engine.NotifyAudioPlaybackStopped();
+
+            // Assert
+            Assert.AreEqual(PlaybackState.FadingOut, _engine.State);
+        }
+
+        [Test]
+        public void NotifyAudioPlaybackStarted_WhenFadingOutWithBuffer_ResumesPlaying()
+        {
+            // Arrange
+            StartAndEnterPlayingState();
+            _engine.NotifyAudioPlaybackStopped();
+            Assert.AreEqual(PlaybackState.FadingOut, _engine.State);
+
+            // Act
+            _engine.NotifyAudioPlaybackStarted();
+
+            // Assert
+            Assert.AreEqual(PlaybackState.Playing, _engine.State);
+        }
+
+        [Test]
         public void FeedFrames_DuringFadingOut_DoesNotRestartPlayback()
         {
             // Arrange
@@ -293,6 +357,61 @@ namespace Convai.Tests.EditMode.Runtime
             Assert.AreEqual(PlaybackState.Buffering, _engine.State);
         }
 
+        [Test]
+        public void Tick_WithSendAheadRetention_SamplesStartAndTailBeyondConfiguredBuffer()
+        {
+            // Arrange
+            LipSyncPlaybackEngine engine = new(new LipSyncEngineConfig(
+                smoothingFactor: 0f,
+                timeOffsetSeconds: 0f,
+                maxBufferedSeconds: 1f,
+                minResumeHeadroomSeconds: 0.05f,
+                retainFutureFrames: true));
+            engine.BeginStream(new[] { "A" }, 60f);
+            engine.FeedFrames(CreateRampFrames(360));
+            engine.NotifyAudioPlaybackStarted();
+
+            // Act
+            bool startUpdated = engine.Tick(0.02d, 1f / 60f);
+            float startValue = engine.OutputValues[0];
+            bool tailUpdated = engine.Tick(5.8d, 1f / 60f);
+            float tailValue = engine.OutputValues[0];
+
+            // Assert
+            Assert.IsTrue(startUpdated);
+            Assert.IsTrue(tailUpdated);
+            Assert.Less(startValue, 0.1f);
+            Assert.Greater(tailValue, 0.8f);
+        }
+
+        [Test]
+        public void TimelineRebaseBlend_SoftensDiscontinuityAndConvergesWithinEightyMilliseconds()
+        {
+            LipSyncPlaybackEngine engine = new(new LipSyncEngineConfig(
+                smoothingFactor: 0f,
+                timeOffsetSeconds: 0f,
+                minResumeHeadroomSeconds: 0f,
+                retainFutureFrames: true));
+            engine.BeginStream(new[] { "A" }, 60f);
+            var frames = new float[60][];
+            for (int i = 0; i < frames.Length; i++) frames[i] = new[] { i < 30 ? 0f : 1f };
+            engine.FeedFrames(frames);
+            engine.NotifyAudioPlaybackStarted();
+            engine.Tick(0d, 1f / 60f);
+
+            engine.BeginTimelineRebaseBlend(0.5d, 0.08f);
+            engine.Tick(0.5d, 1f / 60f);
+            float atJump = engine.OutputValues[0];
+            engine.Tick(0.54d, 1f / 60f);
+            float halfway = engine.OutputValues[0];
+            engine.Tick(0.58d, 1f / 60f);
+            float settled = engine.OutputValues[0];
+
+            Assert.AreEqual(0f, atJump, 0.0001f);
+            Assert.That(halfway, Is.InRange(0.4f, 0.6f));
+            Assert.AreEqual(1f, settled, 0.0001f);
+        }
+
         private void StartAndEnterPlayingState()
         {
             _engine.BeginStream(new[] { "A" }, 60f);
@@ -304,10 +423,14 @@ namespace Convai.Tests.EditMode.Runtime
 
         private void FeedRamp(int count)
         {
+            _engine.FeedFrames(CreateRampFrames(count));
+        }
+
+        private static float[][] CreateRampFrames(int count)
+        {
             float[][] frames = new float[count][];
             for (int i = 0; i < count; i++) frames[i] = new[] { (float)i / count };
-
-            _engine.FeedFrames(frames);
+            return frames;
         }
 
         private void TickEngineMultipleFrames(int frameCount)

@@ -24,17 +24,10 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections
 
         private bool _isAttached;
 
-        /// <summary>
-        ///     Initializes a new instance of the <see cref="ConvaiWelcomeSection" /> class.
-        /// </summary>
         public ConvaiWelcomeSection() : this(null)
         {
         }
 
-        /// <summary>
-        ///     Initializes a new instance of the <see cref="ConvaiWelcomeSection" /> class.
-        /// </summary>
-        /// <param name="context">Shared window context.</param>
         public ConvaiWelcomeSection(ConfigurationWindowContext context)
         {
             _context = context;
@@ -45,7 +38,8 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections
             Add(ConvaiVisualElementUtility.CreateLabel("welcome-subheader", _content.WelcomeSubheader, "subheader"));
 
             VisualElement betaCard = CreateCard();
-            betaCard.Add(ConvaiVisualElementUtility.CreateLabel("beta-title", $"Current SDK Version: {ConvaiSDK.Version}", "label"));
+            betaCard.Add(ConvaiVisualElementUtility.CreateLabel("beta-title",
+                $"Current SDK Version: {ConvaiSDK.Version}", "label"));
             Add(betaCard);
 
             VisualElement quickStartCard = CreateCard();

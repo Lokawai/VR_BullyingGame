@@ -1,6 +1,5 @@
-using Convai.Shared;
+using Convai.Runtime.Components;
 using Convai.Shared.Abstractions;
-using Convai.Shared.DependencyInjection;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
@@ -12,32 +11,26 @@ namespace Convai.Runtime.Presentation.Views
     ///     Used by Basic Sample transcript UIs (Chat / QA / Subtitle).
     /// </summary>
     [RequireComponent(typeof(Graphic))]
-    public class ConvaiSettingsClickArea : MonoBehaviour, IPointerClickHandler, IInjectable
+    public class ConvaiSettingsClickArea : MonoBehaviour, IPointerClickHandler
     {
-        private IServiceContainer _container;
         private IConvaiSettingsPanelController _panelController;
-
-        /// <inheritdoc />
-        public void InjectServices(IServiceContainer container)
-        {
-            _container = container;
-            container.TryGet(out IConvaiSettingsPanelController panelController);
-            _panelController = panelController;
-        }
 
         public void OnPointerClick(PointerEventData eventData)
         {
-            EnsurePanelController();
+            TryResolveDependencies();
             _panelController?.Open();
         }
 
         public void Inject(IConvaiSettingsPanelController panelController = null) => _panelController = panelController;
 
-        private void EnsurePanelController()
+        private void TryResolveDependencies()
         {
             if (_panelController != null) return;
 
-            _container?.TryGet(out _panelController);
+            ConvaiManager manager = ConvaiManager.ActiveManager;
+            if (manager != null &&
+                manager.TryGetSettingsPanelController(out IConvaiSettingsPanelController panelController))
+                Inject(panelController);
         }
     }
 }

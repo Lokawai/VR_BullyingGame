@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using Convai.Domain.Models.LipSync;
 using Convai.Modules.LipSync.Profiles;
 using UnityEngine;
@@ -12,6 +13,12 @@ namespace Convai.Modules.LipSync
     [CreateAssetMenu(fileName = "ConvaiLipSyncMapAsset", menuName = "Convai/Lip Sync/Lip Sync Map")]
     public sealed class ConvaiLipSyncMapAsset : ScriptableObject
     {
+        /// <summary>Lower bound for per-entry response curve exponents.</summary>
+        public const float MinCurveExponent = 0.25f;
+
+        /// <summary>Upper bound for per-entry response curve exponents.</summary>
+        public const float MaxCurveExponent = 4f;
+
         private static readonly IReadOnlyList<string> EmptySourceBlendshapeNames = Array.Empty<string>();
 
         [SerializeField] private string _targetProfileId = LipSyncProfileId.ARKitValue;
@@ -27,6 +34,7 @@ namespace Convai.Modules.LipSync
             new(StringComparer.OrdinalIgnoreCase);
 
         private bool _isCacheValid;
+        private ReadOnlyCollection<BlendshapeMappingEntry> _readOnlyMappings;
         private IReadOnlyList<string> _sourceBlendshapeNames;
 
         /// <summary>Profile id this map targets.</summary>
@@ -36,7 +44,8 @@ namespace Convai.Modules.LipSync
         public string Description => _description;
 
         /// <summary>Raw mapping entries defined on this asset.</summary>
-        public IReadOnlyList<BlendshapeMappingEntry> Mappings => _mappings;
+        public IReadOnlyList<BlendshapeMappingEntry> Mappings =>
+            _readOnlyMappings ??= (_mappings ??= new List<BlendshapeMappingEntry>()).AsReadOnly();
 
         /// <summary>Global multiplier applied when entries do not ignore global modifiers.</summary>
         public float GlobalMultiplier => _globalMultiplier;
@@ -50,6 +59,7 @@ namespace Convai.Modules.LipSync
         private void OnValidate()
         {
             _targetProfileId = LipSyncProfileId.Normalize(_targetProfileId);
+            _readOnlyMappings = null;
             InvalidateCache();
         }
 
@@ -132,6 +142,7 @@ namespace Convai.Modules.LipSync
                     targetNames = new List<string>(),
                     multiplier = 1f,
                     offset = 0f,
+                    curveExponent = 1f,
                     enabled = false,
                     useOverrideValue = false,
                     overrideValue = 0f,
@@ -176,7 +187,7 @@ namespace Convai.Modules.LipSync
             }
 
             _sourceBlendshapeNames = _sourceBlendshapeNamesBuffer.Count > 0
-                ? _sourceBlendshapeNamesBuffer.ToArray()
+                ? Array.AsReadOnly(_sourceBlendshapeNamesBuffer.ToArray())
                 : EmptySourceBlendshapeNames;
             _isCacheValid = true;
         }
@@ -201,6 +212,13 @@ namespace Convai.Modules.LipSync
 
             /// <summary>Per-entry additive offset applied before clamping.</summary>
             [Range(-1f, 1f)] public float offset;
+
+            /// <summary>
+            ///     Response curve exponent applied to the normalized source value before gain.
+            ///     1 = linear. Below 1 lifts the mid-range so subtle motion reads clearly
+            ///     (more expressive articulation); above 1 suppresses low-level noise.
+            /// </summary>
+            [Range(MinCurveExponent, MaxCurveExponent)] public float curveExponent = 1f;
 
             /// <summary>Whether this mapping entry is active.</summary>
             public bool enabled = true;
@@ -234,6 +252,7 @@ namespace Convai.Modules.LipSync
             public bool IgnoreGlobalModifiers { get; }
             public float Multiplier { get; }
             public float Offset { get; }
+            public float CurveExponent { get; }
             public float ClampMinValue { get; }
             public float ClampMaxValue { get; }
 
@@ -248,138 +267,18 @@ namespace Convai.Modules.LipSync
                 IgnoreGlobalModifiers = entry.ignoreGlobalModifiers;
                 Multiplier = entry.multiplier;
                 Offset = entry.offset;
+                // Assets serialized before curveExponent existed deserialize it as 0;
+                // treat anything out of range as linear.
+                CurveExponent = entry.curveExponent >= MinCurveExponent && entry.curveExponent <= MaxCurveExponent
+                    ? entry.curveExponent
+                    : 1f;
                 ClampMinValue = entry.clampMinValue;
                 ClampMaxValue = entry.clampMaxValue;
                 TargetNames = entry.targetNames != null
-                    ? entry.targetNames
+                    ? entry.targetNames.AsReadOnly()
                     : Array.Empty<string>();
             }
         }
 
-#if UNITY_EDITOR
-        /// <summary>
-        ///     Removes all mapping entries.
-        /// </summary>
-        public void ClearMappings()
-        {
-            _mappings.Clear();
-            InvalidateCache();
-        }
-
-        /// <summary>
-        ///     Initializes one enabled passthrough-style entry per known source channel for the target profile.
-        /// </summary>
-        public void InitializeWithDefaults()
-        {
-            _mappings.Clear();
-            IReadOnlyList<string> sourceNames = GetSourceBlendshapeNamesForTargetProfile();
-            for (int i = 0; i < sourceNames.Count; i++)
-            {
-                _mappings.Add(new BlendshapeMappingEntry
-                {
-                    sourceBlendshape = sourceNames[i], enabled = true, multiplier = 1f, clampMaxValue = 1f
-                });
-            }
-
-            InvalidateCache();
-        }
-
-        /// <summary>
-        ///     Auto-detects mappings by matching source channels against blendshape names in provided meshes.
-        /// </summary>
-        public void AutoDetectFromMeshes(IEnumerable<SkinnedMeshRenderer> meshes,
-            BlendshapeMatchMode mode = BlendshapeMatchMode.Contains)
-        {
-            if (meshes == null) return;
-
-            HashSet<string> uniqueNames = new(StringComparer.OrdinalIgnoreCase);
-            List<string> meshBlendshapeNames = new();
-            foreach (SkinnedMeshRenderer mesh in meshes)
-            {
-                if (mesh == null || mesh.sharedMesh == null) continue;
-
-                Mesh sharedMesh = mesh.sharedMesh;
-                for (int i = 0; i < sharedMesh.blendShapeCount; i++)
-                {
-                    string blendshapeName = sharedMesh.GetBlendShapeName(i);
-                    if (uniqueNames.Add(blendshapeName)) meshBlendshapeNames.Add(blendshapeName);
-                }
-            }
-
-            if (meshBlendshapeNames.Count == 0) return;
-
-            IReadOnlyList<string> sourceSchema = GetSourceBlendshapeNamesForTargetProfile();
-            if (sourceSchema.Count == 0) sourceSchema = meshBlendshapeNames;
-
-            _mappings.Clear();
-            for (int i = 0; i < sourceSchema.Count; i++)
-            {
-                string sourceBlendshape = sourceSchema[i];
-                string matchedName = FindBestMatch(sourceBlendshape, meshBlendshapeNames, mode);
-                bool hasMatch = !string.IsNullOrEmpty(matchedName);
-
-                _mappings.Add(new BlendshapeMappingEntry
-                {
-                    sourceBlendshape = sourceBlendshape,
-                    targetNames = hasMatch ? new List<string> { matchedName } : new List<string>(),
-                    enabled = hasMatch,
-                    multiplier = 1f,
-                    clampMaxValue = 1f
-                });
-            }
-
-            InvalidateCache();
-        }
-#endif
-
-#if UNITY_EDITOR
-        private static string FindBestMatch(string sourceName, List<string> meshNames, BlendshapeMatchMode mode)
-        {
-            foreach (string meshName in meshNames)
-            {
-                if (string.Equals(meshName, sourceName, StringComparison.OrdinalIgnoreCase))
-                    return meshName;
-            }
-
-            if (mode == BlendshapeMatchMode.Exact) return null;
-
-            string sourceLower = sourceName.ToLowerInvariant();
-            foreach (string meshName in meshNames)
-            {
-                string meshLower = meshName.ToLowerInvariant();
-                if (meshLower.Contains(sourceLower) || sourceLower.Contains(meshLower)) return meshName;
-            }
-
-            if (mode == BlendshapeMatchMode.Contains) return null;
-
-            string cleanedSource = CleanBlendshapeName(sourceName);
-            foreach (string meshName in meshNames)
-            {
-                string cleanedMesh = CleanBlendshapeName(meshName);
-                if (string.Equals(cleanedSource, cleanedMesh, StringComparison.OrdinalIgnoreCase)) return meshName;
-            }
-
-            return null;
-        }
-
-        private static readonly string[] BlendshapeNamePrefixes =
-        {
-            "CTRL_expressions_", "blendShape.", "bs_", "BS_", "Shape_", "CC_Base_", "CC_Game_", "RL_"
-        };
-
-        private static string CleanBlendshapeName(string name)
-        {
-            foreach (string prefix in BlendshapeNamePrefixes)
-            {
-                if (name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                    return name.Substring(prefix.Length);
-            }
-
-            return name;
-        }
-
-        private IReadOnlyList<string> GetSourceBlendshapeNamesForTargetProfile() =>
-            ResolveSourceBlendshapeNames(TargetProfileId);
-#endif
     }
 }

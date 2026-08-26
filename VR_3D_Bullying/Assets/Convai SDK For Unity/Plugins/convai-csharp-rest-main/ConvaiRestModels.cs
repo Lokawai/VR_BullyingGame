@@ -89,6 +89,43 @@ namespace Convai.RestAPI
     }
 
     /// <summary>
+    /// Voice activity detection parameters sent with room connection requests.
+    /// Defaults match core-service <c>ConnectRequest.vad_params</c> (models/api.py VAD_*).
+    /// </summary>
+    [Serializable]
+    public class VadParams
+    {
+        public const float DefaultConfidence = 0.7f;
+        public const float DefaultStartSecs = 0.2f;
+        public const float DefaultStopSecs = 0.2f;
+        public const float DefaultMinVolume = 0.6f;
+
+        /// <summary>
+        /// Confidence threshold used by backend VAD.
+        /// </summary>
+        [JsonProperty("confidence")]
+        public float Confidence { get; set; } = DefaultConfidence;
+
+        /// <summary>
+        /// Speech duration in seconds before VAD treats user speech as started.
+        /// </summary>
+        [JsonProperty("start_secs")]
+        public float StartSecs { get; set; } = DefaultStartSecs;
+
+        /// <summary>
+        /// Silence duration in seconds before VAD treats user speech as stopped.
+        /// </summary>
+        [JsonProperty("stop_secs")]
+        public float StopSecs { get; set; } = DefaultStopSecs;
+
+        /// <summary>
+        /// Minimum volume threshold used by backend VAD.
+        /// </summary>
+        [JsonProperty("min_volume")]
+        public float MinVolume { get; set; } = DefaultMinVolume;
+    }
+
+    /// <summary>
     /// Configuration for blendshape facial animation (face sync / lip sync).
     /// Sent as part of the room connection request when lip sync transport is enabled.
     /// </summary>
@@ -107,13 +144,15 @@ namespace Convai.RestAPI
             int chunkSize,
             int outputFps,
             string format,
-            float framesBufferDuration = 0f)
+            float framesBufferDuration = 0f,
+            bool deliverChunksAhead = false)
         {
             EnableChunking = enableChunking;
             ChunkSize = chunkSize;
             OutputFps = outputFps;
             Format = format ?? string.Empty;
             FramesBufferDuration = framesBufferDuration;
+            DeliverChunksAhead = deliverChunksAhead;
         }
 
         /// <summary>Whether the server should send blendshapes in chunked packets.</summary>
@@ -138,6 +177,10 @@ namespace Convai.RestAPI
         /// <summary>Optional client-side buffering hint for the negotiated lip-sync transport.</summary>
         [JsonProperty("frames_buffer_duration")]
         public float FramesBufferDuration { get; set; }
+
+        /// <summary>Opt-in capability for indexed chunks sent ahead of audio playback.</summary>
+        [JsonProperty("deliver_chunks_ahead", DefaultValueHandling = DefaultValueHandling.Ignore)]
+        public bool DeliverChunksAhead { get; set; }
     }
 
     /// <summary>

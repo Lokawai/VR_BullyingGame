@@ -1,14 +1,10 @@
 {
-    "name": "Convai.Infrastructure.Networking.Native",
-    "rootNamespace": "Convai.Infrastructure.Networking.Native",
+    "name": "Convai.Transport.Native",
+    "rootNamespace": "Convai.Infrastructure.Networking",
     "references": [
-        "Convai.Infrastructure.Networking.Abstractions",
-        "Convai.Infrastructure.Networking",
-        "Convai.Infrastructure.Protocol",
         "Convai.Domain",
-        "Convai.Runtime",
-        "Convai.Shared",
         "Convai.RestAPI",
+        "Convai.Runtime",
         "LiveKit",
         "Newtonsoft.Json"
     ],

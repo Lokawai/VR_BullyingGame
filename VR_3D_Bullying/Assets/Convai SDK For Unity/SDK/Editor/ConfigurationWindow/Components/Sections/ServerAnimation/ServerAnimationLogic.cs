@@ -62,7 +62,7 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.ServerAnimation
             _isSectionVisible = isVisible;
             if (!_isSectionVisible)
             {
-                _requestVersion++;
+                CancelPendingRequests();
                 return;
             }
 
@@ -78,7 +78,7 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.ServerAnimation
             }
 
             _isDisposed = true;
-            _requestVersion++;
+            CancelPendingRequests();
 
             _ui.RefreshButton.clicked -= RefreshAnimationList;
             _ui.ImportButton.clicked -= ImportButtonOnClicked;
@@ -98,6 +98,7 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.ServerAnimation
                 return;
             }
 
+            CancelPendingRequests();
             if (hasApiKey)
             {
                 RefreshAnimationList();
@@ -106,6 +107,12 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.ServerAnimation
             {
                 _ui.AnimationContainer.contentContainer.Clear();
             }
+        }
+
+        private void CancelPendingRequests()
+        {
+            _requestVersion++;
+            _isRefreshing = false;
         }
 
         private void NextButtonOnClicked()
@@ -181,7 +188,7 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.ServerAnimation
 
             try
             {
-                ConvaiRestClientOptions options = new ConvaiRestClientOptions(settings.ApiKey);
+                ConvaiRestClientOptions options = ConvaiRestOptionsFactory.Create(settings.ApiKey);
                 using ConvaiRestClient client = new ConvaiRestClient(options);
                 ServerAnimationListResponse response = await client.Animations.GetListAsync(_currentPage, "success");
 
@@ -249,7 +256,7 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.ServerAnimation
 
             try
             {
-                ConvaiRestClientOptions options = new ConvaiRestClientOptions(_apiKey);
+                ConvaiRestClientOptions options = ConvaiRestOptionsFactory.Create(_apiKey);
                 using ConvaiRestClient client = new ConvaiRestClient(options);
                 byte[] bytes = await client.DownloadFileAsync(animation.ThumbnailURL);
                 Texture2D texture = new Texture2D(256, 256);

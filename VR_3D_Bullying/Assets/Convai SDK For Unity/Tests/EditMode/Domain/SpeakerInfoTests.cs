@@ -3,158 +3,60 @@ using NUnit.Framework;
 
 namespace Convai.Tests.EditMode.Domain
 {
-    /// <summary>
-    ///     Unit tests for <see cref="SpeakerInfo" /> struct.
-    /// </summary>
-    public class SpeakerInfoTests
+    public sealed class SpeakerInfoTests
     {
-        [Test]
-        public void Constructor_Sets_All_Fields()
+        [TestCase("speaker-1", "Rishav", true)]
+        [TestCase("speaker-1", null, true)]
+        [TestCase(null, "Rishav", true)]
+        [TestCase(null, null, false)]
+        public void Validity_RequiresAnIdentity(string speakerId, string speakerName, bool expected)
         {
-            var info = new SpeakerInfo(
-                "speaker-123",
-                "John",
-                "PA_xyz"
-            );
+            var speaker = new SpeakerInfo(speakerId, speakerName, null);
+            Assert.That(speaker.IsValid, Is.EqualTo(expected));
+        }
 
-            Assert.AreEqual("speaker-123", info.SpeakerId);
-            Assert.AreEqual("John", info.SpeakerName);
-            Assert.AreEqual("PA_xyz", info.ParticipantId);
-            Assert.AreEqual(SpeakerType.Player, info.SpeakerType);
+        [TestCase("local-player", "You", true)]
+        [TestCase(null, "Guest", true)]
+        [TestCase("speaker-1", "Rishav", false)]
+        public void DefaultPlayerDetection_UsesReservedOrMissingId(
+            string speakerId,
+            string speakerName,
+            bool expected)
+        {
+            var speaker = new SpeakerInfo(speakerId, speakerName, null);
+            Assert.That(speaker.IsDefaultPlayer, Is.EqualTo(expected));
+        }
+
+        [TestCase("speaker-1", "Rishav", "Rishav")]
+        [TestCase("speaker-1", null, "speaker-1")]
+        [TestCase(null, null, "Unknown")]
+        public void DisplayName_UsesNameThenIdThenFallback(
+            string speakerId,
+            string speakerName,
+            string expected)
+        {
+            var speaker = new SpeakerInfo(speakerId, speakerName, null);
+            Assert.That(speaker.GetDisplayName(), Is.EqualTo(expected));
         }
 
         [Test]
-        public void Constructor_Handles_Null_Values()
+        public void NullConstructorValues_AreNormalized()
         {
-            var info = new SpeakerInfo(null, null, null);
-
-            Assert.AreEqual(string.Empty, info.SpeakerId);
-            Assert.AreEqual(string.Empty, info.SpeakerName);
-            Assert.AreEqual(string.Empty, info.ParticipantId);
+            var speaker = new SpeakerInfo(null, null, null);
+            Assert.That((speaker.SpeakerId, speaker.SpeakerName, speaker.ParticipantId),
+                Is.EqualTo((string.Empty, string.Empty, string.Empty)));
         }
 
         [Test]
-        public void IsValid_Returns_True_When_SpeakerId_Set()
-        {
-            var info = new SpeakerInfo("speaker-123", null, null);
-
-            Assert.IsTrue(info.IsValid);
-        }
-
-        [Test]
-        public void IsValid_Returns_True_When_SpeakerName_Set()
-        {
-            var info = new SpeakerInfo(null, "John", null);
-
-            Assert.IsTrue(info.IsValid);
-        }
-
-        [Test]
-        public void IsValid_Returns_False_When_Both_Empty()
-        {
-            var info = new SpeakerInfo(null, null, null);
-
-            Assert.IsFalse(info.IsValid);
-        }
-
-        [Test]
-        public void DefaultPlayer_Returns_Valid_Default()
-        {
-            var info = SpeakerInfo.DefaultPlayer;
-
-            Assert.AreEqual("local-player", info.SpeakerId);
-            Assert.AreEqual("You", info.SpeakerName);
-            Assert.AreEqual(SpeakerType.Player, info.SpeakerType);
-            Assert.IsTrue(info.IsValid);
-        }
-
-        [Test]
-        public void Empty_Returns_Invalid_SpeakerInfo()
-        {
-            var info = SpeakerInfo.Empty;
-
-            Assert.IsFalse(info.IsValid);
-            Assert.AreEqual(string.Empty, info.SpeakerId);
-            Assert.AreEqual(string.Empty, info.SpeakerName);
-        }
-
-        [Test]
-        public void IsDefaultPlayer_Returns_True_For_LocalPlayer()
-        {
-            var info = new SpeakerInfo("local-player", "You", null);
-
-            Assert.IsTrue(info.IsDefaultPlayer);
-        }
-
-        [Test]
-        public void IsDefaultPlayer_Returns_True_For_Empty_SpeakerId()
-        {
-            var info = new SpeakerInfo(null, "Some Name", null);
-
-            Assert.IsTrue(info.IsDefaultPlayer);
-        }
-
-        [Test]
-        public void IsDefaultPlayer_Returns_False_For_Custom_SpeakerId()
-        {
-            var info = new SpeakerInfo("custom-speaker-id", "John", null);
-
-            Assert.IsFalse(info.IsDefaultPlayer);
-        }
-
-        [Test]
-        public void GetDisplayName_Returns_SpeakerName_When_Set()
-        {
-            var info = new SpeakerInfo("speaker-123", "John", null);
-
-            Assert.AreEqual("John", info.GetDisplayName());
-        }
-
-        [Test]
-        public void GetDisplayName_Returns_SpeakerId_When_Name_Empty()
-        {
-            var info = new SpeakerInfo("speaker-123", null, null);
-
-            Assert.AreEqual("speaker-123", info.GetDisplayName());
-        }
-
-        [Test]
-        public void GetDisplayName_Returns_Unknown_When_Both_Empty()
-        {
-            var info = new SpeakerInfo(null, null, null);
-
-            Assert.AreEqual("Unknown", info.GetDisplayName());
-        }
-
-        [Test]
-        public void FromMessage_Creates_SpeakerInfo_From_TranscriptMessage()
+        public void TranscriptMessage_RoundTripsSpeakerIdentity()
         {
             TranscriptMessage message = TranscriptMessage.ForPlayer(
-                "Hello",
-                true,
-                "speaker-123",
-                "John",
-                "PA_xyz"
-            );
+                "Hello", true, "speaker-1", "Rishav", "participant-1");
 
-            SpeakerInfo info = SpeakerInfo.FromMessage(message);
+            SpeakerInfo speaker = SpeakerInfo.FromMessage(message);
 
-            Assert.AreEqual("speaker-123", info.SpeakerId);
-            Assert.AreEqual("John", info.SpeakerName);
-            Assert.AreEqual("PA_xyz", info.ParticipantId);
-            Assert.AreEqual(SpeakerType.Player, info.SpeakerType);
-        }
-
-        [Test]
-        public void ToString_Returns_Formatted_String()
-        {
-            var info = new SpeakerInfo("speaker-123", "John", "PA_xyz");
-
-            string result = info.ToString();
-
-            Assert.IsTrue(result.Contains("Player"));
-            Assert.IsTrue(result.Contains("John"));
-            Assert.IsTrue(result.Contains("speaker-123"));
+            Assert.That((speaker.SpeakerId, speaker.SpeakerName, speaker.ParticipantId, speaker.SpeakerType),
+                Is.EqualTo(("speaker-1", "Rishav", "participant-1", SpeakerType.Player)));
         }
     }
 }

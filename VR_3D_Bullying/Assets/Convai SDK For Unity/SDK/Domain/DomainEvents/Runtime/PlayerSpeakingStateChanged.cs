@@ -9,25 +9,7 @@ namespace Convai.Domain.DomainEvents.Runtime
     /// <remarks>
     ///     This event is published via EventHub whenever the player starts or stops speaking,
     ///     based on Voice Activity Detection (VAD) from the server.
-    ///     Integration Example:
-    ///     <code>
-    /// 
-    /// _eventHub.Subscribe&lt;PlayerSpeakingStateChanged&gt;(e =>
-    /// {
-    ///     if (e.IsSpeaking)
-    ///     {
-    /// 
-    ///         microphoneIndicator.color = new Color(1, 1, 1, 1f);
-    ///     }
-    ///     else
-    ///     {
-    /// 
-    ///         microphoneIndicator.color = new Color(1, 1, 1, 0.5f);
-    ///     }
-    /// });
-    /// </code>
-    ///     Delivery Policy:
-    ///     - Use EventDeliveryPolicy.MainThread for UI updates (default)
+    ///     Use EventDeliveryPolicy.MainThread for UI updates.
     /// </remarks>
     public readonly struct PlayerSpeakingStateChanged
     {

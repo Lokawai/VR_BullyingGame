@@ -1,5 +1,6 @@
 using System.Reflection;
 using Convai.Runtime.Components;
+using Convai.Runtime.Core;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -59,6 +60,18 @@ namespace Convai.Tests.EditMode.Runtime
             object result = method.Invoke(null, new object[] { pointerPressedThisFrame, pointerOverUi });
 
             Assert.That(result, Is.EqualTo(expected));
+        }
+
+        [TestCase(RuntimeBackgroundPolicy.PauseTimeline, true, RuntimeBackgroundPolicy.MuteButCatchUp)]
+        [TestCase(RuntimeBackgroundPolicy.PauseTimeline, false, RuntimeBackgroundPolicy.PauseTimeline)]
+        [TestCase(RuntimeBackgroundPolicy.ContinueAudibly, true, RuntimeBackgroundPolicy.ContinueAudibly)]
+        [TestCase(RuntimeBackgroundPolicy.MuteButCatchUp, true, RuntimeBackgroundPolicy.MuteButCatchUp)]
+        public void ResolveEffectiveBackgroundPolicy_Uses_WebGL_TimelineFallback(
+            RuntimeBackgroundPolicy requested,
+            bool isWebGl,
+            RuntimeBackgroundPolicy expected)
+        {
+            Assert.AreEqual(expected, ConvaiManager.ResolveEffectiveBackgroundPolicy(requested, isWebGl));
         }
     }
 }

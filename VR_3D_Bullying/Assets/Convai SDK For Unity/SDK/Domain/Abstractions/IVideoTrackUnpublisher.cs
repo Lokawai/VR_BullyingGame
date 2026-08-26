@@ -4,13 +4,11 @@ using System.Threading.Tasks;
 namespace Convai.Domain.Abstractions
 {
     /// <summary>
-    ///     Unity-free port for video track unpublishing operations.
-    ///     Application layer uses this interface to stop video streams without depending on Unity types.
+    ///     Abstraction for video track unpublishing operations.
+    ///     Used to stop video streams without depending on Unity-specific types.
     /// </summary>
     /// <remarks>
-    ///     This interface is part of the Ports and Adapters pattern.
-    ///     The actual implementation lives in the Runtime layer (VideoTrackUnpublisherAdapter)
-    ///     and wraps the Unity-specific VideoTrackManager.
+    ///     Typically backed by a runtime video track manager.
     /// </remarks>
     public interface IVideoTrackUnpublisher
     {

@@ -12,21 +12,25 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 8ee72f77f95ef470ca9bda1cee186ec1, type: 3}
   m_Name: ConvaiSettings
   m_EditorClassIdentifier: Convai.Runtime::Convai.Runtime.ConvaiSettings
-  _apiKey: d12cf265acaa1897d48f219736d4cadb
+  _apiKeyObfuscated: cnv1:J15cFQdbGGYEFxUIX19KGSVEUS1XSBd4UVARRwAAEAs=
+  _apiKey: 
+  _authMode: 0
+  _authTokenEndpointUrl: 
+  _authTokenHttpMethod: 0
+  _authTokenResponseField: apiAuthToken
+  _authTokenHeaders: []
+  _apiEnvironment: 0
   _serverUrl: https://live.convai.com
-  _playerName: 
-  _defaultMicrophoneIndex: 0
+  _customRestBaseUrl: 
+  _defaultMicrophoneDeviceId: 
   _connectionTimeout: 30
-  _nativeRuntimeMode: 1
+  _characterAudioVolume: 1
+  _audioFeedbackEnabled: 1
+  _backgroundPolicy: 1
   _globalLogLevel: 3
   _includeStackTraces: 1
   _coloredOutput: 1
   _categoryOverrides: []
   _transcriptSystemEnabled: 1
   _notificationSystemEnabled: 0
-  _activeTranscriptStyleIndex: 0
-  _visionEnabled: 0
-  _visionCaptureWidth: 1280
-  _visionCaptureHeight: 720
-  _visionFrameRate: 15
-  _visionJpegQuality: 75
+  _defaultPlayerDisplayName: Player

@@ -1,5 +1,4 @@
 using Convai.Runtime.Behaviors;
-using Convai.Runtime.Services.CharacterLocator;
 using TMPro;
 using UnityEngine;
 
@@ -9,7 +8,7 @@ namespace Convai.Runtime.Presentation.Views.Transcript
     {
         [SerializeField] private TextMeshProUGUI senderUI;
         [SerializeField] private TextMeshProUGUI messageUI;
-        private IConvaiCharacterLocatorService _characterLocatorService;
+        private IAgentRegistry _agentRegistry;
         private string _interactionID;
         private string _message;
         public string Identifier { get; set; }
@@ -26,15 +25,15 @@ namespace Convai.Runtime.Presentation.Views.Transcript
         public void AppendMessage(string message) => SetMessage(messageUI.text + message);
         public void SetInteractionID(string interactionID) => _interactionID = interactionID;
 
-        public void SetLocatorService(IConvaiCharacterLocatorService locatorService) =>
-            _characterLocatorService = locatorService;
+        public void SetAgentRegistry(IAgentRegistry agentRegistry) =>
+            _agentRegistry = agentRegistry;
 
         public bool SendFeedback(bool isPositiveFeedback)
         {
             if (string.IsNullOrEmpty(_interactionID)) return false;
 
-            if (_characterLocatorService == null ||
-                !_characterLocatorService.TryGetCharacter(Identifier, out IConvaiCharacterAgent character))
+            if (_agentRegistry == null ||
+                !_agentRegistry.TryGetCharacter(Identifier, out IConvaiCharacterAgent character))
                 return false;
 
             return true;

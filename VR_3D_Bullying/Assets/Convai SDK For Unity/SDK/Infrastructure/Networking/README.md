@@ -2,64 +2,59 @@
 
 ## What this is
 
-This layer contains the SDK's real‑time transport implementation. It connects to Convai's backend, joins a LiveKit room, publishes local audio (and optional video), and routes data messages back into the SDK as domain/runtime events.
+This folder contains the SDK's real-time transport implementation. It connects to Convai's backend, joins a LiveKit room, publishes local audio and optional video, and routes incoming data into the runtime.
 
-If you're integrating into a Unity scene, start with:
+If you're integrating the SDK into a scene, start with:
 
 - `Documentation~/SETUP.md`
 
 ## Who should read this
 
-- Contributors changing transport behavior (connect, reconnect, audio/video tracks, data messages)
-- Integrators debugging connection/mic/audio issues beyond basic setup
+- contributors changing connection, reconnect, mic, remote-audio, or video-track behavior
+- integrators debugging transport issues beyond normal scene setup
 
 ## Why it exists
 
-Networking depends on third‑party SDKs (LiveKit) and platform constraints (WebGL vs native). Keeping that in Infrastructure:
+Networking depends on third-party SDKs and platform constraints. Keeping it here:
 
-- isolates platform-specific code
-- keeps Runtime components smaller
-- makes it easier to swap or wrap transport details behind interfaces
+- isolates Native and WebGL transport differences
+- keeps `ConvaiManager` and `ConvaiRoomManager` focused on Unity-facing orchestration
+- keeps transport selection behind `ITransportProvider`
 
-## End-to-end flow (high level)
+## End-to-end flow
 
-1. **Runtime** (`ConvaiCharacter` / `ConvaiManager`) initiates a connect with:
-   - API key + server URL (`ConvaiSettings`)
-   - connection type (audio vs video)
-   - character id (+ optional session info)
-   - internally this is executed by `ConvaiRoomManager`
-2. **Infrastructure** requests room details/token via the REST API and joins the LiveKit room.
-3. **Audio** publishes the microphone track and subscribes to remote audio tracks.
-4. **Data messages** (RTVI/protocol) are parsed and turned into domain events / runtime callbacks.
-5. Optional **video** is published by the Vision module (`ConvaiVideoPublisher`) when connection type is video.
+1. `ConvaiManager` delegates room/session work to `ConvaiRoomManager`.
+2. `ConvaiRoomManager` resolves credentials, session intent, and connection type.
+3. The active `ITransportProvider` creates the platform-specific transport path.
+4. Native or WebGL room controllers join LiveKit, publish mic audio, and subscribe to remote media.
+5. RTVI and related data messages are translated into runtime/domain events.
+6. If the room is in video mode, the Vision module publishes a video track.
 
-## Platform split (Native vs WebGL)
+## Platform split
 
-Some pieces differ per platform (notably HTTP transport, LiveKit bindings, browser gesture policy, and video publishing shape). This repo keeps platform-specific implementations under:
-
-- `Native/`
-- `WebGL/`
-
-WebGL support is shipped as an optional module and may not be present in all SDK distributions. When present, the active implementation is selected through factories registered by the runtime bootstrap pipeline.
+- `Native/` contains the native LiveKit transport implementation
+- `WebGL/` contains the browser/WebGL transport implementation
 
 Current WebGL specifics:
 
-- room connect and character-details lookup use coroutine-backed `UnityWebRequest` paths
-- browser audio start still requires a user gesture
-- in-game vision publishes the visible Unity canvas instead of a Unity `RenderTexture`
+- room connect and room-details lookup use coroutine-backed `UnityWebRequest` flows
+- browser audio still requires a user gesture
+- the Vision module publishes the visible Unity canvas rather than a Unity `RenderTexture`
 
 ## Debugging checklist
 
-When "it connects but nothing happens":
+When the room connects but media or protocol behavior looks wrong:
 
-- Confirm the basics: API key + Character ID set (`Documentation~/TROUBLESHOOTING.md`)
-- Check mic permission and device availability (mobile especially)
-- For WebGL (module only): HTTPS + user gesture requirements can block audio start (`Documentation~/PLATFORMS.md`)
-- Turn logging up to `Info` in `Edit > Project Settings > Convai SDK`
+- confirm API key and character configuration in `Documentation~/TROUBLESHOOTING.md`
+- check mic permissions and device availability
+- for WebGL, verify HTTPS and user-gesture requirements in `Documentation~/PLATFORMS.md`
+- turn logging up to `Info` in `Edit > Project Settings > Convai SDK`
 
-## Go deeper
+## Go deeper (paths from `SDK/Infrastructure/Networking/`)
 
 - Runtime entrypoint: `../../Runtime/Components/ConvaiManager.cs`
-- Runtime transport/session internals: `../../Runtime/Adapters/Networking/ConvaiRoomManager.cs`
-- Runtime connection lifecycle: `../../Runtime/Adapters/Networking/ConvaiRoomManager.cs`
-- Room controllers: `Native/NativeRoomController.cs` and `WebGL/WebGLRoomController.cs`
+- Runtime composition root: `../../Runtime/Core/Composition/ConvaiRuntimeHost.cs`
+- Room/session adapter: `../../Runtime/Adapters/Networking/ConvaiRoomManager.cs`
+- Native room controller: `Native/NativeRoomController.cs`
+- WebGL room controller: `WebGL/WebGLRoomController.cs`
+- Package-wide index: `../../../Documentation~/SOURCE-REFERENCE.md`

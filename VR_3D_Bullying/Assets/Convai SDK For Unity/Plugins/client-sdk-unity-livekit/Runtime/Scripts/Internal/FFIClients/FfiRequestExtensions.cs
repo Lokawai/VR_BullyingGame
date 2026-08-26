@@ -1,11 +1,76 @@
 using System;
+using System.Collections.Concurrent;
+using System.Threading;
 using System.Runtime.CompilerServices;
+using System.Reflection;
 using LiveKit.Proto;
 
 namespace LiveKit.Internal.FFIClients
 {
     public static class FfiRequestExtensions
     {
+        private static long nextRequestAsyncId;
+        private static readonly ConcurrentDictionary<Type, Action<object, ulong>?> requestAsyncIdSetters = new();
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static ulong InitializeRequestAsyncId<T>(this T request)
+        {
+            // The async request path needs a client-generated request ID before the request
+            // crosses the FFI boundary. That allows Unity to register a completion handler first,
+            // then send the request, which removes the race where Rust could emit the callback
+            // before Unity had subscribed.
+            //
+            // Historically this method used a large type switch and set RequestAsyncId on each
+            // generated protobuf request class explicitly. That is fast, but it tightly couples
+            // the code to the exact list of generated request types.
+            //
+            // This implementation is intentionally based on normal .NET reflection instead of
+            // protobuf reflection APIs. The only contract it relies on is:
+            //   1. the generated request type has a public instance property named RequestAsyncId
+            //   2. that property is writable
+            //   3. that property has type ulong
+            //
+            // Because of that, the code will keep working even if the protobuf runtime changes
+            // (for example, switching to a lighter runtime such as "protolite"), as long as the
+            // generated C# surface still exposes the same property shape.
+            //
+            // The expensive part here is reflection lookup, not assigning one ulong. We therefore
+            // cache a setter delegate per concrete request type. The first request of a given type
+            // pays the reflection cost; subsequent requests reuse the cached delegate.
+            //
+            // The cached delegate below still calls PropertyInfo.SetValue internally. That is not
+            // as fast as a fully compiled expression setter, but it is simpler and safer for Unity
+            // runtimes, especially IL2CPP / AOT targets where expression compilation can be less
+            // predictable. In practice, this cost is tiny compared with protobuf serialization,
+            // the native FFI call, and response parsing.
+            if (request == null)
+            {
+                return 0;
+            }
+
+            var setter = requestAsyncIdSetters.GetOrAdd(request.GetType(), static type =>
+            {
+                const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public;
+                var property = type.GetProperty("RequestAsyncId", flags);
+
+                if (property == null || !property.CanWrite || property.PropertyType != typeof(ulong))
+                {
+                    return null;
+                }
+
+                return (target, value) => property.SetValue(target, value);
+            });
+
+            if (setter == null)
+            {
+                return 0;
+            }
+
+            var requestAsyncId = (ulong)Interlocked.Increment(ref nextRequestAsyncId);
+            setter(request, requestAsyncId);
+            return requestAsyncId;
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void Inject<T>(this FfiRequest ffiRequest, T request)
         {
@@ -14,11 +79,15 @@ namespace LiveKit.Internal.FFIClients
                 case DisposeRequest disposeRequest:
                     ffiRequest.Dispose = disposeRequest;
                     break;
+                // Room
                 case ConnectRequest connectRequest:
                     ffiRequest.Connect = connectRequest;
                     break;
                 case DisconnectRequest disconnectRequest:
                     ffiRequest.Disconnect = disconnectRequest;
+                    break;
+                case ReadyForRoomEventRequest readyForRoomEventRequest:
+                    ffiRequest.ReadyForRoomEvent = readyForRoomEventRequest;
                     break;
                 case PublishTrackRequest publishTrackRequest:
                     ffiRequest.PublishTrack = publishTrackRequest;
@@ -44,6 +113,7 @@ namespace LiveKit.Internal.FFIClients
                 case GetSessionStatsRequest getSessionStatsRequest:
                     ffiRequest.GetSessionStats = getSessionStatsRequest;
                     break;
+                // Track
                 case CreateVideoTrackRequest createVideoTrackRequest:
                     ffiRequest.CreateVideoTrack = createVideoTrackRequest;
                     break;
@@ -53,6 +123,7 @@ namespace LiveKit.Internal.FFIClients
                 case GetStatsRequest getStatsRequest:
                     ffiRequest.GetStats = getStatsRequest;
                     break;
+                // Video
                 case NewVideoStreamRequest newVideoStreamRequest:
                     ffiRequest.NewVideoStream = newVideoStreamRequest;
                     break;
@@ -65,8 +136,9 @@ namespace LiveKit.Internal.FFIClients
                 case VideoConvertRequest videoConvertRequest:
                     ffiRequest.VideoConvert = videoConvertRequest;
                     break;
-                case NewAudioStreamRequest wewAudioStreamRequest:
-                    ffiRequest.NewAudioStream = wewAudioStreamRequest;
+                // Audio
+                case NewAudioStreamRequest newAudioStreamRequest:
+                    ffiRequest.NewAudioStream = newAudioStreamRequest;
                     break;
                 case NewAudioSourceRequest newAudioSourceRequest:
                     ffiRequest.NewAudioSource = newAudioSourceRequest;
@@ -80,12 +152,47 @@ namespace LiveKit.Internal.FFIClients
                 case RemixAndResampleRequest remixAndResampleRequest:
                     ffiRequest.RemixAndResample = remixAndResampleRequest;
                     break;
+                case NewApmRequest newApmRequest:
+                    ffiRequest.NewApm = newApmRequest;
+                    break;
+                case ApmProcessStreamRequest apmProcessStreamRequest:
+                    ffiRequest.ApmProcessStream = apmProcessStreamRequest;
+                    break;
+                case ApmProcessReverseStreamRequest apmProcessReverseStreamRequest:
+                    ffiRequest.ApmProcessReverseStream = apmProcessReverseStreamRequest;
+                    break;
+                case ApmSetStreamDelayRequest apmSetStreamDelayRequest:
+                    ffiRequest.ApmSetStreamDelay = apmSetStreamDelayRequest;
+                    break;
+                // PlatformAudio
+                case NewPlatformAudioRequest newPlatformAudioRequest:
+                    ffiRequest.NewPlatformAudio = newPlatformAudioRequest;
+                    break;
+                case GetAudioDevicesRequest getAudioDevicesRequest:
+                    ffiRequest.GetAudioDevices = getAudioDevicesRequest;
+                    break;
+                case SetRecordingDeviceRequest setRecordingDeviceRequest:
+                    ffiRequest.SetRecordingDevice = setRecordingDeviceRequest;
+                    break;
+                case SetPlayoutDeviceRequest setPlayoutDeviceRequest:
+                    ffiRequest.SetPlayoutDevice = setPlayoutDeviceRequest;
+                    break;
+                case StartRecordingRequest startRecordingRequest:
+                    ffiRequest.StartRecording = startRecordingRequest;
+                    break;
+                case StopRecordingRequest stopRecordingRequest:
+                    ffiRequest.StopRecording = stopRecordingRequest;
+                    break;
                 case LocalTrackMuteRequest localTrackMuteRequest:
                     ffiRequest.LocalTrackMute = localTrackMuteRequest;
+                    break;
+                case EnableRemoteTrackRequest enableRemoteTrackRequest:
+                    ffiRequest.EnableRemoteTrack = enableRemoteTrackRequest;
                     break;
                 case E2eeRequest e2EeRequest:
                     ffiRequest.E2Ee = e2EeRequest;
                     break;
+                // Rpc
                 case RegisterRpcMethodRequest registerRpcMethodRequest:
                     ffiRequest.RegisterRpcMethod = registerRpcMethodRequest;
                     break;
@@ -98,6 +205,7 @@ namespace LiveKit.Internal.FFIClients
                 case RpcMethodInvocationResponseRequest rpcMethodInvocationResponseRequest:
                     ffiRequest.RpcMethodInvocationResponse = rpcMethodInvocationResponseRequest;
                     break;
+                // Data stream
                 case TextStreamReaderReadIncrementalRequest textStreamReaderReadIncrementalRequest:
                     ffiRequest.TextReadIncremental = textStreamReaderReadIncrementalRequest;
                     break;
@@ -140,107 +248,38 @@ namespace LiveKit.Internal.FFIClients
                 case SetRemoteTrackPublicationQualityRequest setRemoteTrackPublicationQualityRequest:
                     ffiRequest.SetRemoteTrackPublicationQuality = setRemoteTrackPublicationQualityRequest;
                     break;
+                // Data Track
+                case PublishDataTrackRequest publishDataTrackRequest:
+                    ffiRequest.PublishDataTrack = publishDataTrackRequest;
+                    break;
+                case LocalDataTrackTryPushRequest localDataTrackTryPushRequest:
+                    ffiRequest.LocalDataTrackTryPush = localDataTrackTryPushRequest;
+                    break;
+                case LocalDataTrackUnpublishRequest localDataTrackUnpublishRequest:
+                    ffiRequest.LocalDataTrackUnpublish = localDataTrackUnpublishRequest;
+                    break;
+                case LocalDataTrackIsPublishedRequest localDataTrackIsPublishedRequest:
+                    ffiRequest.LocalDataTrackIsPublished = localDataTrackIsPublishedRequest;
+                    break;
+                case SubscribeDataTrackRequest subscribeDataTrackRequest:
+                    ffiRequest.SubscribeDataTrack = subscribeDataTrackRequest;
+                    break;
+                case RemoteDataTrackIsPublishedRequest remoteDataTrackIsPublishedRequest:
+                    ffiRequest.RemoteDataTrackIsPublished = remoteDataTrackIsPublishedRequest;
+                    break;
+                case DataTrackStreamReadRequest dataTrackStreamReadRequest:
+                    ffiRequest.DataTrackStreamRead = dataTrackStreamReadRequest;
+                    break;
                 default:
                     throw new Exception($"Unknown request type: {request?.GetType().FullName ?? "null"}");
             }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void EnsureClean(this FfiRequest request)
-        {
-
-            if (
-                request.Dispose != null
-                ||
-
-                request.Connect != null
-                || request.Disconnect != null
-                || request.PublishTrack != null
-                || request.UnpublishTrack != null
-                || request.PublishData != null
-                || request.SetSubscribed != null
-                || request.SetLocalMetadata != null
-                || request.SetLocalName != null
-                || request.SetLocalAttributes != null
-                || request.GetSessionStats != null
-                ||
-
-                request.CreateVideoTrack != null
-                || request.CreateAudioTrack != null
-                || request.GetStats != null
-                ||
-
-                request.NewVideoStream != null
-                || request.NewVideoSource != null
-                || request.CaptureVideoFrame != null
-                || request.VideoConvert != null
-                ||
-
-                request.NewAudioStream != null
-                || request.NewAudioSource != null
-                || request.CaptureAudioFrame != null
-                || request.NewAudioResampler != null
-                || request.RemixAndResample != null
-                || request.E2Ee != null
-                ||
-
-                request.RegisterRpcMethod != null
-                || request.UnregisterRpcMethod != null
-                || request.PerformRpc != null
-                || request.RpcMethodInvocationResponse != null
-            )
-            {
-                throw new InvalidOperationException("Request is not cleared");
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void EnsureClean(this FfiResponse response)
         {
-
-            if (
-                response.Dispose != null
-                ||
-
-                response.Connect != null
-                || response.Disconnect != null
-                || response.PublishTrack != null
-                || response.UnpublishTrack != null
-                || response.PublishData != null
-                || response.SetSubscribed != null
-                || response.SetLocalMetadata != null
-                || response.SetLocalName != null
-                || response.SetLocalAttributes != null
-                || response.GetSessionStats != null
-                ||
-
-                response.CreateVideoTrack != null
-                || response.CreateAudioTrack != null
-                || response.GetStats != null
-                ||
-
-                response.NewVideoStream != null
-                || response.NewVideoSource != null
-                || response.CaptureVideoFrame != null
-                || response.VideoConvert != null
-                ||
-
-                response.NewAudioStream != null
-                || response.NewAudioSource != null
-                || response.CaptureAudioFrame != null
-                || response.NewAudioResampler != null
-                || response.RemixAndResample != null
-                || response.E2Ee != null
-                ||
-
-                response.RegisterRpcMethod != null
-                || response.UnregisterRpcMethod != null
-                || response.PerformRpc != null
-                || response.RpcMethodInvocationResponse != null
-            )
-            {
-                throw new InvalidOperationException("Response is not cleared: ");
-            }
+            if (response.MessageCase != FfiResponse.MessageOneofCase.None)
+                throw new InvalidOperationException($"Response is not cleared: {response.MessageCase}");
         }
     }
 }

@@ -2,8 +2,8 @@ using System;
 using Convai.Domain.EventSystem;
 using Convai.Domain.Logging;
 using Convai.Runtime.Logging;
+using Convai.Runtime.Presentation.Views.Notifications;
 using Convai.Shared.Interfaces;
-using Convai.Shared.Types;
 using UnityEngine.Scripting;
 
 namespace Convai.Runtime.Presentation.Services
@@ -26,7 +26,7 @@ namespace Convai.Runtime.Presentation.Services
         private readonly IUnityScheduler _scheduler;
         private Action _onNotificationDismissed;
 
-        private Action<NotificationType> _onNotificationRequested;
+        private Action<SONotification> _onNotificationRequested;
 
         /// <summary>
         ///     Creates a new ConvaiNotificationService.
@@ -38,7 +38,7 @@ namespace Convai.Runtime.Presentation.Services
         }
 
         /// <inheritdoc />
-        public event Action<NotificationType> OnNotificationRequested
+        public event Action<SONotification> OnNotificationRequested
         {
             add
             {
@@ -64,9 +64,11 @@ namespace Convai.Runtime.Presentation.Services
         }
 
         /// <inheritdoc />
-        public void RequestNotification(NotificationType notificationType)
+        public void RequestNotification(SONotification notification)
         {
-            Action<NotificationType> handler;
+            if (notification == null) return;
+
+            Action<SONotification> handler;
             lock (_eventLock) handler = _onNotificationRequested;
 
             if (handler == null) return;
@@ -75,12 +77,12 @@ namespace Convai.Runtime.Presentation.Services
             {
                 try
                 {
-                    handler.Invoke(notificationType);
+                    handler.Invoke(notification);
                 }
                 catch (Exception ex)
                 {
                     ConvaiLogger.Error(
-                        $"[ConvaiNotificationService] Error invoking OnNotificationRequested: {ex.Message}",
+                        $"Error invoking OnNotificationRequested: {ex.Message}",
                         LogCategory.UI);
                 }
             }
@@ -108,7 +110,7 @@ namespace Convai.Runtime.Presentation.Services
                 catch (Exception ex)
                 {
                     ConvaiLogger.Error(
-                        $"[ConvaiNotificationService] Error invoking OnNotificationDismissed: {ex.Message}",
+                        $"Error invoking OnNotificationDismissed: {ex.Message}",
                         LogCategory.UI);
                 }
             }

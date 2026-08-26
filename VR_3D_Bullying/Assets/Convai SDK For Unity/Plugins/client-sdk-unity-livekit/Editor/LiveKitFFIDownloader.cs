@@ -21,8 +21,8 @@ namespace LiveKit.Editor
     [InitializeOnLoad]
     public static class LiveKitFFIDownloader
     {
-        private const string FFI_VERSION = "0.12.43";
-        private const string FFI_TAG = "rust-sdks/livekit-ffi@" + FFI_VERSION;
+        private const string FFI_VERSION = "0.12.63";
+        private const string FFI_TAG = "livekit-ffi/v" + FFI_VERSION;
         private const string DOWNLOAD_BASE_URL = "https://github.com/livekit/rust-sdks/releases/download";
         private const string DOWNLOAD_COMPLETE_KEY = "LiveKit_FFI_Downloaded_" + FFI_VERSION;
 
@@ -239,40 +239,41 @@ namespace LiveKit.Editor
             };
         }
 
-        private static string[] GetCurrentEditorArchitectures()
-        {
-            // For the Unity Editor we only need the current process architecture.
-            return new[] { GetCurrentEditorArchitecture() };
-        }
-
         private static string[] GetRequiredArchitecturesForDownload(string platform)
         {
-            // On macOS Editor, always resolve to the current editor process architecture.
-            // Apple Silicon Editor -> arm64, Intel Editor -> x86_64.
-            if (string.Equals(platform, "macos", StringComparison.OrdinalIgnoreCase) &&
-                string.Equals(GetCurrentEditorPlatform(), "macos", StringComparison.OrdinalIgnoreCase))
+            if (string.IsNullOrEmpty(platform))
+                return Array.Empty<string>();
+
+            List<string> required = new List<string>();
+
+            // The Editor needs only the architecture of the running process.
+            string editorPlatform = GetCurrentEditorPlatform();
+            if (string.Equals(editorPlatform, platform, StringComparison.OrdinalIgnoreCase))
             {
-                return new[] { GetCurrentEditorArchitecture() };
+                required.Add(GetCurrentEditorArchitecture());
             }
 
-            // If the active build target matches the requested platform, honor that platform's build settings
-            // (e.g., Android enabled ABIs, macOS universal vs single-arch, iOS device vs simulator).
+            // The active build target may require different or additional architectures. Keep both
+            // when it shares the Editor platform (for example, an Apple Silicon Editor and a
+            // universal macOS player build).
             string activeBuildPlatform = GetActiveBuildPlatform();
             if (!string.IsNullOrEmpty(activeBuildPlatform) &&
                 string.Equals(activeBuildPlatform, platform, StringComparison.OrdinalIgnoreCase))
             {
                 string[] buildArchs = GetArchitecturesForActiveBuildTargetPlatform(platform);
                 if (buildArchs != null && buildArchs.Length > 0)
-                    return buildArchs;
+                    required.AddRange(buildArchs);
             }
 
-            // If we're dealing with the current editor platform, only require the current editor arch.
-            if (string.Equals(platform, GetCurrentEditorPlatform(), StringComparison.OrdinalIgnoreCase))
+            if (required.Count > 0)
             {
-                return new[] { GetCurrentEditorArchitecture() };
+                return required
+                    .Where(arch => !string.IsNullOrEmpty(arch))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
             }
 
-            // Fallback to the full list of known architectures for that platform.
+            // Explicit all-platform downloads still use the complete known architecture list.
             return GetArchitecturesForPlatform(platform);
         }
 
@@ -287,7 +288,7 @@ namespace LiveKit.Editor
                     {
                         if (TryGetAndroidEnabledArchitectures(out string[] archs) && archs.Length > 0)
                             return archs;
-                        return PlatformArchitectures.GetValueOrDefault("android", new[] { "arm64" });
+                        return new[] { "arm64" };
                     }
                 case "ios":
                     {
@@ -524,7 +525,16 @@ namespace LiveKit.Editor
                     continue;
                 }
 
-                PluginImportSettingsUtil.ApplyNativePluginImportSettings(importer, platform, arch);
+                if (string.Equals(platform, "android", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(Path.GetExtension(assetPath), ".jar", StringComparison.OrdinalIgnoreCase))
+                {
+                    PluginImportSettingsUtil.ApplyAndroidJarImportSettings(importer);
+                }
+                else
+                {
+                    PluginImportSettingsUtil.ApplyNativePluginImportSettings(importer, platform, arch);
+                }
+
                 importer.SaveAndReimport();
                 AssetDatabase.WriteImportSettingsIfDirty(assetPath);
                 AssetDatabase.ForceReserializeAssets(new[] { assetPath }, ForceReserializeAssetsOptions.ReserializeAssetsAndMetadata);
@@ -590,8 +600,15 @@ namespace LiveKit.Editor
                 {
                     currentCount++;
                     string progressTitle = $"Downloading LiveKit FFI ({currentCount}/{totalCount})";
+                    bool includeSharedAndroidJar =
+                        !string.Equals(platform.Key, "android", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(arch, "arm64", StringComparison.OrdinalIgnoreCase);
 
-                    DownloadResult result = await DownloadAndExtractFFIAsync(platform.Key, arch, progressTitle);
+                    DownloadResult result = await DownloadAndExtractFFIAsync(
+                        platform.Key,
+                        arch,
+                        progressTitle,
+                        includeSharedAndroidJar);
                     if (result.Success)
                     {
                         successCount++;
@@ -639,7 +656,13 @@ namespace LiveKit.Editor
                 for (int i = 0; i < archs.Length; i++)
                 {
                     string progressTitle = $"Downloading LiveKit FFI for {platform} ({i + 1}/{archs.Length})";
-                    DownloadResult result = await DownloadAndExtractFFIAsync(platform, archs[i], progressTitle);
+                    bool includeSharedAndroidJar =
+                        !string.Equals(platform, "android", StringComparison.OrdinalIgnoreCase) || i == 0;
+                    DownloadResult result = await DownloadAndExtractFFIAsync(
+                        platform,
+                        archs[i],
+                        progressTitle,
+                        includeSharedAndroidJar);
                     if (result.Success)
                     {
                         successCount++;
@@ -670,12 +693,15 @@ namespace LiveKit.Editor
             return ext == ".dll" || ext == ".so" || ext == ".dylib" || ext == ".a" || ext == ".jar";
         }
 
-        private static async Task<DownloadResult> DownloadAndExtractFFIAsync(string platform, string arch, string progressTitle)
+        private static async Task<DownloadResult> DownloadAndExtractFFIAsync(
+            string platform,
+            string arch,
+            string progressTitle,
+            bool includeSharedAndroidJar)
         {
             string folderName = $"ffi-{platform}-{arch}";
             string zipFileName = $"{folderName}.zip";
-            string encodedTag = Uri.EscapeDataString(FFI_TAG);
-            string downloadUrl = $"{DOWNLOAD_BASE_URL}/{encodedTag}/{zipFileName}";
+            string downloadUrl = $"{DOWNLOAD_BASE_URL}/{FFI_TAG}/{zipFileName}";
             string destFolder = Path.Combine(PluginsPath, folderName);
             string tempZipPath = Path.Combine(Application.temporaryCachePath, zipFileName);
             List<string> extractedAssetPaths = new List<string>();
@@ -724,7 +750,7 @@ namespace LiveKit.Editor
                             continue;
                         if (platform == "android" &&
                             entry.Name.Equals("libwebrtc.jar", StringComparison.OrdinalIgnoreCase) &&
-                            arch != "arm64")
+                            !includeSharedAndroidJar)
                             continue;
 
                         string destPath = Path.Combine(destFolder, entry.Name);
@@ -773,7 +799,7 @@ namespace LiveKit.Editor
                     File.Delete(licensePath);
                 }
 
-                if (platform == "android" && arch != "arm64")
+                if (platform == "android" && !includeSharedAndroidJar)
                 {
                     string jarPath = Path.Combine(destFolder, "libwebrtc.jar");
                     if (File.Exists(jarPath))
@@ -845,6 +871,16 @@ namespace LiveKit.Editor
 
     public static class PluginImportSettingsUtil
     {
+        public static bool ApplyAndroidJarImportSettings(PluginImporter importer)
+        {
+            bool changed = false;
+            changed |= SetCompatibleWithAnyPlatform(importer, false);
+            changed |= SetCompatibleWithEditor(importer, false);
+            changed |= SetCompatibleWithPlatform(importer, BuildTarget.Android, true);
+            changed |= DisableOtherPlatforms(importer, BuildTarget.Android);
+            return changed;
+        }
+
         public static bool ApplyNativePluginImportSettings(PluginImporter importer, string platform, string arch)
         {
             bool changed = false;

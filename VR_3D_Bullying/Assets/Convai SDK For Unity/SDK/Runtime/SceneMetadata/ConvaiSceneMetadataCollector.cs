@@ -3,11 +3,10 @@ using System.Collections.Generic;
 using Convai.Domain.DomainEvents.Session;
 using Convai.Domain.EventSystem;
 using Convai.Domain.Logging;
-using Convai.Infrastructure.Protocol.Messages;
+using Convai.Runtime.Actions;
+using Convai.Runtime.Components;
 using Convai.Runtime.Logging;
 using Convai.Runtime.Room;
-using Convai.Shared;
-using Convai.Shared.DependencyInjection;
 using UnityEngine;
 
 namespace Convai.Runtime.SceneMetadata
@@ -18,23 +17,29 @@ namespace Convai.Runtime.SceneMetadata
     ///     Uses EventHub subscriptions and supports dependency injection.
     /// </summary>
     /// <remarks>
-    ///     This class is discovered via the ConvaiManager-managed injection pipeline.
-    ///     No [Preserve] attribute needed - typed discovery prevents IL2CPP stripping.
+    ///     Discovered during runtime initialization and configured through dependency injection.
     /// </remarks>
-    public class ConvaiSceneMetadataCollector : MonoBehaviour, IInjectable
+    public class ConvaiSceneMetadataCollector : MonoBehaviour
     {
 #pragma warning disable CS0649
-        [Header("Collection Settings")] [Tooltip("Whether to automatically collect metadata on Start")] [SerializeField]
+        [Tooltip("Whether to automatically collect metadata on Start")] [SerializeField]
+        [ConvaiInspectorSection("Collection Settings")]
         private bool _collectOnStart;
 #pragma warning restore CS0649
 
         [Tooltip("Whether to log collection stats")] [SerializeField]
+        [ConvaiInspectorSection("Collection Settings")]
         private bool _logStatistics = true;
 
-        [Header("Debug Info")] [ReadOnly] [SerializeField]
+        [ReadOnly] [SerializeField]
+        [Tooltip("Number of metadata objects collected the last time this ran (read-only)")]
+        [ConvaiInspectorSection("Status")]
         private int _lastCollectedCount;
 
-        [ReadOnly] [SerializeField] private float _lastCollectionTime;
+        [ReadOnly] [SerializeField]
+        [Tooltip("How long the last collection pass took, in seconds (read-only)")]
+        [ConvaiInspectorSection("Status")]
+        private float _lastCollectionTime;
         private IEventHub _eventHub;
         private bool _isInjected;
         private IConvaiRoomConnectionService _roomConnectionService;
@@ -43,10 +48,11 @@ namespace Convai.Runtime.SceneMetadata
 
         private void Start()
         {
+            TryResolveDependencies();
             if (!_isInjected)
             {
                 ConvaiLogger.Error(
-                    "[ConvaiSceneMetadataCollector] Dependencies not injected. Add ConvaiManager to scene.",
+                    "Dependencies not injected. Add ConvaiManager to scene.",
                     LogCategory.SDK);
                 enabled = false;
                 return;
@@ -64,14 +70,6 @@ namespace Convai.Runtime.SceneMetadata
             }
         }
 
-        /// <inheritdoc />
-        public void InjectServices(IServiceContainer container)
-        {
-            Inject(
-                container.Get<IEventHub>(),
-                container.Get<IConvaiRoomConnectionService>());
-        }
-
         /// <summary>
         ///     Injects dependencies into ConvaiSceneMetadataCollector.
         ///     Called by the ConvaiManager pipeline.
@@ -84,6 +82,20 @@ namespace Convai.Runtime.SceneMetadata
             _roomConnectionService =
                 roomConnectionService ?? throw new ArgumentNullException(nameof(roomConnectionService));
             _isInjected = true;
+        }
+
+        private void TryResolveDependencies()
+        {
+            if (_isInjected) return;
+
+            ConvaiManager manager = ConvaiManager.ActiveManager;
+            if (manager == null) return;
+
+            manager.TryGetEventHub(out IEventHub eventHub);
+            manager.TryGetRoomConnectionService(out IConvaiRoomConnectionService roomConnectionService);
+
+            if (eventHub != null && roomConnectionService != null)
+                Inject(eventHub, roomConnectionService);
         }
 
         /// <summary>
@@ -111,15 +123,15 @@ namespace Convai.Runtime.SceneMetadata
             if (_roomConnectionService == null)
             {
                 ConvaiLogger.Error(
-                    "[ConvaiSceneMetadataCollector] Room connection service not injected. Add ConvaiManager to scene.",
+                    "Room connection service not injected. Add ConvaiManager to scene.",
                     LogCategory.SDK);
                 return;
             }
 
-            if (_roomConnectionService.RtvHandler == null)
+            if (!_roomConnectionService.IsConnected)
             {
                 ConvaiLogger.Warning(
-                    "[ConvaiSceneMetadataCollector] RTVI handler not available. Ensure the room is connected before sending metadata.",
+                    "Room connection is not ready. Ensure the room is connected before sending metadata.",
                     LogCategory.SDK);
                 return;
             }
@@ -136,16 +148,22 @@ namespace Convai.Runtime.SceneMetadata
             {
                 Dictionary<string, object> stats = ConvaiMetadataRegistry.GetStatistics();
                 ConvaiLogger.Debug(
-                    $"[ConvaiSceneMetadataCollector] Collected {_lastCollectedCount} metadata objects in {_lastCollectionTime:F4}s. " +
+                    $"Collected {_lastCollectedCount} metadata objects in {_lastCollectionTime:F4}s. " +
                     $"Registry stats: {stats["TotalRegistered"]} total, {stats["ValidMetadata"]} valid, {stats["InvalidMetadata"]} invalid",
                     LogCategory.SDK);
             }
 
-            RTVIUpdateSceneMetadata message = new(sceneMetadataList);
-            _roomConnectionService.RtvHandler.SendData(message);
+            bool sent = _roomConnectionService.UpdateSceneMetadata(sceneMetadataList);
+            if (!sent)
+            {
+                ConvaiLogger.Warning(
+                    "Failed to send scene metadata because the room connection service was not ready.",
+                    LogCategory.SDK);
+                return;
+            }
 
             ConvaiLogger.Debug(
-                $"[ConvaiSceneMetadataCollector] Sent {_lastCollectedCount} metadata objects to RTVI service",
+                $"Sent {_lastCollectedCount} metadata objects to RTVI service",
                 LogCategory.SDK);
         }
 
@@ -185,13 +203,13 @@ namespace Convai.Runtime.SceneMetadata
             if (validationIssues.Count > 0)
             {
                 ConvaiLogger.Warning(
-                    $"[ConvaiSceneMetadataCollector] Found {validationIssues.Count} validation issues:\n" +
+                    $"Found {validationIssues.Count} validation issues:\n" +
                     string.Join("\n", validationIssues), LogCategory.SDK);
             }
             else
             {
                 ConvaiLogger.Debug(
-                    $"[ConvaiSceneMetadataCollector] All {allMetadata.Length} metadata objects are valid",
+                    $"All {allMetadata.Length} metadata objects are valid",
                     LogCategory.SDK);
             }
         }
@@ -205,15 +223,15 @@ namespace Convai.Runtime.SceneMetadata
             if (_roomConnectionService == null)
             {
                 ConvaiLogger.Warning(
-                    "[ConvaiSceneMetadataCollector] Room connection service not injected. Add ConvaiManager to scene.",
+                    "Room connection service not injected. Add ConvaiManager to scene.",
                     LogCategory.SDK);
                 return false;
             }
 
-            if (_roomConnectionService.RtvHandler == null)
+            if (!_roomConnectionService.IsConnected)
             {
                 ConvaiLogger.Warning(
-                    "[ConvaiSceneMetadataCollector] RTVI handler is not available (room not connected)",
+                    "Room connection service is not connected.",
                     LogCategory.SDK);
                 return false;
             }

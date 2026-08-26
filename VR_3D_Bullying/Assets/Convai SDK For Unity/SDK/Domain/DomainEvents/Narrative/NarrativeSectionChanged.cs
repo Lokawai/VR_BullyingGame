@@ -9,21 +9,8 @@ namespace Convai.Domain.DomainEvents.Narrative
     /// <remarks>
     ///     This event is published via EventHub whenever a behavior-tree-response message is received
     ///     from the server. It includes the full section data including behavior tree code and constants.
-    ///     Integration Example:
-    ///     <code>
-    /// 
-    /// _eventHub.Subscribe&lt;NarrativeSectionChanged&gt;(this, e =>
-    /// {
-    ///     Debug.Log($"Section changed to: {e.SectionId}");
-    ///     if (!string.IsNullOrEmpty(e.BehaviorTreeCode))
-    ///     {
-    /// 
-    ///     }
-    /// });
-    /// </code>
-    ///     Delivery Policy:
-    ///     - Typically use EventDeliveryPolicy.MainThread for Unity component updates
-    ///     - Can use EventDeliveryPolicy.Immediate for logging/analytics
+    ///     Typically use EventDeliveryPolicy.MainThread for Unity component updates and
+    ///     EventDeliveryPolicy.Immediate for lightweight logging or analytics.
     /// </remarks>
     public readonly struct NarrativeSectionChanged
     {

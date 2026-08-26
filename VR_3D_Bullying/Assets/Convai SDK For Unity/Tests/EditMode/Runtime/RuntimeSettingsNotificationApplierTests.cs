@@ -1,5 +1,5 @@
 using System;
-using System.Collections.Generic;
+using Convai.Runtime.Presentation.Views.Notifications;
 using Convai.Runtime.Settings;
 using Convai.Shared.Abstractions;
 using Convai.Shared.Interfaces;
@@ -91,8 +91,7 @@ namespace Convai.Tests.EditMode.Runtime
                 "Player",
                 true,
                 notificationsEnabled,
-                string.Empty,
-                ConvaiTranscriptMode.Chat);
+                string.Empty);
         }
 
         private sealed class StubRuntimeSettingsService : IConvaiRuntimeSettingsService
@@ -106,18 +105,11 @@ namespace Convai.Tests.EditMode.Runtime
 
             public ConvaiRuntimeSettingsSnapshot Current { get; private set; }
 
-            public IReadOnlyCollection<ConvaiTranscriptMode> SupportedTranscriptModes { get; } =
-                new[] { ConvaiTranscriptMode.Chat };
-
             public ConvaiRuntimeSettingsApplyResult Apply(ConvaiRuntimeSettingsPatch patch) =>
                 ConvaiRuntimeSettingsApplyResult.Ok(Current, ConvaiRuntimeSettingsChangeMask.None);
 
             public ConvaiRuntimeSettingsApplyResult ResetToDefaults() =>
                 ConvaiRuntimeSettingsApplyResult.Ok(Current, ConvaiRuntimeSettingsChangeMask.None);
-
-            public void SetSupportedTranscriptModes(IReadOnlyCollection<ConvaiTranscriptMode> modes)
-            {
-            }
 
             public void RaiseChanged(ConvaiRuntimeSettingsChanged changed)
             {
@@ -130,10 +122,10 @@ namespace Convai.Tests.EditMode.Runtime
         {
             public int DismissCount { get; private set; }
 
-            public event Action<NotificationType> OnNotificationRequested;
+            public event Action<SONotification> OnNotificationRequested;
             public event Action OnNotificationDismissed;
 
-            public void RequestNotification(NotificationType notificationType) =>
+            public void RequestNotification(SONotification notificationType) =>
                 OnNotificationRequested?.Invoke(notificationType);
 
             public void DismissNotification()

@@ -22,9 +22,7 @@ namespace Convai.Editor
 
         [SerializeField] private StyleSheet _unityStyleSheet;
 
-        [SerializeField] private VisualTreeAsset _convaiCharacterInspectorUxml;
-
-        [SerializeField] private StyleSheet _convaiEditorStylesSheet;
+        [SerializeField] private StyleSheet _convaiSettingsSectionsStyleSheet;
 
         [Header("Resources Images")] [SerializeField]
         private Texture2D _convaiIconTexture;
@@ -59,11 +57,8 @@ namespace Convai.Editor
         /// <summary>Unity style sheet.</summary>
         public StyleSheet UnityStyleSheet => _unityStyleSheet;
 
-        /// <summary>Convai character inspector UXML.</summary>
-        public VisualTreeAsset ConvaiCharacterInspectorUxml => _convaiCharacterInspectorUxml;
-
-        /// <summary>Convai editor styles sheet.</summary>
-        public StyleSheet ConvaiEditorStylesSheet => _convaiEditorStylesSheet;
+        /// <summary>Shared SDK Settings section style sheet.</summary>
+        public StyleSheet ConvaiSettingsSectionsStyleSheet => _convaiSettingsSectionsStyleSheet;
 
         /// <summary>Convai icon texture.</summary>
         public Texture2D ConvaiIconTexture => _convaiIconTexture;

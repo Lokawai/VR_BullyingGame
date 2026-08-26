@@ -43,7 +43,12 @@ namespace Convai.Domain.EventSystem
         /// <exception cref="ArgumentNullException">Thrown if subscriber is null</exception>
         /// <remarks>
         ///     The subscriber will receive events via its OnEvent method according to the delivery policy.
-        ///     Keep the returned token to unsubscribe later.
+        ///     <para>
+        ///         <b>CRITICAL:</b> You must keep the returned <see cref="SubscriptionToken" /> and call
+        ///         <see cref="Unsubscribe" /> when done.
+        ///         Losing the token prevents cleanup and will lead to memory leaks, as the EventHub maintains a reference to the
+        ///         adapter.
+        ///     </para>
         /// </remarks>
         public SubscriptionToken Subscribe<TEvent>(
             IEventSubscriber<TEvent> subscriber,
@@ -61,6 +66,12 @@ namespace Convai.Domain.EventSystem
         /// <remarks>
         ///     This is a convenience method that wraps the action in an IEventSubscriber adapter.
         ///     Prefer this for simple lambda subscriptions. For complex logic, implement IEventSubscriber.
+        ///     <para>
+        ///         <b>CRITICAL:</b> You must keep the returned <see cref="SubscriptionToken" /> and call
+        ///         <see cref="Unsubscribe" /> when done.
+        ///         Losing the token prevents cleanup and will lead to memory leaks, as the EventHub maintains a reference to the
+        ///         adapter.
+        ///     </para>
         /// </remarks>
         public SubscriptionToken Subscribe<TEvent>(
             Action<TEvent> handler,

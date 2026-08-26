@@ -12,7 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: a8c2684d597f23d42bedc3c8fd8f9304, type: 3}
   m_Name: NotCloseEnoughForConversation
   m_EditorClassIdentifier: 
-  notificationType: 2
+  _id: NOT_CLOSE_ENOUGH_FOR_CONVERSATION
   icon: {fileID: 21300000, guid: 0dcfdaddfcac544148bace4acfa20fff, type: 3}
   notificationTitle: Too Far Away
   notificationMessage: You are too far away to start a conversation. Please move

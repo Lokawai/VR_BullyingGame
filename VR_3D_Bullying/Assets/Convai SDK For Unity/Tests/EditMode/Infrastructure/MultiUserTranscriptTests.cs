@@ -38,6 +38,17 @@ namespace Convai.Tests.EditMode.Infrastructure
             Assert.AreEqual("PA_xyz", hub.CapturedEvents[0].SpeakerInfo.ParticipantId);
         }
 
+        /// <summary>
+        ///     With no player name configured, a named speaker is shown by their own name rather
+        ///     than by the local placeholder.
+        /// </summary>
+        /// <remarks>
+        ///     "You" is the placeholder the adapter falls back to, not a name anyone chose, so it
+        ///     yields to the backend's speaker directory. Without this, every human in a multi-user
+        ///     room is labelled "You" — including the ones who are not you.
+        ///     <see cref="Adapter_Prefers_ConfiguredPlayerName_Over_SpeakerName" /> pins the other
+        ///     half of the rule.
+        /// </remarks>
         [Test]
         public void Adapter_Uses_SpeakerInfo_For_Message_Fields()
         {
@@ -52,8 +63,27 @@ namespace Convai.Tests.EditMode.Infrastructure
 
             adapter.OnPlayerTranscriptionReceived("Hello", TransportPhase.ProcessedFinal, speakerInfo);
 
-            Assert.AreEqual("speaker-123", hub.CapturedEvents[0].Message.SpeakerId);
+            Assert.AreEqual("speaker-123", hub.CapturedEvents[0].Message.PlayerOrCharacterId);
             Assert.AreEqual("John", hub.CapturedEvents[0].Message.DisplayName);
+        }
+
+        /// <summary>
+        ///     A configured player name is authoritative: the backend's speaker name never
+        ///     overwrites what the developer set on the player.
+        /// </summary>
+        [Test]
+        public void Adapter_Prefers_ConfiguredPlayerName_Over_SpeakerName()
+        {
+            var hub = new CapturingEventHub();
+            using var adapter = new PlayerTranscriptAdapter(hub, "default-player", "Kaan");
+
+            var speakerInfo = new SpeakerInfo("speaker-123", "John", "PA_xyz");
+
+            adapter.OnPlayerTranscriptionReceived("Hello", TransportPhase.ProcessedFinal, speakerInfo);
+
+            Assert.AreEqual("Kaan", hub.CapturedEvents[0].Message.DisplayName);
+            Assert.AreEqual("speaker-123", hub.CapturedEvents[0].Message.PlayerOrCharacterId,
+                "Identity still follows the speaker directory; only the shown name is the developer's.");
         }
 
         [Test]
@@ -65,7 +95,7 @@ namespace Convai.Tests.EditMode.Infrastructure
             adapter.OnPlayerTranscriptionReceived("Hello", TransportPhase.ProcessedFinal, SpeakerInfo.Empty);
 
             Assert.AreEqual(1, hub.CapturedEvents.Count);
-            Assert.AreEqual("default-player", hub.CapturedEvents[0].Message.SpeakerId);
+            Assert.AreEqual("default-player", hub.CapturedEvents[0].Message.PlayerOrCharacterId);
             Assert.AreEqual("DefaultName", hub.CapturedEvents[0].Message.DisplayName);
             Assert.IsFalse(hub.CapturedEvents[0].HasSpeakerInfo);
         }
@@ -84,8 +114,8 @@ namespace Convai.Tests.EditMode.Infrastructure
 
             Assert.AreEqual(2, hub.CapturedEvents.Count);
 
-            Assert.AreEqual("speaker-123", hub.CapturedEvents[0].Message.SpeakerId);
-            Assert.AreEqual("speaker-123", hub.CapturedEvents[1].Message.SpeakerId);
+            Assert.AreEqual("speaker-123", hub.CapturedEvents[0].Message.PlayerOrCharacterId);
+            Assert.AreEqual("speaker-123", hub.CapturedEvents[1].Message.PlayerOrCharacterId);
         }
 
         [Test]
@@ -103,10 +133,10 @@ namespace Convai.Tests.EditMode.Infrastructure
 
             Assert.AreEqual(3, hub.CapturedEvents.Count);
 
-            Assert.AreEqual("speaker-123", hub.CapturedEvents[0].Message.SpeakerId);
-            Assert.AreEqual("speaker-123", hub.CapturedEvents[1].Message.SpeakerId);
+            Assert.AreEqual("speaker-123", hub.CapturedEvents[0].Message.PlayerOrCharacterId);
+            Assert.AreEqual("speaker-123", hub.CapturedEvents[1].Message.PlayerOrCharacterId);
 
-            Assert.AreEqual("default-player", hub.CapturedEvents[2].Message.SpeakerId);
+            Assert.AreEqual("default-player", hub.CapturedEvents[2].Message.PlayerOrCharacterId);
         }
 
         [Test]
@@ -139,7 +169,7 @@ namespace Convai.Tests.EditMode.Infrastructure
                 speakerInfo
             );
 
-            Assert.AreEqual("speaker-123", evt.Message.SpeakerId);
+            Assert.AreEqual("speaker-123", evt.Message.PlayerOrCharacterId);
             Assert.AreEqual("John", evt.Message.DisplayName);
             Assert.AreEqual("PA_xyz", evt.Message.ParticipantId);
             Assert.AreEqual(SpeakerType.Player, evt.Message.SpeakerType);
@@ -158,7 +188,7 @@ namespace Convai.Tests.EditMode.Infrastructure
             );
 
             Assert.AreEqual(SpeakerType.Player, message.SpeakerType);
-            Assert.AreEqual("speaker-123", message.SpeakerId);
+            Assert.AreEqual("speaker-123", message.PlayerOrCharacterId);
             Assert.AreEqual("John", message.DisplayName);
             Assert.AreEqual("PA_xyz", message.ParticipantId);
         }
@@ -175,13 +205,13 @@ namespace Convai.Tests.EditMode.Infrastructure
             );
 
             Assert.AreEqual(SpeakerType.Character, message.SpeakerType);
-            Assert.AreEqual("char-1", message.SpeakerId);
+            Assert.AreEqual("char-1", message.PlayerOrCharacterId);
             Assert.AreEqual("Alice", message.DisplayName);
             Assert.AreEqual("PA_abc", message.ParticipantId);
         }
 
         [Test]
-        public void TranscriptMessage_WithSpeakerInfo_Creates_Copy()
+        public void TranscriptMessage_WithActorInfo_Creates_Copy()
         {
             TranscriptMessage original = TranscriptMessage.ForPlayer(
                 "Hello",
@@ -190,13 +220,13 @@ namespace Convai.Tests.EditMode.Infrastructure
                 "OldName"
             );
 
-            TranscriptMessage updated = original.WithSpeakerInfo("new-id", "NewName", "PA_new");
+            TranscriptMessage updated = original.WithPlayerOrCharacterInfo("new-id", "NewName", "PA_new");
 
-            Assert.AreEqual("new-id", updated.SpeakerId);
+            Assert.AreEqual("new-id", updated.PlayerOrCharacterId);
             Assert.AreEqual("NewName", updated.DisplayName);
             Assert.AreEqual("PA_new", updated.ParticipantId);
 
-            Assert.AreEqual("old-id", original.SpeakerId);
+            Assert.AreEqual("old-id", original.PlayerOrCharacterId);
             Assert.AreEqual("OldName", original.DisplayName);
         }
 

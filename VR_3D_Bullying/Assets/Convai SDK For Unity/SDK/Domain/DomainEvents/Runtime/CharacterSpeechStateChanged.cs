@@ -8,45 +8,8 @@ namespace Convai.Domain.DomainEvents.Runtime
     /// </summary>
     /// <remarks>
     ///     This event is published via EventHub whenever a character starts or stops speaking.
-    ///     Integration Example:
-    ///     <code>
-    /// 
-    /// private readonly IEventHub _eventHub;
-    /// 
-    /// private void OnCharacterStartedSpeaking()
-    /// {
-    ///     _eventHub.Publish(CharacterSpeechStateChanged.Create(
-    ///         characterId: _characterId,
-    ///         isSpeaking: true
-    ///     ));
-    /// }
-    /// 
-    /// private void OnCharacterStoppedSpeaking()
-    /// {
-    ///     _eventHub.Publish(CharacterSpeechStateChanged.Create(
-    ///         characterId: _characterId,
-    ///         isSpeaking: false
-    ///     ));
-    /// }
-    /// 
-    /// 
-    /// _eventHub.Subscribe&lt;CharacterSpeechStateChanged&gt;(this, e =>
-    /// {
-    ///     if (e.IsSpeaking)
-    ///     {
-    ///         Debug.Log($"Character {e.CharacterId} started speaking");
-    ///         PlayTalkingAnimation(e.CharacterId);
-    ///     }
-    ///     else
-    ///     {
-    ///         Debug.Log($"Character {e.CharacterId} stopped speaking");
-    ///         PlayIdleAnimation(e.CharacterId);
-    ///     }
-    /// });
-    /// </code>
-    ///     Delivery Policy:
-    ///     - Typically use EventDeliveryPolicy.MainThread for animation/UI updates
-    ///     - Can use EventDeliveryPolicy.Immediate for logging/analytics
+    ///     Typically use EventDeliveryPolicy.MainThread for animation or UI updates and
+    ///     EventDeliveryPolicy.Immediate for lightweight logging or analytics.
     /// </remarks>
     public readonly struct CharacterSpeechStateChanged
     {

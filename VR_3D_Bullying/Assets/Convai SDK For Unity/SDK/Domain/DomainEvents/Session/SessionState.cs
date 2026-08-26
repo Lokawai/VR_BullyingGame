@@ -5,37 +5,10 @@ namespace Convai.Domain.DomainEvents.Session
     ///     Standardizes session lifecycle tracking across the SDK.
     /// </summary>
     /// <remarks>
-    ///     This enum replaces ad-hoc boolean flags and callbacks in the room controller.
-    ///     Services can subscribe to SessionStateChanged events via EventHub instead of
-    ///     registering multiple callbacks.
-    ///     State Transitions:
-    ///     - Disconnected → Connecting (user initiates connection)
-    ///     - Connecting → Connected (connection established)
-    ///     - Connecting → Error (connection failed)
-    ///     - Connected → Disconnecting (user initiates disconnect)
-    ///     - Connected → Reconnecting (connection lost, attempting recovery)
-    ///     - Reconnecting → Connected (reconnection successful)
-    ///     - Reconnecting → Error (reconnection failed)
-    ///     - Disconnecting → Disconnected (clean disconnect)
-    ///     - Error → Disconnected (error acknowledged)
-    ///     Usage:
-    ///     <code>
-    /// 
-    /// private readonly IEventHub _eventHub;
-    /// 
-    /// _eventHub.Subscribe&lt;SessionStateChanged&gt;(this, e =>
-    /// {
-    ///     switch (e.NewState)
-    ///     {
-    ///         case SessionState.Connected:
-    ///             Debug.Log("Session connected!");
-    ///             break;
-    ///         case SessionState.Error:
-    ///             Debug.LogError($"Session error: {e.ErrorCode}");
-    ///             break;
-    ///     }
-    /// });
-    /// </code>
+    ///     Observe <see cref="SessionStateChanged" /> to react to session lifecycle updates.
+    ///     Typical flows include <c>Disconnected → Connecting → Connected</c> and
+    ///     <c>Connected → Disconnecting → Disconnected</c>, with <c>Reconnecting</c>
+    ///     used during recovery.
     /// </remarks>
     public enum SessionState
     {

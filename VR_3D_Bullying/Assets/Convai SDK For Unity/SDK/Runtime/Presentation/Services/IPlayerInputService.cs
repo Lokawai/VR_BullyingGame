@@ -7,9 +7,7 @@ namespace Convai.Runtime.Presentation.Services
     ///     Decouples UI components from direct ConvaiPlayer reference.
     /// </summary>
     /// <remarks>
-    ///     This service replaces the direct ConvaiPlayer reference that was previously
-    ///     held by ConvaiTranscriptHandler. It provides a clean DI-based approach
-    ///     to accessing player input functionality from transcript UIs.
+    ///     Provides transcript UIs with access to the registered player agent.
     /// </remarks>
     public interface IPlayerInputService
     {

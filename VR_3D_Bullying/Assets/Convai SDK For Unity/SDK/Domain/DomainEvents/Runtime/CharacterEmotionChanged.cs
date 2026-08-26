@@ -9,18 +9,8 @@ namespace Convai.Domain.DomainEvents.Runtime
     /// <remarks>
     ///     This event is published via EventHub whenever the backend sends a bot-emotion message.
     ///     The emotion includes a label (e.g., "happy", "sad", "angry") and an intensity scale (1-3).
-    ///     Integration Example:
-    ///     <code>
-    /// 
-    /// _eventHub.Subscribe&lt;CharacterEmotionChanged&gt;(this, e =>
-    /// {
-    ///     Debug.Log($"Character {e.CharacterId} emotion: {e.Emotion} (intensity: {e.Intensity})");
-    ///     UpdateFacialExpression(e.CharacterId, e.Emotion, e.Intensity);
-    /// });
-    /// </code>
-    ///     Delivery Policy:
-    ///     - Typically use EventDeliveryPolicy.MainThread for animation/UI updates
-    ///     - Can use EventDeliveryPolicy.Immediate for logging/analytics
+    ///     Typically use EventDeliveryPolicy.MainThread for animation or UI updates and
+    ///     EventDeliveryPolicy.Immediate for lightweight logging or analytics.
     /// </remarks>
     public readonly struct CharacterEmotionChanged
     {
@@ -43,6 +33,10 @@ namespace Convai.Domain.DomainEvents.Runtime
         ///     When the emotion changed (UTC).
         /// </summary>
         public DateTime Timestamp { get; }
+        public long Sequence { get; }
+        public string UtteranceId { get; }
+        public float Confidence { get; }
+        public int DurationMilliseconds { get; }
 
         /// <summary>
         ///     Creates a new CharacterEmotionChanged event.
@@ -57,6 +51,23 @@ namespace Convai.Domain.DomainEvents.Runtime
             Emotion = emotion;
             Intensity = Math.Clamp(intensity, 1, 3);
             Timestamp = timestamp;
+            Sequence = -1;
+            UtteranceId = string.Empty;
+            Confidence = 1f;
+            DurationMilliseconds = 0;
+        }
+
+        public CharacterEmotionChanged(string characterId, string emotion, int intensity, DateTime timestamp,
+            long sequence, string utteranceId, float confidence, int durationMilliseconds)
+        {
+            CharacterId = characterId;
+            Emotion = emotion;
+            Intensity = Math.Clamp(intensity, 1, 3);
+            Timestamp = timestamp;
+            Sequence = sequence;
+            UtteranceId = utteranceId ?? string.Empty;
+            Confidence = float.IsNaN(confidence) ? 1f : Math.Clamp(confidence, 0f, 1f);
+            DurationMilliseconds = Math.Max(0, durationMilliseconds);
         }
 
         /// <summary>
@@ -95,8 +106,12 @@ namespace Convai.Domain.DomainEvents.Runtime
         public bool IsLowIntensity => Intensity <= 1;
 
         /// <summary>
-        ///     Gets a normalized intensity value between 0 and 1.
+        ///     Gets a normalized intensity in <c>(0, 1]</c> using the same mapping the emotion
+        ///     pipeline applies (<c>Intensity / 3</c>): scale 1 -> 0.33, 2 -> 0.67, 3 -> 1.0.
+        ///     A subtle (scale 1) signal is still a real emotion, so it maps to 0.33 rather than 0.
+        ///     This is the single source of truth for base intensity normalization; the emotion
+        ///     controller adds its profile offset on top of this value.
         /// </summary>
-        public float NormalizedIntensity => (Intensity - 1) / 2f;
+        public float NormalizedIntensity => Intensity / 3f;
     }
 }

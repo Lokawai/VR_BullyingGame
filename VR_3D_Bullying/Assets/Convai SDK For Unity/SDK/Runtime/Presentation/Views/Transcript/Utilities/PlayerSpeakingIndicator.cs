@@ -1,9 +1,8 @@
 using Convai.Domain.DomainEvents.Runtime;
 using Convai.Domain.EventSystem;
 using Convai.Domain.Logging;
+using Convai.Runtime.Components;
 using Convai.Runtime.Logging;
-using Convai.Shared;
-using Convai.Shared.DependencyInjection;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -25,7 +24,7 @@ namespace Convai.Runtime.Presentation.Views.Transcript
     ///     - Update the indicator alpha based on speaking state
     ///     - Unsubscribe on disable to prevent memory leaks
     /// </remarks>
-    public class PlayerSpeakingIndicator : MonoBehaviour, IInjectable
+    public class PlayerSpeakingIndicator : MonoBehaviour
     {
         [Header("UI References")]
         [SerializeField]
@@ -71,7 +70,11 @@ namespace Convai.Runtime.Presentation.Views.Transcript
             }
         }
 
-        private void Start() => SubscribeToEvents();
+        private void Start()
+        {
+            TryResolveDependencies();
+            SubscribeToEvents();
+        }
 
         private void Update()
         {
@@ -87,6 +90,7 @@ namespace Convai.Runtime.Presentation.Views.Transcript
 
         private void OnEnable()
         {
+            TryResolveDependencies();
             if (_eventHub != null && !_isSubscribed) SubscribeToEvents();
         }
 
@@ -94,11 +98,27 @@ namespace Convai.Runtime.Presentation.Views.Transcript
 
         private void OnDestroy() => UnsubscribeFromEvents();
 
-        /// <inheritdoc />
-        public void InjectServices(IServiceContainer container)
+        public void Inject(IEventHub eventHub)
         {
-            container.TryGet(out IEventHub eventHub);
+            if (_eventHub == eventHub)
+                return;
+
+            UnsubscribeFromEvents();
             _eventHub = eventHub;
+
+            if (isActiveAndEnabled)
+                SubscribeToEvents();
+        }
+
+        private void TryResolveDependencies()
+        {
+            if (_eventHub != null) return;
+
+            ConvaiManager manager = ConvaiManager.ActiveManager;
+            if (manager == null) return;
+
+            if (manager.TryGetEventHub(out IEventHub eventHub))
+                Inject(eventHub);
         }
 
         /// <summary>
@@ -111,7 +131,7 @@ namespace Convai.Runtime.Presentation.Views.Transcript
             if (_eventHub == null)
             {
                 ConvaiLogger.Warning(
-                    "[PlayerSpeakingIndicator] IEventHub not available. " +
+                    "IEventHub not available. " +
                     "Ensure ConvaiManager has initialized before this component.", LogCategory.UI);
                 return;
             }

@@ -12,6 +12,8 @@ namespace Convai.Modules.LipSync
     {
         private const int InitialCapacity = 128;
         private const int ShrinkCheckInterval = 64;
+        private const float MaxIndexedResponseSeconds = 300f;
+        private const int IndexedInterpolationGuardFrames = 2;
         private int _appendsSinceShrinkCheck;
 
         private float[][] _frames = new float[InitialCapacity][];
@@ -66,14 +68,22 @@ namespace Convai.Modules.LipSync
         ///     Appends frames with computed timestamps: startTime + index / frameRate.
         ///     Copies frame values into reusable internal arrays.
         /// </summary>
-        public void AppendFrames(float[][] frames, float startTimeSeconds, float frameRate, float maxBufferedSeconds)
+        public void AppendFrames(
+            float[][] frames,
+            float startTimeSeconds,
+            float frameRate,
+            float maxBufferedSeconds,
+            bool retainFutureFrames = false)
         {
             if (frames == null || frames.Length == 0 || frameRate <= 0f) return;
 
-            int maxFrames = Math.Max(1, (int)Math.Ceiling(maxBufferedSeconds * frameRate));
+            int maxFrames = retainFutureFrames
+                ? Math.Max(1, (int)Math.Ceiling(MaxIndexedResponseSeconds * frameRate) +
+                              IndexedInterpolationGuardFrames)
+                : Math.Max(1, (int)Math.Ceiling(maxBufferedSeconds * frameRate));
             float interval = 1f / frameRate;
 
-            EnsureCapacity(FrameCount + frames.Length);
+            EnsureCapacity(Math.Min(maxFrames, FrameCount + frames.Length));
 
             for (int i = 0; i < frames.Length; i++)
             {
@@ -83,6 +93,43 @@ namespace Convai.Modules.LipSync
                 float time = startTimeSeconds + (i * interval);
                 PushFrame(frame, time, maxFrames);
             }
+        }
+
+        /// <summary>
+        ///     Drops frames from the tail whose timestamp is after the cutoff.
+        ///     Returns the number of frames removed. Used when the server cancels a turn but the
+        ///     released tail up to the cutoff should keep playing.
+        /// </summary>
+        public int TruncateAfter(float cutoffTime)
+        {
+            int removed = 0;
+            while (FrameCount > 0)
+            {
+                int lastPhysical = PhysicalIndex(FrameCount - 1);
+                if (_times[lastPhysical] <= cutoffTime) break;
+
+                FrameCount--;
+                removed++;
+            }
+
+            return removed;
+        }
+
+        public int PruneBefore(float cutoffTime)
+        {
+            int removed = 0;
+
+            while (FrameCount > 4)
+            {
+                int nextHead = PhysicalIndex(1);
+                if (_times[nextHead] >= cutoffTime) break;
+
+                _head = nextHead;
+                FrameCount--;
+                removed++;
+            }
+
+            return removed;
         }
 
         /// <summary>
@@ -157,9 +204,9 @@ namespace Convai.Modules.LipSync
             return lo;
         }
 
-        private void PushFrame(float[] values, float time, int maxFrames)
+        private void PushFrame(float[] values, float time, int? maxFrames)
         {
-            if (FrameCount >= maxFrames)
+            if (maxFrames.HasValue && FrameCount >= maxFrames.Value)
             {
                 _head = (_head + 1) % _frames.Length;
                 FrameCount--;
@@ -179,7 +226,7 @@ namespace Convai.Modules.LipSync
             if (_appendsSinceShrinkCheck >= ShrinkCheckInterval)
             {
                 _appendsSinceShrinkCheck = 0;
-                TryShrink(maxFrames);
+                if (maxFrames.HasValue) TryShrink(maxFrames.Value);
             }
         }
 

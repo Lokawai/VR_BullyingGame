@@ -22,19 +22,11 @@ namespace Convai.Editor.ConfigurationWindow.Components
         private readonly Dictionary<string, ConvaiBaseSection> _sectionInstances = new(StringComparer.Ordinal);
         private ScrollView _contentContainer;
 
-        /// <summary>
-        ///     Initializes a new instance of the <see cref="ConvaiContentContainerVisualElement" /> class.
-        /// </summary>
         public ConvaiContentContainerVisualElement()
             : this(new ConfigurationWindowContext(), ConfigurationSectionRegistry.GetEnabledSections())
         {
         }
 
-        /// <summary>
-        ///     Initializes a new instance of the <see cref="ConvaiContentContainerVisualElement" /> class.
-        /// </summary>
-        /// <param name="context">Shared window context.</param>
-        /// <param name="enabledSections">Enabled section descriptors.</param>
         public ConvaiContentContainerVisualElement(
             ConfigurationWindowContext context,
             IReadOnlyList<ConfigurationSectionDescriptor> enabledSections)

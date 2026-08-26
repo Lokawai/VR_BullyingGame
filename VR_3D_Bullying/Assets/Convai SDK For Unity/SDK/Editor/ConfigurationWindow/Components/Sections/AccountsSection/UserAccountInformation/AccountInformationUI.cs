@@ -30,25 +30,18 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.AccountsSection.
         {
             _ui = section;
             _context = context;
-            SetupApiKeyField();
+            InitializeApiKeyState();
         }
 
-        private void SetupApiKeyField()
+        private void InitializeApiKeyState()
         {
-            TextField apiKeyField = _ui.APIInputField;
             var settings = ConvaiSettings.Instance;
-
-            if (apiKeyField != null && settings != null && settings.HasApiKey)
-            {
-                apiKeyField.value = settings.ApiKey;
-                apiKeyField.isReadOnly = false;
-                _context?.RefreshApiKeyAvailability(false);
-                SetReadyState("Open this section to load account usage.");
-                return;
-            }
-
             _context?.RefreshApiKeyAvailability(false);
-            SetInvalidApiKeyState();
+
+            if (settings != null && settings.HasApiKey)
+                SetReadyState("Open this section to load account usage.");
+            else
+                SetInvalidApiKeyState();
         }
 
         /// <summary>
@@ -108,7 +101,7 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.AccountsSection.
 
             try
             {
-                var options = new ConvaiRestClientOptions(settings.ApiKey);
+                var options = ConvaiRestOptionsFactory.Create(settings.ApiKey);
                 using var client = new ConvaiRestClient(options);
                 UserUsageData usage = await client.Users.GetUsageAsync();
                 if (ShouldIgnoreResult(requestId)) return;

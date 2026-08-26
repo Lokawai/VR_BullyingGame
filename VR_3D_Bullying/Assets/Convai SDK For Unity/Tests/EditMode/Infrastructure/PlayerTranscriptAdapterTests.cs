@@ -2,8 +2,13 @@ using System;
 using System.Collections.Generic;
 using Convai.Domain.DomainEvents.Transcript;
 using Convai.Domain.EventSystem;
+using Convai.Domain.Models;
+using Convai.Infrastructure.Networking;
+using Convai.Runtime.Adapters.Networking;
+using Convai.Runtime.Behaviors;
 using Convai.Runtime.Services.Transcript;
 using NUnit.Framework;
+using UnityEngine;
 using TransportPhase = Convai.Domain.Models.TranscriptionPhase;
 using DomainPhase = Convai.Domain.Models.TranscriptionPhase;
 
@@ -27,7 +32,7 @@ namespace Convai.Tests.EditMode
             Assert.AreEqual(1, hub.CapturedEvents.Count);
             Assert.AreEqual(DomainPhase.Interim, hub.CapturedEvents[0].Phase);
             Assert.AreEqual("Hello", hub.CapturedEvents[0].Message.Text);
-            Assert.AreEqual("player-1", hub.CapturedEvents[0].Message.SpeakerId);
+            Assert.AreEqual("player-1", hub.CapturedEvents[0].Message.PlayerOrCharacterId);
             Assert.AreEqual("TestPlayer", hub.CapturedEvents[0].Message.DisplayName);
         }
 
@@ -55,6 +60,22 @@ namespace Convai.Tests.EditMode
             Assert.AreEqual(1, hub.CapturedEvents.Count, "ProcessedFinal should be forwarded to Application layer");
             Assert.AreEqual(DomainPhase.ProcessedFinal, hub.CapturedEvents[0].Phase);
             Assert.AreEqual("Processed text", hub.CapturedEvents[0].Message.Text);
+        }
+
+        [Test]
+        public void PlayerSessionAdapter_LeavesProcessedFinalOnCanonicalDomainPath()
+        {
+            var hub = new CapturingEventHub();
+            var player = new CapturingPlayerAgent();
+            using var session = new PlayerSessionAdapter(player, hub);
+            var speaker = new SpeakerInfo("speaker-1", "Player", "participant-1");
+
+            session.OnPlayerTranscriptionReceived("Processed text", TransportPhase.ProcessedFinal, speaker);
+
+            Assert.AreEqual(0, hub.CapturedEvents.Count);
+            CollectionAssert.AreEqual(
+                new[] { TransportPhase.ProcessedFinal },
+                player.Phases);
         }
 
         [Test]
@@ -152,6 +173,59 @@ namespace Convai.Tests.EditMode
         }
 
         [Test]
+        public void ServerSpeakerName_DoesNotOverrideDynamicPlayerName()
+        {
+            var hub = new CapturingEventHub();
+            var speakerInfo = new SpeakerInfo("srv-id", "Server Name", "p1");
+            using var adapter = new PlayerTranscriptAdapter(
+                hub,
+                "player-1",
+                "Fallback",
+                () => "Rishav");
+
+            adapter.OnPlayerTranscriptionReceived("hi", TransportPhase.Completed, speakerInfo);
+
+            PlayerTranscriptReceived published = hub.CapturedEvents[0];
+            Assert.AreEqual("Rishav", published.Message.DisplayName);
+            Assert.AreEqual("srv-id", published.Message.PlayerOrCharacterId);
+            Assert.AreEqual(speakerInfo, published.SpeakerInfo);
+        }
+
+        [Test]
+        public void PublishTypedText_Uses_Provided_MessageId_And_Typed_Source()
+        {
+            var hub = new CapturingEventHub();
+            using var adapter = new PlayerTranscriptAdapter(hub, "player-1", "TestPlayer");
+
+            adapter.PublishTypedText("hello", "typed-1");
+
+            Assert.AreEqual(1, hub.CapturedEvents.Count);
+            Assert.AreEqual("typed-1", hub.CapturedEvents[0].TurnId);
+            Assert.AreEqual("typed-1", hub.CapturedEvents[0].MessageId);
+            Assert.AreEqual(TranscriptSegmentSourceKind.PlayerTypedText, hub.CapturedEvents[0].SourceKind);
+            Assert.AreEqual("hello", hub.CapturedEvents[0].Text);
+        }
+
+        [Test]
+        public void PublishTypedText_ServerSpeakerName_DoesNotOverrideDynamicPlayerName()
+        {
+            var hub = new CapturingEventHub();
+            var speakerInfo = new SpeakerInfo("srv-id", "Server Name", "p1");
+            using var adapter = new PlayerTranscriptAdapter(
+                hub,
+                "player-1",
+                "Fallback",
+                () => "Rishav");
+
+            adapter.PublishTypedText("hi", "typed-1", speakerInfo);
+
+            PlayerTranscriptReceived published = hub.CapturedEvents[0];
+            Assert.AreEqual("Rishav", published.Message.DisplayName);
+            Assert.AreEqual("srv-id", published.Message.PlayerOrCharacterId);
+            Assert.AreEqual(speakerInfo, published.SpeakerInfo);
+        }
+
+        [Test]
         public void Constructor_Throws_On_Null_EventHub()
         {
             Assert.Throws<ArgumentNullException>(() =>
@@ -192,13 +266,6 @@ namespace Convai.Tests.EditMode
             Assert.AreEqual(DomainPhase.Completed, hub.CapturedEvents[5].Phase);
         }
 
-        private sealed class ImmediateScheduler : IUnityScheduler
-        {
-            public void ScheduleOnMainThread(Action action) => action?.Invoke();
-            public void ScheduleOnBackground(Action action) => action?.Invoke();
-            public bool IsMainThread() => true;
-        }
-
         private sealed class CapturingEventHub : IEventHub
         {
             public List<PlayerTranscriptReceived> CapturedEvents { get; } = new();
@@ -228,6 +295,31 @@ namespace Convai.Tests.EditMode
             public void Unsubscribe(SubscriptionToken token) { }
 
             public bool TryPeriodicCleanup(float currentTimeSeconds, float cleanupIntervalSeconds = 60f) => false;
+        }
+
+        private sealed class CapturingPlayerAgent : IConvaiPlayerAgent, IConvaiPlayerEvents
+        {
+            public readonly List<TransportPhase> Phases = new();
+
+            public string PlayerName => "Player";
+            public string PlayerId => "player-1";
+            public Color NameTagColor => Color.white;
+
+            public event Action<string> OnTextMessageSent;
+
+            public void SendTextMessage(string message) => OnTextMessageSent?.Invoke(message);
+
+            public void OnPlayerTranscriptionReceived(string transcript, TransportPhase transcriptionPhase) =>
+                Phases.Add(transcriptionPhase);
+
+            public void OnPlayerTranscriptionReceived(
+                string transcript,
+                TransportPhase transcriptionPhase,
+                SpeakerInfo speakerInfo) => Phases.Add(transcriptionPhase);
+
+            public void OnPlayerStartedSpeaking(string sessionId) { }
+
+            public void OnPlayerStoppedSpeaking(string sessionId, bool didProduceFinalTranscript) { }
         }
     }
 }

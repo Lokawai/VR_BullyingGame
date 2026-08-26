@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Convai.Domain.Logging;
 using Convai.Infrastructure.Networking.Connection;
 using Convai.Infrastructure.Networking.Transport;
 using LiveKit;
@@ -18,6 +19,168 @@ using TrackKind = LiveKit.Proto.TrackKind;
 
 namespace Convai.Infrastructure.Networking.Native
 {
+    internal interface INativeMicrophonePublisher : IDisposable
+    {
+        public bool IsEnabled { get; }
+        public bool IsMuted { get; }
+        public Task<bool> EnableAsync(int microphoneDeviceIndex, CancellationToken ct);
+        public Task DisableAsync(CancellationToken ct);
+        public void SetMuted(bool muted);
+    }
+
+    internal sealed class NativeMicrophonePublisher : INativeMicrophonePublisher
+    {
+        private readonly Func<GameObject> _audioSourceHolderProvider;
+        private readonly LiveKitRoomBackend _backend;
+        private readonly ILogger _logger;
+        private LocalAudioTrack _localAudioTrack;
+        private MicrophoneSource _microphoneSource;
+
+        public NativeMicrophonePublisher(LiveKitRoomBackend backend, ILogger logger,
+            Func<GameObject> audioSourceHolderProvider)
+        {
+            _backend = backend ?? throw new ArgumentNullException(nameof(backend));
+            _logger = (logger ?? throw new ArgumentNullException(nameof(logger))).WithTag("NativeTransport");
+            _audioSourceHolderProvider = audioSourceHolderProvider ??
+                                         throw new ArgumentNullException(nameof(audioSourceHolderProvider));
+        }
+
+        public bool IsEnabled => _localAudioTrack != null;
+
+        public bool IsMuted { get; private set; }
+
+        public async Task<bool> EnableAsync(int microphoneDeviceIndex, CancellationToken ct)
+        {
+            if (_backend.Room?.LocalParticipant == null)
+            {
+                _logger.Warning("Room not connected. Cannot enable microphone.");
+                return false;
+            }
+
+            if (IsEnabled)
+            {
+                _logger.Warning("Microphone already enabled.");
+                return true;
+            }
+
+            try
+            {
+                string[] devices = Microphone.devices;
+                if (devices.Length == 0)
+                {
+                    _logger.Error("No microphone devices available.");
+                    return false;
+                }
+
+                string deviceName = microphoneDeviceIndex < devices.Length
+                    ? devices[microphoneDeviceIndex]
+                    : devices[0];
+                _logger.Info($"Using microphone device: {deviceName}");
+
+                GameObject audioHolder = _audioSourceHolderProvider();
+                _microphoneSource = new MicrophoneSource(deviceName, audioHolder);
+                _microphoneSource.Start();
+
+                _localAudioTrack = LocalAudioTrack.CreateAudioTrack("microphone", _microphoneSource, _backend.Room);
+
+                var publishOptions = new TrackPublishOptions { Source = TrackSource.SourceMicrophone };
+                PublishTrackInstruction publishInstruction =
+                    _backend.Room.LocalParticipant.PublishTrack(_localAudioTrack, publishOptions);
+
+                while (!publishInstruction.IsDone)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    await Task.Delay(50, ct);
+                }
+
+                if (publishInstruction.IsError)
+                {
+                    _logger.Error($"Failed to publish microphone track: {publishInstruction}");
+                    Cleanup();
+                    return false;
+                }
+
+                IsMuted = false;
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.Warning("Microphone enable cancelled");
+                Cleanup();
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error($"Failed to enable microphone: {ex.Message}");
+                Cleanup();
+                return false;
+            }
+        }
+
+        public async Task DisableAsync(CancellationToken ct)
+        {
+            if (!IsEnabled) return;
+
+            try
+            {
+                if (_localAudioTrack != null && _backend.Room?.LocalParticipant != null)
+                {
+                    UnpublishTrackInstruction unpublishInstruction =
+                        _backend.Room.LocalParticipant.UnpublishTrack(_localAudioTrack, true);
+
+                    while (!unpublishInstruction.IsDone) await Task.Delay(50, ct);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning($"Error unpublishing audio track: {ex.Message}");
+            }
+
+            Cleanup();
+        }
+
+        public void SetMuted(bool muted)
+        {
+            if (!IsEnabled)
+            {
+                _logger.Warning("Microphone not enabled. Cannot set mute state.");
+                return;
+            }
+
+            _microphoneSource?.SetMute(muted);
+            IsMuted = muted;
+        }
+
+        public void Dispose() => Cleanup();
+
+        private void Cleanup()
+        {
+            try
+            {
+                _microphoneSource?.Stop();
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning($"Error stopping microphone: {ex.Message}");
+            }
+
+            try
+            {
+                _microphoneSource?.Dispose();
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning($"Error disposing microphone source: {ex.Message}");
+            }
+
+            NativeMicrophoneSource.EnsureAllRecordingDevicesReleased();
+
+            _localAudioTrack = null;
+            _microphoneSource = null;
+            IsMuted = false;
+        }
+    }
+
     /// <summary>
     ///     Native (desktop/mobile) implementation of <see cref="IRealtimeTransport" />.
     ///     Wraps the LiveKit native backend and adds audio track management.
@@ -53,8 +216,9 @@ namespace Convai.Infrastructure.Networking.Native
             GameObject audioSourceHolder = null)
         {
             _backend = backend ?? throw new ArgumentNullException(nameof(backend));
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _logger = (logger ?? throw new ArgumentNullException(nameof(logger))).WithTag("NativeTransport");
             _audioSourceHolder = audioSourceHolder;
+            _microphonePublisher = new NativeMicrophonePublisher(_backend, _logger, GetOrCreateAudioSourceHolder);
 
             // Subscribe to backend events.
             _backend.DataPacketReceived += OnDataPacketReceived;
@@ -77,7 +241,7 @@ namespace Convai.Infrastructure.Networking.Native
         {
             if (_backend.Room?.LocalParticipant == null)
             {
-                _logger.Warning("[NativeTransport] Room not connected. Cannot send data.");
+                _logger.Warning("Room not connected. Cannot send data.");
                 return;
             }
 
@@ -87,7 +251,7 @@ namespace Convai.Infrastructure.Networking.Native
             }
             catch (Exception ex)
             {
-                _logger.Error($"[NativeTransport] Error sending data: {ex.Message}");
+                _logger.Error($"Error sending data: {ex.Message}");
                 throw;
             }
         }
@@ -114,7 +278,7 @@ namespace Convai.Infrastructure.Networking.Native
             _backend.TrackSubscribed -= OnTrackSubscribed;
             _backend.TrackUnsubscribed -= OnTrackUnsubscribed;
 
-            CleanupMicrophone();
+            _microphonePublisher.Dispose();
             DisposeRoomFacade();
             DestroyOwnedAudioSourceHolder();
             _currentSession = null;
@@ -147,10 +311,7 @@ namespace Convai.Infrastructure.Networking.Native
         private TransportSessionInfo? _currentSession;
         private bool _isDisconnecting;
         private bool _disposed;
-
-        // Microphone source for native platforms
-        private MicrophoneSource _microphoneSource;
-        private LocalAudioTrack _localAudioTrack;
+        private readonly INativeMicrophonePublisher _microphonePublisher;
 
         #endregion
 
@@ -163,13 +324,7 @@ namespace Convai.Infrastructure.Networking.Native
         public TransportSessionInfo? CurrentSession => _currentSession;
 
         /// <inheritdoc />
-        public TransportCapabilities Capabilities => TransportCapabilities.Native(
-#if UNITY_IOS || UNITY_ANDROID
-            isMobile: true
-#else
-            false
-#endif
-        );
+        public TransportCapabilities Capabilities => NativeTransportPlatformResolver.GetCapabilities();
 
         /// <inheritdoc />
         public AudioRuntimeState AudioState => new(
@@ -185,10 +340,10 @@ namespace Convai.Infrastructure.Networking.Native
         public IRoomFacade Room { get; private set; }
 
         /// <inheritdoc />
-        public bool IsMicrophoneEnabled { get; private set; }
+        public bool IsMicrophoneEnabled => _microphonePublisher.IsEnabled;
 
         /// <inheritdoc />
-        public bool IsMicrophoneMuted { get; private set; }
+        public bool IsMicrophoneMuted => _microphonePublisher.IsMuted;
 
         #endregion
 
@@ -246,7 +401,7 @@ namespace Convai.Infrastructure.Networking.Native
         {
             if (State != TransportState.Disconnected)
             {
-                _logger.Warning("[NativeTransport] Already connected or connecting");
+                _logger.Warning("Already connected or connecting");
                 return false;
             }
 
@@ -280,7 +435,7 @@ namespace Convai.Infrastructure.Networking.Native
 
                     SetState(TransportState.Connected);
                     Connected?.Invoke(_currentSession.Value);
-                    _logger.Info($"[NativeTransport] Connected to room: {_currentSession.Value.RoomName}");
+                    _logger.Info($"Connected to room: {_currentSession.Value.RoomName}");
                     return true;
                 }
 
@@ -292,14 +447,14 @@ namespace Convai.Infrastructure.Networking.Native
             catch (OperationCanceledException)
             {
                 SetState(TransportState.Disconnected);
-                _logger.Warning("[NativeTransport] Connection cancelled");
+                _logger.Warning("Connection cancelled");
                 return false;
             }
             catch (Exception ex)
             {
                 SetState(TransportState.Disconnected);
                 ConnectionFailed?.Invoke(new TransportError(ex.Message, TransportErrorCode.Unknown, ex));
-                _logger.Error($"[NativeTransport] Connection error: {ex.Message}");
+                _logger.Error($"Connection error: {ex.Message}");
                 return false;
             }
         }
@@ -324,11 +479,11 @@ namespace Convai.Infrastructure.Networking.Native
                 DisposeRoomFacade();
                 SetState(TransportState.Disconnected);
                 Disconnected?.Invoke(reason);
-                _logger.Info("[NativeTransport] Disconnected");
+                _logger.Info("Disconnected");
             }
             catch (Exception ex)
             {
-                _logger.Warning($"[NativeTransport] Error during disconnect: {ex.Message}");
+                _logger.Warning($"Error during disconnect: {ex.Message}");
                 SetState(TransportState.Disconnected);
                 Disconnected?.Invoke(TransportDisconnectReason.TransportError);
             }
@@ -352,80 +507,14 @@ namespace Convai.Infrastructure.Networking.Native
         /// <inheritdoc />
         public async Task<bool> EnableMicrophoneAsync(int microphoneDeviceIndex = 0, CancellationToken ct = default)
         {
-            if (_backend.Room?.LocalParticipant == null)
-            {
-                _logger.Warning("[NativeTransport] Room not connected. Cannot enable microphone.");
+            bool enabled = await _microphonePublisher.EnableAsync(microphoneDeviceIndex, ct);
+            if (!enabled)
                 return false;
-            }
 
-            if (IsMicrophoneEnabled)
-            {
-                _logger.Warning("[NativeTransport] Microphone already enabled.");
-                return true;
-            }
-
-            try
-            {
-                // Get microphone device
-                string[] devices = Microphone.devices;
-                if (devices.Length == 0)
-                {
-                    _logger.Error("[NativeTransport] No microphone devices available.");
-                    return false;
-                }
-
-                string deviceName = microphoneDeviceIndex < devices.Length
-                    ? devices[microphoneDeviceIndex]
-                    : devices[0];
-                _logger.Info($"[NativeTransport] Using microphone device: {deviceName}");
-
-                // Create microphone source - requires a GameObject host.
-                GameObject audioHolder = GetOrCreateAudioSourceHolder();
-                _microphoneSource = new MicrophoneSource(deviceName, audioHolder);
-                _microphoneSource.Start();
-
-                // Create local audio track
-                _localAudioTrack =
-                    LocalAudioTrack.CreateAudioTrack("microphone", _microphoneSource, _backend.Room);
-
-                // Publish track
-                var publishOptions = new TrackPublishOptions { Source = TrackSource.SourceMicrophone };
-
-                PublishTrackInstruction publishInstruction =
-                    _backend.Room.LocalParticipant.PublishTrack(_localAudioTrack, publishOptions);
-
-                // Wait for publish to complete
-                while (!publishInstruction.IsDone)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    await Task.Delay(50, ct);
-                }
-
-                if (publishInstruction.IsError)
-                {
-                    _logger.Error($"[NativeTransport] Failed to publish microphone track: {publishInstruction}");
-                    CleanupMicrophone();
-                    return false;
-                }
-
-                IsMicrophoneEnabled = true;
-                IsMicrophoneMuted = false;
-                MicrophoneEnabledChanged?.Invoke(true);
-                _logger.Info("[NativeTransport] Microphone enabled and publishing");
-                return true;
-            }
-            catch (OperationCanceledException)
-            {
-                _logger.Warning("[NativeTransport] Microphone enable cancelled");
-                CleanupMicrophone();
-                return false;
-            }
-            catch (Exception ex)
-            {
-                _logger.Error($"[NativeTransport] Failed to enable microphone: {ex.Message}");
-                CleanupMicrophone();
-                return false;
-            }
+            MicrophoneEnabledChanged?.Invoke(true);
+            MicrophoneMuteChanged?.Invoke(false);
+            _logger.Info("Microphone enabled and publishing");
+            return true;
         }
 
         /// <inheritdoc />
@@ -433,25 +522,10 @@ namespace Convai.Infrastructure.Networking.Native
         {
             if (!IsMicrophoneEnabled) return;
 
-            try
-            {
-                if (_localAudioTrack != null && _backend.Room?.LocalParticipant != null)
-                {
-                    UnpublishTrackInstruction unpublishInstruction =
-                        _backend.Room.LocalParticipant.UnpublishTrack(_localAudioTrack, true);
-
-                    while (!unpublishInstruction.IsDone) await Task.Delay(50, ct);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.Warning($"[NativeTransport] Error unpublishing audio track: {ex.Message}");
-            }
-
-            CleanupMicrophone();
-            IsMicrophoneEnabled = false;
+            await _microphonePublisher.DisableAsync(ct);
             MicrophoneEnabledChanged?.Invoke(false);
-            _logger.Info("[NativeTransport] Microphone disabled");
+            MicrophoneMuteChanged?.Invoke(false);
+            _logger.Info("Microphone disabled");
         }
 
         /// <inheritdoc />
@@ -459,15 +533,13 @@ namespace Convai.Infrastructure.Networking.Native
         {
             if (!IsMicrophoneEnabled)
             {
-                _logger.Warning("[NativeTransport] Microphone not enabled. Cannot set mute state.");
+                _logger.Warning("Microphone not enabled. Cannot set mute state.");
                 return;
             }
 
-            if (_microphoneSource != null) _microphoneSource.SetMute(muted);
-
-            IsMicrophoneMuted = muted;
+            _microphonePublisher.SetMuted(muted);
             MicrophoneMuteChanged?.Invoke(muted);
-            _logger.Info($"[NativeTransport] Microphone muted: {muted}");
+            _logger.Info($"Microphone muted: {muted}");
         }
 
         /// <inheritdoc />
@@ -481,30 +553,6 @@ namespace Convai.Infrastructure.Networking.Native
             return true;
         }
 
-        private void CleanupMicrophone()
-        {
-            try
-            {
-                _microphoneSource?.Stop();
-            }
-            catch (Exception ex)
-            {
-                _logger.Warning($"[NativeTransport] Error stopping microphone: {ex.Message}");
-            }
-
-            try
-            {
-                _microphoneSource?.Dispose();
-            }
-            catch (Exception ex)
-            {
-                _logger.Warning($"[NativeTransport] Error disposing microphone source: {ex.Message}");
-            }
-
-            _localAudioTrack = null;
-            _microphoneSource = null;
-        }
-
         private void DisposeRoomFacade()
         {
             if (Room == null) return;
@@ -515,7 +563,7 @@ namespace Convai.Infrastructure.Networking.Native
             }
             catch (Exception ex)
             {
-                _logger.Warning($"[NativeTransport] Error disposing room facade: {ex.Message}");
+                _logger.Warning($"Error disposing room facade: {ex.Message}");
             }
             finally
             {
@@ -544,7 +592,7 @@ namespace Convai.Infrastructure.Networking.Native
 
             if (_ownedAudioSourceHolder != null)
             {
-                if (Application.isPlaying)
+                if (UnityEngine.Application.isPlaying)
                     Object.Destroy(_ownedAudioSourceHolder);
                 else
                     Object.DestroyImmediate(_ownedAudioSourceHolder);
@@ -569,10 +617,10 @@ namespace Convai.Infrastructure.Networking.Native
             if (_isDisconnecting) return;
 
             _currentSession = null;
-            CleanupMicrophone();
+            _microphonePublisher.Dispose();
             DisposeRoomFacade();
-            IsMicrophoneEnabled = false;
-            IsMicrophoneMuted = false;
+            MicrophoneEnabledChanged?.Invoke(false);
+            MicrophoneMuteChanged?.Invoke(false);
             SetState(TransportState.Disconnected);
             Disconnected?.Invoke(TransportDisconnectReason.RemoteHangUp);
         }

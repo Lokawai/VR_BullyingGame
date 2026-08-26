@@ -2,7 +2,6 @@ using System;
 using LiveKit;
 using UnityEngine;
 
-// CS0067: Event required by IAudioStream interface but not yet raised (future raw audio data access)
 #pragma warning disable CS0067
 
 namespace Convai.Infrastructure.Networking.Native

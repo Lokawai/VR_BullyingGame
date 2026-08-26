@@ -102,7 +102,7 @@ namespace Convai.Runtime.Settings
             {
                 lock (_queueLock) _isProcessing = false;
 
-                ConvaiLogger.Warning($"[RuntimeSettingsAudioApplier] Microphone apply loop failed: {ex.Message}",
+                ConvaiLogger.Warning($"Microphone apply loop failed: {ex.Message}",
                     LogCategory.Audio);
             }
         }
@@ -117,7 +117,7 @@ namespace Convai.Runtime.Settings
             int index = _microphoneDeviceService.ResolvePreferredDeviceIndex(preferredDeviceId);
             if (index < 0)
             {
-                ConvaiLogger.Warning("[RuntimeSettingsAudioApplier] No valid microphone device found for switch.",
+                ConvaiLogger.Warning("No valid microphone device found for switch.",
                     LogCategory.Audio);
                 return;
             }
@@ -126,12 +126,12 @@ namespace Convai.Runtime.Settings
             try
             {
                 await audioService.StartListeningAsync(index);
-                ConvaiLogger.Debug($"[RuntimeSettingsAudioApplier] Switched live microphone to index {index}",
+                ConvaiLogger.Debug($"Switched live microphone to index {index}",
                     LogCategory.Audio);
             }
             catch (Exception ex)
             {
-                ConvaiLogger.Warning($"[RuntimeSettingsAudioApplier] Failed to switch microphone: {ex.Message}",
+                ConvaiLogger.Warning($"Failed to switch microphone: {ex.Message}",
                     LogCategory.Audio);
             }
             finally

@@ -11,32 +11,13 @@ namespace Convai.Runtime.Services.Transcript
 {
     /// <summary>
     ///     Adapter that bridges player ASR events to the domain transcript pipeline.
-    ///     Implements <see cref="IConvaiPlayerEvents" /> to receive transcription phases
-    ///     and publishes <see cref="PlayerTranscriptReceived" /> domain events via EventHub.
-    ///     Supports multi-user speaker attribution via <see cref="SpeakerInfo" />.
     /// </summary>
-    /// <remarks>
-    ///     <para>
-    ///         <b>Architecture:</b> This adapter is a "dumb" pass-through component. It forwards
-    ///         ALL transcription phases to the Application layer without any filtering or processing.
-    ///         The Application layer (TranscriptPresenter) is responsible for deciding which phases
-    ///         to display and how to aggregate them.
-    ///     </para>
-    ///     <para>
-    ///         <b>Phase Handling:</b> Incoming transcription phases are already the canonical
-    ///         domain <see cref="TranscriptionPhase" /> values and are forwarded as-is.
-    ///     </para>
-    ///     <para>
-    ///         <b>Multi-User Support:</b> When <see cref="SpeakerInfo" /> is provided via the overloaded
-    ///         callback, it is passed through to the domain event for speaker attribution in multi-user
-    ///         scenarios.
-    ///     </para>
-    /// </remarks>
     public sealed class PlayerTranscriptAdapter : IConvaiPlayerEvents, IDisposable
     {
         private readonly string _defaultPlayerName;
         private readonly IEventHub _eventHub;
         private readonly Func<string> _playerNameProvider;
+        private string _currentSessionId = string.Empty;
         private bool _isDisposed;
 
         private SpeakerInfo _lastSpeakerInfo = SpeakerInfo.Empty;
@@ -46,7 +27,10 @@ namespace Convai.Runtime.Services.Transcript
         /// </summary>
         /// <param name="eventHub">Event hub for publishing domain events. Required.</param>
         /// <param name="playerId">Unique identifier for the player. Required.</param>
-        /// <param name="playerName">Default display name for the player. Defaults to "You" if null or empty.</param>
+        /// <param name="playerName">
+        ///     Display name for the player. Falls back to <see cref="PlayerDisplayName.Default" />
+        ///     if null or empty.
+        /// </param>
         /// <param name="playerNameProvider">Optional dynamic player-name provider used at publish time.</param>
         /// <exception cref="ArgumentNullException">Thrown if eventHub is null.</exception>
         /// <exception cref="ArgumentException">Thrown if playerId is null or empty.</exception>
@@ -62,18 +46,12 @@ namespace Convai.Runtime.Services.Transcript
                 throw new ArgumentException("Player ID cannot be null or empty.", nameof(playerId));
 
             PlayerId = playerId;
-            _defaultPlayerName = string.IsNullOrWhiteSpace(playerName) ? "You" : playerName;
+            _defaultPlayerName = string.IsNullOrWhiteSpace(playerName) ? PlayerDisplayName.Default : playerName;
             _playerNameProvider = playerNameProvider;
         }
 
-        /// <summary>
-        ///     Gets the player ID this adapter is associated with.
-        /// </summary>
         public string PlayerId { get; }
 
-        /// <summary>
-        ///     Gets the player display name.
-        /// </summary>
         public string PlayerName => ResolvePlayerName();
 
         /// <inheritdoc />
@@ -88,26 +66,26 @@ namespace Convai.Runtime.Services.Transcript
                 return;
 
             ConvaiLogger.Debug(
-                $"[PlayerTranscriptAdapter] Transcription received: phase={transcriptionPhase}, text=\"{transcript}\"",
+                $"Transcription received: phase={transcriptionPhase}, text=\"{transcript}\"",
                 LogCategory.Player);
 
             if (speakerInfo.IsValid) _lastSpeakerInfo = speakerInfo;
 
             SpeakerInfo effectiveSpeakerInfo = speakerInfo.IsValid ? speakerInfo : _lastSpeakerInfo;
 
-            string fallbackPlayerName = ResolvePlayerName();
-            string speakerId = effectiveSpeakerInfo.IsValid ? effectiveSpeakerInfo.SpeakerId : PlayerId;
-            string speakerName = effectiveSpeakerInfo.IsValid ? effectiveSpeakerInfo.SpeakerName : fallbackPlayerName;
+            string actorId = effectiveSpeakerInfo.IsValid ? effectiveSpeakerInfo.SpeakerId : PlayerId;
 
             string safeText = transcript ?? string.Empty;
 
             var domainEvent = PlayerTranscriptReceived.Create(
-                speakerId,
-                string.IsNullOrEmpty(speakerName) ? fallbackPlayerName : speakerName,
+                actorId,
+                ResolveDisplayName(effectiveSpeakerInfo),
                 safeText,
                 false,
                 transcriptionPhase,
-                speakerInfo: effectiveSpeakerInfo
+                speakerInfo: effectiveSpeakerInfo,
+                turnId: _currentSessionId,
+                messageId: _currentSessionId
             );
 
             _eventHub.Publish(domainEvent);
@@ -116,17 +94,58 @@ namespace Convai.Runtime.Services.Transcript
         }
 
         /// <inheritdoc />
-        public void OnPlayerStartedSpeaking(string sessionId)
-        {
-        }
+        public void OnPlayerStartedSpeaking(string sessionId) => _currentSessionId = sessionId ?? string.Empty;
 
         /// <inheritdoc />
         public void OnPlayerStoppedSpeaking(string sessionId, bool didProduceFinalTranscript)
         {
+            if (_currentSessionId == sessionId) _currentSessionId = string.Empty;
+        }
+
+        /// <summary>
+        ///     Publishes a typed-text transcript event keyed by a stable message ID.
+        /// </summary>
+        public void PublishTypedText(string transcript, string messageId, SpeakerInfo speakerInfo = default)
+        {
+            if (_isDisposed)
+                return;
+
+            SpeakerInfo effectiveSpeakerInfo = speakerInfo.IsValid ? speakerInfo : SpeakerInfo.Empty;
+            string actorId = effectiveSpeakerInfo.IsValid ? effectiveSpeakerInfo.SpeakerId : PlayerId;
+
+            string safeText = transcript ?? string.Empty;
+
+            _eventHub.Publish(PlayerTranscriptReceived.CreateTypedText(
+                actorId,
+                ResolveDisplayName(effectiveSpeakerInfo),
+                safeText,
+                messageId,
+                effectiveSpeakerInfo));
         }
 
         /// <inheritdoc />
         public void Dispose() => _isDisposed = true;
+
+        /// <summary>
+        ///     The name this turn is attributed to: the configured player name when the developer
+        ///     configured one, otherwise the backend's speaker name.
+        /// </summary>
+        /// <remarks>
+        ///     A configured name always wins — the server's speaker directory does not know what
+        ///     the game calls its player, and letting it overwrite the name shown in the chat UI
+        ///     was a reported defect. But the untouched <see cref="PlayerDisplayName.Default" />
+        ///     placeholder is not a name anyone chose, so it yields; without that, every speaker in
+        ///     a multi-user room is labelled with the local player's placeholder. This is the same
+        ///     rule the room transcript engine applies when it builds the turn's actor, kept in one
+        ///     place so the published event and the actor it is filed under cannot disagree.
+        /// </remarks>
+        private string ResolveDisplayName(in SpeakerInfo speakerInfo)
+        {
+            string playerName = ResolvePlayerName();
+            if (PlayerDisplayName.IsAuthored(playerName)) return playerName;
+
+            return string.IsNullOrWhiteSpace(speakerInfo.SpeakerName) ? playerName : speakerInfo.SpeakerName;
+        }
 
         private string ResolvePlayerName()
         {

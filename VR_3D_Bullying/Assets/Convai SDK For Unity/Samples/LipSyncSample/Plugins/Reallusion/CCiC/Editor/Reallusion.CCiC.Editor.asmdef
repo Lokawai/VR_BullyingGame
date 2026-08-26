@@ -2,7 +2,7 @@
     "name": "Reallusion.CCiC.Editor",
     "rootNamespace": "Reallusion.Runtime",
     "references": [
-       "Reallusion.CCiC.Runtime"
+        "Reallusion.CCiC.Runtime"
     ],
     "includePlatforms": [
         "Editor"

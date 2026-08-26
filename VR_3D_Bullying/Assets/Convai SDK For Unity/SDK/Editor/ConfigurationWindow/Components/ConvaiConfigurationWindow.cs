@@ -23,9 +23,6 @@ namespace Convai.Editor.ConfigurationWindow.Components
         private string _initialSection;
         private bool _isNavigationSubscribed;
 
-        /// <summary>
-        ///     Initializes a new instance of the <see cref="ConvaiConfigurationWindow" /> class.
-        /// </summary>
         public ConvaiConfigurationWindow()
         {
             _context = new ConfigurationWindowContext();

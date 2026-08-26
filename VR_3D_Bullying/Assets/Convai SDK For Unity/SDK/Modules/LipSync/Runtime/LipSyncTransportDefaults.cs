@@ -18,9 +18,10 @@ namespace Convai.Modules.LipSync
         public static bool TryBuildForProfile(
             LipSyncProfileId profileId,
             IReadOnlyList<string> sourceBlendshapeNames,
-            out LipSyncTransportOptions options)
+            out LipSyncTransportOptions options,
+            bool deliverChunksAhead = false)
         {
-            if (!LipSyncProfileCatalog.TryGetProfile(profileId, out ConvaiLipSyncProfileAsset profile))
+            if (!LipSyncProfileCatalog.TryGetProfile(profileId, out ConvaiLipSyncProfile profile))
             {
                 options = LipSyncTransportOptions.Disabled;
                 return false;
@@ -38,12 +39,13 @@ namespace Convai.Modules.LipSync
                 EnableChunking,
                 ChunkSize,
                 OutputFps,
-                LipSyncTransportOptions.DefaultFramesBufferDuration);
+                LipSyncTransportOptions.DefaultFramesBufferDuration,
+                deliverChunksAhead);
             return options.IsValid;
         }
 
         private static IReadOnlyList<string> ResolveSourceBlendshapeNamesForTransport(
-            ConvaiLipSyncProfileAsset profile,
+            ConvaiLipSyncProfile profile,
             IReadOnlyList<string> sourceBlendshapeNames)
         {
             if (sourceBlendshapeNames == null || sourceBlendshapeNames.Count == 0)
@@ -61,7 +63,7 @@ namespace Convai.Modules.LipSync
             {
 #if UNITY_EDITOR || DEVELOPMENT_BUILD || CONVAI_DEBUG_LOGGING
                 ConvaiLogger.Warning(
-                    $"[Convai LipSync] Source blendshape order for profile '{profile.ProfileId}' does not match canonical transport order. " +
+                    $"Source blendshape order for profile '{profile.ProfileId}' does not match canonical transport order. " +
                     "Using canonical order to prevent viseme index mismatch.",
                     LogCategory.LipSync);
 #endif

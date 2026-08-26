@@ -17,9 +17,6 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections
         /// <summary>Unique identifier for this section in navigation.</summary>
         public const string SECTION_NAME = "updates";
 
-        /// <summary>
-        /// Initializes a new instance of the <see cref="ConvaiUpdatesSection"/> class.
-        /// </summary>
         public ConvaiUpdatesSection()
         {
             AddToClassList("section-card");

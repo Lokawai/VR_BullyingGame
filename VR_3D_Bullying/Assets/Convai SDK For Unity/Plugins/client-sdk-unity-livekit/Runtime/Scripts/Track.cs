@@ -15,15 +15,15 @@ namespace LiveKit
         WeakReference<Room> Room { get; }
         WeakReference<Participant> Participant { get; }
         FfiHandle TrackHandle { get; }
-        
+
         public GetSessionStatsInstruction GetStats()
         {
             using var request = FFIBridge.Instance.NewRequest<GetStatsRequest>();
             var getStats = request.request;
             getStats.TrackHandle = (ulong)TrackHandle.DangerousGetHandle();
+            var instruction = new GetSessionStatsInstruction(request.RequestAsyncId);
             using var response = request.Send();
-            FfiResponse res = response;
-            return new GetSessionStatsInstruction(res.GetStats.AsyncId);
+            return instruction;
         }
 
     }
@@ -82,6 +82,7 @@ namespace LiveKit
         public WeakReference<Room> Room { internal set; get; }
         public WeakReference<Participant> Participant { get; }
 
+        // IsOwned is true if C# owns the handle
         public bool IsOwned => Handle != null && !Handle.IsInvalid;
 
         public readonly FfiHandle Handle;
@@ -107,11 +108,16 @@ namespace LiveKit
         {
             _info.Muted = muted;
         }
+
+        internal void DisposeHandles()
+        {
+            Handle?.Dispose();
+        }
     }
 
     public sealed class LocalAudioTrack : Track, ILocalTrack, IAudioTrack
     {
-        RtcAudioSource _source;
+        IRtcSource _source;
 
         IRtcSource ILocalTrack.source { get => _source; }
 
@@ -119,7 +125,25 @@ namespace LiveKit
             _source = source;
         }
 
+        internal LocalAudioTrack(OwnedTrack track, Room room, PlatformAudioSource source) : base(track, room, room?.LocalParticipant) {
+            _source = source;
+        }
+
         public static LocalAudioTrack CreateAudioTrack(string name, RtcAudioSource source, Room room)
+        {
+            using var request = FFIBridge.Instance.NewRequest<CreateAudioTrackRequest>();
+            var createTrack = request.request;
+            createTrack.Name = name;
+            createTrack.SourceHandle = (ulong)source.Handle.DangerousGetHandle();
+
+            using var resp = request.Send();
+            FfiResponse res = resp;
+            var trackInfo = res.CreateAudioTrack.Track;
+            var track = new LocalAudioTrack(trackInfo, room, source);
+            return track;
+        }
+
+        public static LocalAudioTrack CreateAudioTrack(string name, PlatformAudioSource source, Room room)
         {
             using var request = FFIBridge.Instance.NewRequest<CreateAudioTrackRequest>();
             var createTrack = request.request;
@@ -167,7 +191,7 @@ namespace LiveKit
     {
         internal RemoteVideoTrack(OwnedTrack track, Room room, RemoteParticipant participant) : base(track, room, participant) { }
     }
-    
+
     public sealed class GetSessionStatsInstruction : YieldInstruction
     {
         private readonly ulong _asyncId;
@@ -177,7 +201,9 @@ namespace LiveKit
         internal GetSessionStatsInstruction(ulong asyncId)
         {
             _asyncId = asyncId;
-            FfiClient.Instance.GetSessionStatsReceived += OnGetSessionStatsReceived;
+            // This waiter is a one-shot response; cancellation and completion race through the
+            // same pending entry, so only one path can finish the instruction.
+            FfiClient.Instance.RegisterPendingCallback(asyncId, static e => e.GetStats, OnGetSessionStatsReceived, OnCanceled);
         }
 
         private void OnGetSessionStatsReceived(GetStatsCallback e)
@@ -193,7 +219,13 @@ namespace LiveKit
             {
                 Stats[i] = e.Stats[i];
             }
-            FfiClient.Instance.GetSessionStatsReceived -= OnGetSessionStatsReceived;
+        }
+
+        private void OnCanceled()
+        {
+            Error = "Canceled";
+            IsError = true;
+            IsDone = true;
         }
     }
 }

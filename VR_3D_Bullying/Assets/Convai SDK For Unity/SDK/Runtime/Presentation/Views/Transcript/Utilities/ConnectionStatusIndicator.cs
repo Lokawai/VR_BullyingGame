@@ -1,10 +1,9 @@
 using Convai.Domain.DomainEvents.Session;
 using Convai.Domain.EventSystem;
 using Convai.Domain.Logging;
+using Convai.Runtime.Components;
 using Convai.Runtime.Logging;
 using Convai.Runtime.Room;
-using Convai.Shared;
-using Convai.Shared.DependencyInjection;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
@@ -28,7 +27,7 @@ namespace Convai.Runtime.Presentation.Views.Transcript
     ///     - Update the UI based on connection state
     ///     - Unsubscribe on disable to prevent memory leaks
     /// </remarks>
-    public class ConnectionStatusIndicator : MonoBehaviour, IInjectable
+    public class ConnectionStatusIndicator : MonoBehaviour
     {
         [Header("UI References")]
         [SerializeField]
@@ -81,7 +80,11 @@ namespace Convai.Runtime.Presentation.Views.Transcript
         private bool _isSubscribed;
         private SubscriptionToken _subscriptionToken;
 
-        private void Start() => SubscribeToEvents();
+        private void Start()
+        {
+            TryResolveDependencies();
+            SubscribeToEvents();
+        }
 
         private void Update()
         {
@@ -94,6 +97,7 @@ namespace Convai.Runtime.Presentation.Views.Transcript
 
         private void OnEnable()
         {
+            TryResolveDependencies();
             if (_eventHub != null && !_isSubscribed) SubscribeToEvents();
         }
 
@@ -101,13 +105,28 @@ namespace Convai.Runtime.Presentation.Views.Transcript
 
         private void OnDestroy() => UnsubscribeFromEvents();
 
-        /// <inheritdoc />
-        public void InjectServices(IServiceContainer container)
+        public void Inject(IEventHub eventHub, IConvaiRoomConnectionService connectionService)
         {
-            container.TryGet(out IEventHub eventHub);
-            container.TryGet(out IConvaiRoomConnectionService connectionService);
+            if (_eventHub != eventHub)
+                UnsubscribeFromEvents();
+
             _eventHub = eventHub;
             _connectionService = connectionService;
+
+            if (isActiveAndEnabled)
+                SubscribeToEvents();
+        }
+
+        private void TryResolveDependencies()
+        {
+            if (_eventHub != null && _connectionService != null) return;
+
+            ConvaiManager manager = ConvaiManager.ActiveManager;
+            if (manager == null) return;
+
+            manager.TryGetEventHub(out IEventHub eventHub);
+            manager.TryGetRoomConnectionService(out IConvaiRoomConnectionService connectionService);
+            Inject(eventHub, connectionService);
         }
 
         /// <summary>
@@ -120,7 +139,7 @@ namespace Convai.Runtime.Presentation.Views.Transcript
             if (_eventHub == null)
             {
                 ConvaiLogger.Warning(
-                    "[ConnectionStatusIndicator] IEventHub not available. " +
+                    "IEventHub not available. " +
                     "Ensure ConvaiManager has initialized before this component.", LogCategory.UI);
                 return;
             }
@@ -192,12 +211,12 @@ namespace Convai.Runtime.Presentation.Views.Transcript
             if (statusIndicator != null)
                 statusIndicator.color = targetColor;
             else
-                ConvaiLogger.Warning("[ConnectionStatusIndicator] statusIndicator is not assigned!", LogCategory.UI);
+                ConvaiLogger.Warning("statusIndicator is not assigned!", LogCategory.UI);
 
             if (statusText != null)
                 statusText.text = message;
             else
-                ConvaiLogger.Warning("[ConnectionStatusIndicator] statusText is not assigned!", LogCategory.UI);
+                ConvaiLogger.Warning("statusText is not assigned!", LogCategory.UI);
 
             _isPulsing = shouldPulse;
 
@@ -208,11 +227,6 @@ namespace Convai.Runtime.Presentation.Views.Transcript
             }
         }
 
-        /// <summary>
-        ///     Gets the appropriate color for the given session state.
-        /// </summary>
-        /// <param name="state">The session state.</param>
-        /// <returns>The color to display for this state.</returns>
         private Color GetColorForState(SessionState state)
         {
             return state switch
@@ -227,11 +241,6 @@ namespace Convai.Runtime.Presentation.Views.Transcript
             };
         }
 
-        /// <summary>
-        ///     Gets the appropriate message for the given session state.
-        /// </summary>
-        /// <param name="state">The session state.</param>
-        /// <returns>The message to display for this state.</returns>
         private string GetMessageForState(SessionState state)
         {
             return state switch

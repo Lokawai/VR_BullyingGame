@@ -13,7 +13,6 @@ namespace Convai.Runtime.Settings
         private readonly ConvaiSettings _defaultsSettings;
         private readonly IMicrophoneDeviceService _microphoneDeviceService;
         private readonly IConvaiRuntimeSettingsStore _store;
-        private readonly HashSet<ConvaiTranscriptMode> _supportedModes = new();
         private readonly object _syncRoot = new();
         private ConvaiRuntimeSettingsSnapshot _current;
         private ConvaiRuntimeSettingsSnapshot _defaults;
@@ -29,8 +28,6 @@ namespace Convai.Runtime.Settings
             _store = store ?? throw new ArgumentNullException(nameof(store));
             _microphoneDeviceService = microphoneDeviceService ??
                                        throw new ArgumentNullException(nameof(microphoneDeviceService));
-
-            _supportedModes.Add(ConvaiTranscriptMode.Chat);
 
             _defaults = BuildDefaultsSnapshot();
             _overrides = _store.LoadOverrides() ?? new ConvaiRuntimeSettingsOverrides();
@@ -51,14 +48,6 @@ namespace Convai.Runtime.Settings
             }
         }
 
-        public IReadOnlyCollection<ConvaiTranscriptMode> SupportedTranscriptModes
-        {
-            get
-            {
-                lock (_syncRoot) return new List<ConvaiTranscriptMode>(_supportedModes);
-            }
-        }
-
         public ConvaiRuntimeSettingsApplyResult Apply(ConvaiRuntimeSettingsPatch patch)
         {
             if (patch == null) return ConvaiRuntimeSettingsApplyResult.Invalid(Current, "Patch cannot be null.");
@@ -76,8 +65,7 @@ namespace Convai.Runtime.Settings
                     patch.PlayerDisplayName ?? _current.PlayerDisplayName,
                     patch.TranscriptEnabled,
                     patch.NotificationsEnabled,
-                    patch.PreferredMicrophoneDeviceId ?? _current.PreferredMicrophoneDeviceId,
-                    patch.TranscriptMode);
+                    patch.PreferredMicrophoneDeviceId ?? _current.PreferredMicrophoneDeviceId);
 
                 ConvaiRuntimeSettingsSnapshot normalized = Normalize(candidate);
                 ConvaiRuntimeSettingsChangeMask mask = ComputeChangeMask(previous, normalized);
@@ -128,70 +116,22 @@ namespace Convai.Runtime.Settings
             return ConvaiRuntimeSettingsApplyResult.Ok(Current, ConvaiRuntimeSettingsChangeMask.None);
         }
 
-        public void SetSupportedTranscriptModes(IReadOnlyCollection<ConvaiTranscriptMode> modes)
-        {
-            ConvaiRuntimeSettingsChanged? changed = null;
-
-            lock (_syncRoot)
-            {
-                _supportedModes.Clear();
-
-                if (modes != null)
-                {
-                    foreach (ConvaiTranscriptMode mode in modes)
-                        _supportedModes.Add(mode);
-                }
-
-                if (_supportedModes.Count == 0) _supportedModes.Add(ConvaiTranscriptMode.Chat);
-
-                if (!_supportedModes.Contains(ConvaiTranscriptMode.Chat))
-                    _supportedModes.Add(ConvaiTranscriptMode.Chat);
-
-                ConvaiRuntimeSettingsSnapshot previous = _current;
-                ConvaiRuntimeSettingsSnapshot normalized = Normalize(_current);
-                ConvaiRuntimeSettingsChangeMask mask = ComputeChangeMask(previous, normalized);
-
-                if (mask != ConvaiRuntimeSettingsChangeMask.None)
-                {
-                    _current = normalized;
-                    _overrides = BuildOverrides(_current, _defaults);
-                    _store.SaveOverrides(_overrides);
-                    changed = new ConvaiRuntimeSettingsChanged(previous, _current, mask);
-                }
-            }
-
-            if (changed.HasValue) Changed?.Invoke(changed.Value);
-        }
-
         private ConvaiRuntimeSettingsSnapshot BuildDefaultsSnapshot()
         {
-            string defaultName = _defaultsSettings?.PlayerName;
-            if (string.IsNullOrWhiteSpace(defaultName))
-                defaultName = "Player";
-            else
-                defaultName = defaultName.Trim();
+            string defaultName = _defaultsSettings != null ? _defaultsSettings.DefaultPlayerDisplayName : "Player";
             bool transcriptEnabled = _defaultsSettings == null || _defaultsSettings.TranscriptSystemEnabled;
             bool notificationsEnabled = _defaultsSettings != null && _defaultsSettings.NotificationSystemEnabled;
-            int defaultMicIndex = _defaultsSettings?.DefaultMicrophoneIndex ?? 0;
-            ConvaiTranscriptMode defaultMode = MapFromSettingsIndex(_defaultsSettings?.ActiveTranscriptStyleIndex ?? 0);
+            string preferredMicId = _defaultsSettings?.DefaultMicrophoneDeviceId;
 
-            IReadOnlyList<ConvaiMicrophoneDevice> devices = _microphoneDeviceService.GetAvailableDevices();
             string defaultMicId = string.Empty;
-            if (devices.Count > 0)
-            {
-                int clampedIndex = defaultMicIndex;
-                if (clampedIndex < 0) clampedIndex = 0;
-                if (clampedIndex >= devices.Count) clampedIndex = 0;
-
-                defaultMicId = devices[clampedIndex].Id;
-            }
+            IReadOnlyList<ConvaiMicrophoneDevice> devices = _microphoneDeviceService.GetAvailableDevices();
+            if (devices.Count > 0) defaultMicId = _microphoneDeviceService.ResolvePreferredDeviceId(preferredMicId);
 
             return new ConvaiRuntimeSettingsSnapshot(
                 defaultName,
                 transcriptEnabled,
                 notificationsEnabled,
-                defaultMicId,
-                defaultMode);
+                defaultMicId);
         }
 
         private static ConvaiRuntimeSettingsSnapshot Merge(
@@ -204,8 +144,7 @@ namespace Convai.Runtime.Settings
                 overrides.PlayerDisplayName ?? defaults.PlayerDisplayName,
                 overrides.TranscriptEnabled,
                 overrides.NotificationsEnabled,
-                overrides.PreferredMicrophoneDeviceId ?? defaults.PreferredMicrophoneDeviceId,
-                overrides.TranscriptMode);
+                overrides.PreferredMicrophoneDeviceId ?? defaults.PreferredMicrophoneDeviceId);
         }
 
         private ConvaiRuntimeSettingsSnapshot Normalize(ConvaiRuntimeSettingsSnapshot snapshot)
@@ -217,16 +156,12 @@ namespace Convai.Runtime.Settings
                 ? fallbackName
                 : snapshot.PlayerDisplayName.Trim();
 
-            ConvaiTranscriptMode normalizedMode = snapshot.TranscriptMode;
-            if (!_supportedModes.Contains(normalizedMode)) normalizedMode = ConvaiTranscriptMode.Chat;
-
             string normalizedMicId =
                 _microphoneDeviceService.ResolvePreferredDeviceId(snapshot.PreferredMicrophoneDeviceId);
 
             return snapshot.With(
                 normalizedName,
-                preferredMicrophoneDeviceId: normalizedMicId,
-                transcriptMode: normalizedMode);
+                preferredMicrophoneDeviceId: normalizedMicId);
         }
 
         private static ConvaiRuntimeSettingsOverrides BuildOverrides(
@@ -244,8 +179,7 @@ namespace Convai.Runtime.Settings
                 PreferredMicrophoneDeviceId =
                     current.PreferredMicrophoneDeviceId == defaults.PreferredMicrophoneDeviceId
                         ? null
-                        : current.PreferredMicrophoneDeviceId,
-                TranscriptMode = current.TranscriptMode == defaults.TranscriptMode ? null : current.TranscriptMode
+                        : current.PreferredMicrophoneDeviceId
             };
         }
 
@@ -267,20 +201,7 @@ namespace Convai.Runtime.Settings
             if (!string.Equals(previous.PreferredMicrophoneDeviceId, current.PreferredMicrophoneDeviceId,
                     StringComparison.Ordinal)) mask |= ConvaiRuntimeSettingsChangeMask.PreferredMicrophoneDeviceId;
 
-            if (previous.TranscriptMode != current.TranscriptMode)
-                mask |= ConvaiRuntimeSettingsChangeMask.TranscriptMode;
-
             return mask;
-        }
-
-        private static ConvaiTranscriptMode MapFromSettingsIndex(int index)
-        {
-            return index switch
-            {
-                1 => ConvaiTranscriptMode.Subtitle,
-                2 => ConvaiTranscriptMode.QuestionAnswer,
-                _ => ConvaiTranscriptMode.Chat
-            };
         }
     }
 }

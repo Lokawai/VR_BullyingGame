@@ -1,15 +1,18 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
-using System.Threading.Tasks;
+using Convai.Runtime.Core.Async;
+using Convai.Runtime.Core.Coordinators;
 using Convai.Runtime.Room;
+using Convai.Infrastructure.Networking;
 
 namespace Convai.Tests.EditMode.Mocks
 {
     /// <summary>
     ///     Lightweight mock for IConvaiRoomAudioService used in edit-mode tests.
     /// </summary>
-    public sealed class MockRoomAudioService : IConvaiRoomAudioService
+    public sealed class MockRoomAudioService : IConvaiRoomAudioService, IConvaiRoomAudioTimelineService,
+        IConvaiRoomAudioMediaTimelineService
     {
         private readonly HashSet<string> _mutedCharacters = new();
         private readonly HashSet<string> _remoteAudioEnabledCharacters = new();
@@ -27,10 +30,12 @@ namespace Convai.Tests.EditMode.Mocks
 
         public void EnableAudioPlayback() => IsAudioPlaybackActive = true;
 
-        public Task StartListeningAsync(int microphoneIndex = 0, CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
+        public IConvaiOperation<Unit> StartListeningAsync(int microphoneIndex = 0,
+            CancellationToken cancellationToken = default) =>
+            ConvaiOperation<Unit>.Succeeded(Unit.Value);
 
-        public Task StopListeningAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public IConvaiOperation<Unit> StopListeningAsync(CancellationToken cancellationToken = default) =>
+            ConvaiOperation<Unit>.Succeeded(Unit.Value);
 
         public void SetMicMuted(bool muted)
         {
@@ -73,6 +78,33 @@ namespace Convai.Tests.EditMode.Mocks
 
         public bool IsRemoteAudioEnabled(string characterId) =>
             characterId != null && _remoteAudioEnabledCharacters.Contains(characterId);
+
+        /// <summary>Playhead value returned by TryGetCharacterAudioPlayhead; null simulates a platform without one.</summary>
+        public double? AudioPlayheadSeconds { get; set; }
+        internal AudioTimelineSnapshot? AudioTimeline { get; set; }
+        internal AudioMediaTimelineSnapshot? AudioMediaTimeline { get; set; }
+
+        public bool TryGetCharacterAudioPlayhead(string characterId, out double playedSeconds)
+        {
+            playedSeconds = AudioPlayheadSeconds ?? 0d;
+            return AudioPlayheadSeconds.HasValue && !string.IsNullOrEmpty(characterId);
+        }
+
+        bool IConvaiRoomAudioTimelineService.TryGetCharacterAudioTimeline(
+            string characterId,
+            out AudioTimelineSnapshot snapshot)
+        {
+            snapshot = AudioTimeline ?? default;
+            return AudioTimeline.HasValue && !string.IsNullOrEmpty(characterId);
+        }
+
+        bool IConvaiRoomAudioMediaTimelineService.TryGetCharacterAudioMediaTimeline(
+            string characterId,
+            out AudioMediaTimelineSnapshot snapshot)
+        {
+            snapshot = AudioMediaTimeline ?? default;
+            return AudioMediaTimeline.HasValue && !string.IsNullOrEmpty(characterId);
+        }
 
         public void RaiseMicMuteChanged(bool muted) => MicMuteChanged?.Invoke(muted);
 

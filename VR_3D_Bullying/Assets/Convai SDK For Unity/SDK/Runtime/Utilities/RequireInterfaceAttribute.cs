@@ -4,20 +4,8 @@ using UnityEngine;
 namespace Convai.Runtime.Utilities
 {
     /// <summary>
-    ///     Attribute that restricts a MonoBehaviour/Component field to only accept
-    ///     objects that implement a specific interface.
+    ///     Attribute that restricts a MonoBehaviour or Component field to objects that implement a specific interface.
     /// </summary>
-    /// <remarks>
-    ///     Usage:
-    ///     <code>
-    /// [RequireInterface(typeof(IConvaiCharacterAgent))]
-    /// [SerializeField] private MonoBehaviour _characterComponent;
-    /// </code>
-    ///     When used with the RequireInterfaceDrawer, the Inspector will:
-    ///     - Only show components that implement the specified interface in the picker
-    ///     - Validate dropped objects and reject those that don't implement the interface
-    ///     - Display a helpful tooltip indicating the required interface
-    /// </remarks>
     [AttributeUsage(AttributeTargets.Field)]
     public class RequireInterfaceAttribute : PropertyAttribute
     {

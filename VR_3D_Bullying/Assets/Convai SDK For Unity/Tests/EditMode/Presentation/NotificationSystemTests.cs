@@ -4,9 +4,11 @@ using Convai.Domain.DomainEvents.Session;
 using Convai.Domain.Errors;
 using Convai.Domain.EventSystem;
 using Convai.Runtime.Presentation.Services;
+using Convai.Runtime.Presentation.Views.Notifications;
 using Convai.Shared.Interfaces;
 using Convai.Shared.Types;
 using NUnit.Framework;
+using UnityEngine;
 
 namespace Convai.Tests.EditMode.Presentation
 {
@@ -19,12 +21,54 @@ namespace Convai.Tests.EditMode.Presentation
     {
         #region Helper Methods
 
+        private static SONotification CreateNotification(string id)
+        {
+            var n = ScriptableObject.CreateInstance<SONotification>();
+            n.name = id;
+            return n;
+        }
+
+        private static SONotificationErrorMap CreateTestErrorMap()
+        {
+            var map = ScriptableObject.CreateInstance<SONotificationErrorMap>();
+            SONotification microphoneIssue = CreateNotification("MICROPHONE_ISSUE");
+            SONotification networkIssue = CreateNotification("NETWORK_REACHABILITY_ISSUE");
+            SONotification noMicrophone = CreateNotification("NO_MICROPHONE_DETECTED");
+            SONotification apiKeyMissing = CreateNotification("API_KEY_NOT_FOUND");
+            SONotification usageLimitExceeded = CreateNotification("USAGE_LIMIT_EXCEEDED");
+
+            map.Rules = new List<SessionErrorNotificationRule>
+            {
+                new() { ErrorPattern = SessionErrorCodes.ConnectionAuthFailed, MatchType = SessionErrorMatchType.Exact, Notification = apiKeyMissing },
+                new() { ErrorPattern = SessionErrorCodes.ConnectionInvalidToken, MatchType = SessionErrorMatchType.Exact, Notification = apiKeyMissing },
+                new() { ErrorPattern = SessionErrorCodes.ConfigApiKeyMissing, MatchType = SessionErrorMatchType.Exact, Notification = apiKeyMissing },
+                new() { ErrorPattern = SessionErrorCodes.ConnectionRateLimited, MatchType = SessionErrorMatchType.Exact, Notification = usageLimitExceeded },
+                new() { ErrorPattern = SessionErrorCodes.ServerUsageLimitReached, MatchType = SessionErrorMatchType.Exact, Notification = usageLimitExceeded },
+                new() { ErrorPattern = SessionErrorCodes.ConnectionTimeout, MatchType = SessionErrorMatchType.Exact, Notification = networkIssue },
+                new() { ErrorPattern = SessionErrorCodes.ConnectionNetworkError, MatchType = SessionErrorMatchType.Exact, Notification = networkIssue },
+                new() { ErrorPattern = SessionErrorCodes.ConnectionServiceUnavailable, MatchType = SessionErrorMatchType.Exact, Notification = networkIssue },
+                new() { ErrorPattern = SessionErrorCodes.ConnectionServerError, MatchType = SessionErrorMatchType.Exact, Notification = networkIssue },
+                new() { ErrorPattern = SessionErrorCodes.TransportLivekitError, MatchType = SessionErrorMatchType.Exact, Notification = networkIssue },
+                new() { ErrorPattern = SessionErrorCodes.ConnectionFailed, MatchType = SessionErrorMatchType.Exact, Notification = networkIssue },
+                new() { ErrorPattern = SessionErrorCodes.AudioMicUnavailable, MatchType = SessionErrorMatchType.Exact, Notification = noMicrophone },
+                new() { ErrorPattern = SessionErrorCodes.AudioMicPermissionDenied, MatchType = SessionErrorMatchType.Exact, Notification = microphoneIssue },
+                new() { ErrorPattern = SessionErrorCodes.AudioMicPublishFailed, MatchType = SessionErrorMatchType.Exact, Notification = microphoneIssue },
+                new() { ErrorPattern = "connection.", MatchType = SessionErrorMatchType.Prefix, Notification = networkIssue },
+                new() { ErrorPattern = "transport.", MatchType = SessionErrorMatchType.Prefix, Notification = networkIssue },
+                new() { ErrorPattern = "server.", MatchType = SessionErrorMatchType.Prefix, Notification = networkIssue },
+                new() { ErrorPattern = "audio.", MatchType = SessionErrorMatchType.Prefix, Notification = microphoneIssue },
+                new() { ErrorPattern = "config.", MatchType = SessionErrorMatchType.Prefix, Notification = apiKeyMissing }
+            };
+            return map;
+        }
+
         private (ConvaiNotificationEventBridge bridge, MockNotificationService mockService, EventHub eventHub)
             CreateEventBridge(bool notificationsEnabled)
         {
             var mockService = new MockNotificationService();
             var eventHub = new EventHub(new ImmediateScheduler());
-            var bridge = new ConvaiNotificationEventBridge(mockService, eventHub, () => notificationsEnabled);
+            var bridge = new ConvaiNotificationEventBridge(mockService, eventHub, () => notificationsEnabled,
+                CreateTestErrorMap());
 
             return (bridge, mockService, eventHub);
         }
@@ -46,16 +90,16 @@ namespace Convai.Tests.EditMode.Presentation
 
         private sealed class MockNotificationService : IConvaiNotificationService
         {
-            public List<NotificationType> RequestedNotifications { get; } = new();
+            public List<SONotification> RequestedNotifications { get; } = new();
             public int DismissCount { get; private set; }
 
-            public event Action<NotificationType> OnNotificationRequested;
+            public event Action<SONotification> OnNotificationRequested;
             public event Action OnNotificationDismissed;
 
-            public void RequestNotification(NotificationType notificationType)
+            public void RequestNotification(SONotification notification)
             {
-                RequestedNotifications.Add(notificationType);
-                OnNotificationRequested?.Invoke(notificationType);
+                RequestedNotifications.Add(notification);
+                OnNotificationRequested?.Invoke(notification);
             }
 
             public void DismissNotification()
@@ -67,6 +111,24 @@ namespace Convai.Tests.EditMode.Presentation
 
         #endregion
 
+        #region NotificationGroup Tests
+
+        [Test]
+        public void NotificationGroup_TryResolve_UsesStableIdRegistry()
+        {
+            SONotification canonicalNotification = CreateNotification("MICROPHONE_ISSUE");
+            SONotification requestedNotification = CreateNotification("MICROPHONE_ISSUE");
+            var group = ScriptableObject.CreateInstance<SONotificationGroup>();
+            group.soNotifications = new[] { canonicalNotification };
+
+            bool resolved = group.TryResolve(requestedNotification, out SONotification resolvedNotification);
+
+            Assert.IsTrue(resolved);
+            Assert.AreSame(canonicalNotification, resolvedNotification);
+        }
+
+        #endregion
+
         #region ConvaiNotificationService Tests
 
         [Test]
@@ -74,12 +136,14 @@ namespace Convai.Tests.EditMode.Presentation
         {
             var scheduler = new ImmediateScheduler();
             var service = new ConvaiNotificationService(scheduler);
-            NotificationType? receivedType = null;
+            SONotification received = null;
+            SONotification mic = CreateNotification("MICROPHONE_ISSUE");
 
-            service.OnNotificationRequested += type => receivedType = type;
-            service.RequestNotification(NotificationType.MICROPHONE_ISSUE);
+            service.OnNotificationRequested += n => received = n;
+            service.RequestNotification(mic);
 
-            Assert.AreEqual(NotificationType.MICROPHONE_ISSUE, receivedType);
+            Assert.AreEqual(mic, received);
+            Assert.AreEqual("MICROPHONE_ISSUE", received.Id);
         }
 
         [Test]
@@ -88,7 +152,7 @@ namespace Convai.Tests.EditMode.Presentation
             var scheduler = new ImmediateScheduler();
             var service = new ConvaiNotificationService(scheduler);
 
-            Assert.DoesNotThrow(() => service.RequestNotification(NotificationType.MICROPHONE_ISSUE));
+            Assert.DoesNotThrow(() => service.RequestNotification(CreateNotification("MICROPHONE_ISSUE")));
         }
 
         [Test]
@@ -114,7 +178,7 @@ namespace Convai.Tests.EditMode.Presentation
             service.OnNotificationRequested += _ => invokeCount++;
             service.OnNotificationRequested += _ => invokeCount++;
 
-            service.RequestNotification(NotificationType.NETWORK_REACHABILITY_ISSUE);
+            service.RequestNotification(CreateNotification("NETWORK_REACHABILITY_ISSUE"));
 
             Assert.AreEqual(2, invokeCount);
         }
@@ -126,14 +190,14 @@ namespace Convai.Tests.EditMode.Presentation
             var service = new ConvaiNotificationService(scheduler);
             int invokeCount = 0;
 
-            void Handler(NotificationType type) => invokeCount++;
+            void Handler(SONotification n) => invokeCount++;
 
             service.OnNotificationRequested += Handler;
-            service.RequestNotification(NotificationType.MICROPHONE_ISSUE);
+            service.RequestNotification(CreateNotification("MICROPHONE_ISSUE"));
             Assert.AreEqual(1, invokeCount);
 
             service.OnNotificationRequested -= Handler;
-            service.RequestNotification(NotificationType.MICROPHONE_ISSUE);
+            service.RequestNotification(CreateNotification("MICROPHONE_ISSUE"));
             Assert.AreEqual(1, invokeCount, "Handler should not be invoked after unsubscribe");
         }
 
@@ -151,7 +215,7 @@ namespace Convai.Tests.EditMode.Presentation
                 "test-session"));
 
             Assert.AreEqual(1, mockService.RequestedNotifications.Count);
-            Assert.AreEqual(NotificationType.API_KEY_NOT_FOUND, mockService.RequestedNotifications[0]);
+            Assert.AreEqual("API_KEY_NOT_FOUND", mockService.RequestedNotifications[0].Id);
 
             bridge.Dispose();
         }
@@ -166,7 +230,7 @@ namespace Convai.Tests.EditMode.Presentation
                 "test-session"));
 
             Assert.AreEqual(1, mockService.RequestedNotifications.Count);
-            Assert.AreEqual(NotificationType.USAGE_LIMIT_EXCEEDED, mockService.RequestedNotifications[0]);
+            Assert.AreEqual("USAGE_LIMIT_EXCEEDED", mockService.RequestedNotifications[0].Id);
 
             bridge.Dispose();
         }
@@ -181,7 +245,7 @@ namespace Convai.Tests.EditMode.Presentation
                 "test-session"));
 
             Assert.AreEqual(1, mockService.RequestedNotifications.Count);
-            Assert.AreEqual(NotificationType.NETWORK_REACHABILITY_ISSUE, mockService.RequestedNotifications[0]);
+            Assert.AreEqual("NETWORK_REACHABILITY_ISSUE", mockService.RequestedNotifications[0].Id);
 
             bridge.Dispose();
         }
@@ -195,7 +259,7 @@ namespace Convai.Tests.EditMode.Presentation
             eventHub.Publish(SessionError.Create(SessionErrorCodes.ConnectionTimeout, "Timeout", "test-session"));
 
             Assert.AreEqual(1, mockService.RequestedNotifications.Count);
-            Assert.AreEqual(NotificationType.NETWORK_REACHABILITY_ISSUE, mockService.RequestedNotifications[0]);
+            Assert.AreEqual("NETWORK_REACHABILITY_ISSUE", mockService.RequestedNotifications[0].Id);
 
             bridge.Dispose();
         }
@@ -209,7 +273,7 @@ namespace Convai.Tests.EditMode.Presentation
             eventHub.Publish(SessionError.Create(SessionErrorCodes.AudioMicUnavailable, "No mic", "test-session"));
 
             Assert.AreEqual(1, mockService.RequestedNotifications.Count);
-            Assert.AreEqual(NotificationType.NO_MICROPHONE_DETECTED, mockService.RequestedNotifications[0]);
+            Assert.AreEqual("NO_MICROPHONE_DETECTED", mockService.RequestedNotifications[0].Id);
 
             bridge.Dispose();
         }
@@ -224,7 +288,7 @@ namespace Convai.Tests.EditMode.Presentation
                 "test-session"));
 
             Assert.AreEqual(1, mockService.RequestedNotifications.Count);
-            Assert.AreEqual(NotificationType.MICROPHONE_ISSUE, mockService.RequestedNotifications[0]);
+            Assert.AreEqual("MICROPHONE_ISSUE", mockService.RequestedNotifications[0].Id);
 
             bridge.Dispose();
         }
@@ -238,7 +302,7 @@ namespace Convai.Tests.EditMode.Presentation
             eventHub.Publish(SessionError.Create("audio.unknown_error", "Unknown audio error", "test-session"));
 
             Assert.AreEqual(1, mockService.RequestedNotifications.Count);
-            Assert.AreEqual(NotificationType.MICROPHONE_ISSUE, mockService.RequestedNotifications[0]);
+            Assert.AreEqual("MICROPHONE_ISSUE", mockService.RequestedNotifications[0].Id);
 
             bridge.Dispose();
         }
@@ -252,9 +316,52 @@ namespace Convai.Tests.EditMode.Presentation
             eventHub.Publish(SessionError.Create("connection.unknown", "Unknown connection error", "test-session"));
 
             Assert.AreEqual(1, mockService.RequestedNotifications.Count);
-            Assert.AreEqual(NotificationType.NETWORK_REACHABILITY_ISSUE, mockService.RequestedNotifications[0]);
+            Assert.AreEqual("NETWORK_REACHABILITY_ISSUE", mockService.RequestedNotifications[0].Id);
 
             bridge.Dispose();
+        }
+
+        [Test]
+        public void EventBridge_ServerError_MapsToNetworkIssue()
+        {
+            (ConvaiNotificationEventBridge bridge, MockNotificationService mockService, EventHub eventHub) =
+                CreateEventBridge(true);
+
+            eventHub.Publish(SessionError.Create(SessionErrorCodes.ServerError, "Pipeline error", "test-session"));
+
+            Assert.AreEqual(1, mockService.RequestedNotifications.Count);
+            Assert.AreEqual("NETWORK_REACHABILITY_ISSUE", mockService.RequestedNotifications[0].Id);
+
+            bridge.Dispose();
+        }
+
+        [Test]
+        public void EventBridge_ServerUsageLimitReached_MapsToUsageLimitExceeded()
+        {
+            (ConvaiNotificationEventBridge bridge, MockNotificationService mockService, EventHub eventHub) =
+                CreateEventBridge(true);
+
+            eventHub.Publish(SessionError.Create(SessionErrorCodes.ServerUsageLimitReached, "Quota exceeded",
+                "test-session"));
+
+            Assert.AreEqual(1, mockService.RequestedNotifications.Count);
+            Assert.AreEqual("USAGE_LIMIT_EXCEEDED", mockService.RequestedNotifications[0].Id);
+
+            bridge.Dispose();
+        }
+
+        [Test]
+        public void DefaultErrorMap_ServerErrors_MapToExpectedNotifications()
+        {
+            SONotificationErrorMap map = SONotificationErrorMap.LoadDefault();
+
+            Assert.IsNotNull(map);
+            Assert.IsTrue(map.TryResolve(SessionErrorCodes.ServerError, out SONotification serverError));
+            Assert.AreEqual("NETWORK_REACHABILITY_ISSUE", serverError.Id);
+            Assert.IsTrue(map.TryResolve(SessionErrorCodes.ServerFatalError, out SONotification fatalError));
+            Assert.AreEqual("NETWORK_REACHABILITY_ISSUE", fatalError.Id);
+            Assert.IsTrue(map.TryResolve(SessionErrorCodes.ServerUsageLimitReached, out SONotification usageLimit));
+            Assert.AreEqual("USAGE_LIMIT_EXCEEDED", usageLimit.Id);
         }
 
         [Test]
@@ -266,6 +373,33 @@ namespace Convai.Tests.EditMode.Presentation
             eventHub.Publish(SessionError.Create("completely.unknown.code", "Unknown error", "test-session"));
 
             Assert.AreEqual(0, mockService.RequestedNotifications.Count);
+
+            bridge.Dispose();
+        }
+
+        [Test]
+        public void EventBridge_CustomRule_AllowsNewNotificationCategoryWithoutCodeChanges()
+        {
+            var customNotification = CreateNotification("VISION_CAMERA_LOST");
+            var map = ScriptableObject.CreateInstance<SONotificationErrorMap>();
+            map.Rules = new List<SessionErrorNotificationRule>
+            {
+                new()
+                {
+                    ErrorPattern = "vision.camera_lost",
+                    MatchType = SessionErrorMatchType.Exact,
+                    Notification = customNotification
+                }
+            };
+
+            var mockService = new MockNotificationService();
+            var eventHub = new EventHub(new ImmediateScheduler());
+            var bridge = new ConvaiNotificationEventBridge(mockService, eventHub, () => true, map);
+
+            eventHub.Publish(SessionError.Create("vision.camera_lost", "Camera lost", "test-session"));
+
+            Assert.AreEqual(1, mockService.RequestedNotifications.Count);
+            Assert.AreEqual("VISION_CAMERA_LOST", mockService.RequestedNotifications[0].Id);
 
             bridge.Dispose();
         }
@@ -306,8 +440,8 @@ namespace Convai.Tests.EditMode.Presentation
 
             Assert.AreEqual(2, mockService.RequestedNotifications.Count,
                 "Different notification types should not affect each other's cooldown");
-            Assert.AreEqual(NotificationType.NETWORK_REACHABILITY_ISSUE, mockService.RequestedNotifications[0]);
-            Assert.AreEqual(NotificationType.NO_MICROPHONE_DETECTED, mockService.RequestedNotifications[1]);
+            Assert.AreEqual("NETWORK_REACHABILITY_ISSUE", mockService.RequestedNotifications[0].Id);
+            Assert.AreEqual("NO_MICROPHONE_DETECTED", mockService.RequestedNotifications[1].Id);
 
             bridge.Dispose();
         }
@@ -352,18 +486,20 @@ namespace Convai.Tests.EditMode.Presentation
         [Test]
         public void EventBridge_RequestNotificationIfEnabled_RespectsSettings()
         {
-            bool enabled = false;
             var mockService = new MockNotificationService();
             var eventHub = new EventHub(new ImmediateScheduler());
-            var bridge = new ConvaiNotificationEventBridge(mockService, eventHub, () => enabled);
+            SONotificationErrorMap map = CreateTestErrorMap();
+            bool notificationsEnabled = false;
+            var bridge = new ConvaiNotificationEventBridge(mockService, eventHub, () => notificationsEnabled, map);
 
             // Disabled - should not notify
-            bridge.RequestNotificationIfEnabled(NotificationType.MICROPHONE_ISSUE);
+            SONotification microphoneIssue = map.Rules.Find(rule => rule.Notification?.Id == "MICROPHONE_ISSUE")?.Notification;
+            bridge.RequestNotificationIfEnabled(microphoneIssue);
             Assert.AreEqual(0, mockService.RequestedNotifications.Count);
 
             // Enable and try again
-            enabled = true;
-            bridge.RequestNotificationIfEnabled(NotificationType.MICROPHONE_ISSUE);
+            notificationsEnabled = true;
+            bridge.RequestNotificationIfEnabled(microphoneIssue);
             Assert.AreEqual(1, mockService.RequestedNotifications.Count);
 
             bridge.Dispose();

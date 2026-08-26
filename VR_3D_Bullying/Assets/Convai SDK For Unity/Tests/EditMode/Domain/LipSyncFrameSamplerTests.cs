@@ -118,6 +118,17 @@ namespace Convai.Tests.EditMode.Domain
             Assert.That(current[0], Is.InRange(0f, 1f));
         }
 
+        [TestCase(0f, 0d)]
+        [TestCase(0.5f, 1d / 60d)]
+        [TestCase(0.95f, 0.033d)]
+        public void GetTemporalSmoothingCompensationSeconds_ReturnsBoundedGroupDelay(
+            float smoothingFactor, double expected)
+        {
+            double actual = FrameSampler.GetTemporalSmoothingCompensationSeconds(smoothingFactor);
+
+            Assert.AreEqual(expected, actual, 0.0001d);
+        }
+
         private static float SimulateForOneSecond(int fps)
         {
             float[] current = { 0f };

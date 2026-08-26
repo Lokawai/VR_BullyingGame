@@ -15,9 +15,6 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections
         /// <summary>UXML section name.</summary>
         public const string SECTION_NAME = "contact-us";
 
-        /// <summary>
-        ///     Initializes a new instance of the <see cref="ConvaiContactSection" /> class.
-        /// </summary>
         public ConvaiContactSection()
         {
             var content = ConvaiConfigurationContent.Instance;

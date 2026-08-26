@@ -12,12 +12,14 @@ namespace LiveKit
 
         public long Timestamp;
         public VideoRotation Rotation;
+        public FrameMetadata Metadata;
 
-        public VideoFrame(VideoBufferInfo info, long timeStamp, VideoRotation rotation)
+        public VideoFrame(VideoBufferInfo info, long timeStamp, VideoRotation rotation, FrameMetadata metadata = null)
         {
             _info = info;
             Timestamp = timeStamp;
             Rotation = rotation;
+            Metadata = metadata;
         }
     }
 
@@ -33,6 +35,7 @@ namespace LiveKit
         public VideoBufferType Type => Info.Type;
         public bool IsValid => !Handle.IsClosed && !Handle.IsInvalid;
 
+        // Explicitly ask for FFIHandle
         protected VideoFrameBuffer(FfiHandle handle, VideoBufferInfo info)
         {
             Handle = handle;
@@ -100,7 +103,11 @@ namespace LiveKit
             if (!IsValid)
                 throw new InvalidOperationException("the handle is invalid");
 
+            // ToI420Request will free the input buffer, don't drop twice
+            // This class instance is now invalid, the users should not use it
+            // after using this function.
             Handle.SetHandleAsInvalid();
+
 
             using var request = FFIBridge.Instance.NewRequest<VideoConvertRequest>();
             var toi420 = request.request;
@@ -109,7 +116,7 @@ namespace LiveKit
 
             using var response = request.Send();
             FfiResponse res = response;
-            
+
             var newInfo = res.VideoConvert.Buffer;
             if (newInfo == null)
                 throw new InvalidOperationException("failed to convert");
@@ -131,6 +138,7 @@ namespace LiveKit
 
             using var response = request.Send();
             FfiResponse res = response;
+
 
             var newInfo = res.VideoConvert.Buffer;
             if (newInfo == null)

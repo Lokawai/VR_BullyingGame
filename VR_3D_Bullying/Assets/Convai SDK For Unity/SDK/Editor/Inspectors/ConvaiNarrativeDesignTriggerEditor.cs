@@ -1,34 +1,100 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using Convai.Editor.Inspectors.Framework;
 using Convai.Modules.Narrative;
 using Convai.RestAPI.Internal.Models;
 using Convai.Runtime.Behaviors;
+using Convai.Editor.UI;
 using UnityEditor;
 using UnityEngine;
+using Glyphs = Convai.Editor.UI.ConvaiEditorGlyphs;
+using Theme = Convai.Editor.UI.ConvaiEditorTheme;
 
 namespace Convai.Editor.Inspectors
 {
     /// <summary>
-    ///     Custom editor for ConvaiNarrativeDesignTrigger.
-    ///     Provides trigger dropdown, auto-fetch, mode-specific UI, and visual gizmos.
+    ///     Convai editor for <see cref="ConvaiNarrativeDesignTrigger" />: the assigned character,
+    ///     the backend-fetched trigger to fire, activation settings, auto-recovery, diagnostics,
+    ///     events, collider validation, and a Play-mode runtime readout with a scene-view proximity
+    ///     gizmo.
     /// </summary>
     [CustomEditor(typeof(ConvaiNarrativeDesignTrigger))]
-    public class ConvaiNarrativeDesignTriggerEditor : UnityEditor.Editor
+    internal sealed class ConvaiNarrativeDesignTriggerEditor : ConvaiInspectorEditor
     {
-        private bool _activationFoldout = true;
+        private const string TitleText = "Narrative Trigger";
+        private const string SubtitleText = "Convai Narrative Design Trigger";
+
+        private const string PurposeText =
+            "Fires a backend-defined narrative trigger when its activation condition is met.";
+
+        private const string SectionActivationId = "Activation";
+        private const string SectionAutoRecoveryId = "AutoRecovery";
+        private const string SectionDiagnosticsId = "Diagnostics";
+        private const string SectionEventsId = "Events";
+
+        private static readonly GUIContent CharacterSection = new("Character");
+        private static readonly GUIContent TriggerSection = new("Trigger");
+        private static readonly GUIContent ActivationSection = new("Activation Settings");
+        private static readonly GUIContent AutoRecoverySection = new("Auto-Recovery Settings");
+        private static readonly GUIContent DiagnosticsSection = new("Diagnostics");
+        private static readonly GUIContent EventsSection = new("Events");
+        private static readonly GUIContent ActivationRuntimeSection = new("Activation Runtime");
+        private static readonly GUIContent DiagnosticsRuntimeSection = new("Runtime Status");
+
+        private static readonly GUIContent AutoFindLabel = new(
+            "Auto Find", "Automatically search for a ConvaiCharacter if none is assigned");
+
+        private static readonly GUIContent FetchButtonIdle = new("Fetch");
+        private static readonly GUIContent FetchButtonBusy = new("Fetching...");
+        private static readonly GUIContent ModeLabel = new("Mode");
+        private static readonly GUIContent PlayerTagLabel = new("Player Tag");
+        private static readonly GUIContent PlayerLayerLabel = new("Player Layer");
+        private static readonly GUIContent DelayLabel = new("Delay (seconds)");
+        private static readonly GUIContent RadiusLabel = new("Radius");
+        private static readonly GUIContent TriggerOnceLabel = new("Trigger Once");
+        private static readonly GUIContent InvokeButton = new("Invoke");
+        private static readonly GUIContent ResetButton = new("Reset");
+
+        private static readonly GUIContent AutoFindPlayerLabel = new(
+            "Auto Find Player", "Automatically find the player for proximity detection");
+
+        private static readonly GUIContent QueueUntilReadyLabel = new(
+            "Queue Until Ready", "Queue trigger until character is in conversation");
+
+        private static readonly GUIContent MaxWaitTimeLabel = new(
+            "Max Wait Time", "Maximum seconds to wait (0 = infinite)");
+
+        private static readonly GUIContent ResetOnSceneLoadLabel = new(
+            "Reset On Scene Load", "Automatically reset trigger when scene reloads");
+
+        private static readonly GUIContent EnableDiagnosticsLabel = new(
+            "Enable Diagnostics", "Log detailed diagnostic info to console");
+
+        private static readonly GUIContent ValidateOnStartLabel = new(
+            "Validate On Start", "Run validation checks when the game starts");
+
+        private static readonly GUIContent PrintDiagnosticsButton = new("Print Diagnostics to Console");
+
+        private static readonly GUIContent OnTriggerActivatedLabel = new("On Trigger Activated");
+        private static readonly GUIContent OnPlayerEnterZoneLabel = new("On Player Enter Zone");
+        private static readonly GUIContent OnPlayerExitZoneLabel = new("On Player Exit Zone");
+
+        private static readonly GUIContent OnTriggerFailedLabel = new(
+            "On Trigger Failed", "Called with error message when trigger fails");
+
+        private static readonly GUIContent OnTriggerQueuedLabel = new(
+            "On Trigger Queued", "Called when trigger is queued waiting for character");
+
         private SerializedProperty _activationModeProp;
         private SerializedProperty _autoFindCharacterProp;
 
         private SerializedProperty _autoFindPlayerProp;
-        private bool _autoRecoveryFoldout;
         private SerializedProperty _availableTriggersProp;
 
         private SerializedProperty _characterComponentProp;
-        private bool _diagnosticsFoldout;
 
         private SerializedProperty _enableDiagnosticsProp;
-        private bool _eventsFoldout;
         private string _fetchError;
         private bool _isFetching;
 
@@ -55,9 +121,16 @@ namespace Convai.Editor.Inspectors
         private SerializedProperty _triggerNameProp;
         private SerializedProperty _triggerOnceProp;
         private SerializedProperty _validateOnStartProp;
+        private string _lastCharacterId;
 
-        private void OnEnable()
+        protected override string Title => TitleText;
+        protected override string Subtitle => SubtitleText;
+        protected override string Purpose => PurposeText;
+
+        protected override void OnEnable()
         {
+            base.OnEnable();
+
             _trigger = (ConvaiNarrativeDesignTrigger)target;
 
             _characterComponentProp = serializedObject.FindProperty("_characterComponent");
@@ -89,21 +162,24 @@ namespace Convai.Editor.Inspectors
             _onTriggerQueuedProp = serializedObject.FindProperty("_onTriggerQueued");
 
             _lastCharacterComponent = _characterComponentProp.objectReferenceValue as MonoBehaviour;
+            _lastCharacterId = _trigger.GetCharacterId();
         }
 
         private void OnSceneGUI()
         {
-            if (_trigger == null) return;
+            if (_trigger == null)
+                return;
 
             TriggerActivationMode mode = _trigger.ActivationMode;
 
             if (mode == TriggerActivationMode.Proximity)
             {
                 float radius = _trigger.ProximityRadius;
-                Handles.color = new Color(0.2f, 0.8f, 0.2f, 0.5f);
+                // Brand green: the same colour that means "Convai reach" everywhere else.
+                Handles.color = Theme.Fade(Theme.Accent, 0.5f);
                 Handles.DrawWireDisc(_trigger.transform.position, Vector3.up, radius);
 
-                Handles.color = new Color(0.2f, 0.8f, 0.2f, 0.1f);
+                Handles.color = Theme.Fade(Theme.Accent, 0.1f);
                 Handles.DrawSolidDisc(_trigger.transform.position, Vector3.up, radius);
 
                 EditorGUI.BeginChangeCheck();
@@ -117,88 +193,107 @@ namespace Convai.Editor.Inspectors
 
                 Handles.Label(_trigger.transform.position + (Vector3.up * 0.5f),
                     $"Proximity: {radius:F1}m",
-                    EditorStyles.boldLabel);
+                    ConvaiEditorStyles.SectionTitle);
             }
         }
 
-        /// <inheritdoc />
-        public override void OnInspectorGUI()
+        protected override void DrawBody()
         {
-            serializedObject.Update();
-
-            DrawCharacterSection();
-
-            DrawDivider();
-
-            DrawTriggerSelectionSection();
-
-            DrawDivider();
-
-            DrawActivationSection();
-
-            DrawDivider();
-
-            DrawAutoRecoverySection();
-
-            DrawDivider();
-
-            DrawDiagnosticsSection();
-
-            DrawDivider();
-
-            DrawEventsSection();
-
+            DrawCharacterCard();
+            DrawTriggerSelectionCard();
+            DrawActivationCard();
+            DrawAutoRecoveryCard();
+            DrawDiagnosticsCard();
+            DrawEventsCard();
             DrawValidationWarnings();
-
-            serializedObject.ApplyModifiedProperties();
 
             CheckCharacterChange();
         }
 
-        private void DrawDivider()
+        protected override void DrawLiveSection()
         {
-            EditorGUILayout.Space(4);
-            Rect rect = EditorGUILayout.GetControlRect(false, 1);
-            rect.height = 1;
-            EditorGUI.DrawRect(rect, new Color(0.3f, 0.3f, 0.3f, 0.5f));
-            EditorGUILayout.Space(4);
+            Theme.BeginCard();
+            Theme.SectionHeader(Glyphs.Live, ActivationRuntimeSection);
+
+            using (new EditorGUI.DisabledScope(true))
+            {
+                EditorGUILayout.Toggle("Has Triggered", _trigger.HasTriggered);
+                EditorGUILayout.Toggle("Player In Zone", _trigger.PlayerInZone);
+            }
+
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button(InvokeButton))
+                _trigger.InvokeTrigger();
+            if (GUILayout.Button(ResetButton))
+                _trigger.ResetTrigger();
+            EditorGUILayout.EndHorizontal();
+
+            Theme.EndCard();
+
+            Theme.BeginCard();
+            Theme.SectionHeader(Glyphs.Live, DiagnosticsRuntimeSection);
+
+            using (new EditorGUI.DisabledScope(true))
+            {
+                EditorGUILayout.EnumPopup("Current Status", _trigger.CurrentStatus);
+                EditorGUILayout.Toggle("Character Ready", _trigger.IsCharacterReady);
+
+                string lastError = _trigger.LastErrorMessage;
+                if (!string.IsNullOrEmpty(lastError))
+                    EditorGUILayout.TextField("Last Error", lastError);
+            }
+
+            GUILayout.Space(2);
+            if (GUILayout.Button(PrintDiagnosticsButton))
+                _trigger.PrintDiagnostics();
+
+            Theme.EndCard();
+
+            Repaint();
         }
 
-        private void DrawCharacterSection()
+        private void DrawCharacterCard()
         {
-            EditorGUILayout.LabelField("Character", EditorStyles.boldLabel);
+            Theme.BeginCard();
+            Theme.SectionHeader(Glyphs.Identity, CharacterSection);
 
             EditorGUI.BeginChangeCheck();
             EditorGUILayout.PropertyField(_characterComponentProp, GUIContent.none);
-            if (EditorGUI.EndChangeCheck()) serializedObject.ApplyModifiedProperties();
+            if (EditorGUI.EndChangeCheck())
+                serializedObject.ApplyModifiedProperties();
 
-            EditorGUILayout.PropertyField(_autoFindCharacterProp,
-                new GUIContent("Auto Find", "Automatically search for a ConvaiCharacter if none is assigned"));
+            EditorGUILayout.PropertyField(_autoFindCharacterProp, AutoFindLabel);
 
             var charComponent = _characterComponentProp.objectReferenceValue as MonoBehaviour;
             if (charComponent != null && !(charComponent is IConvaiCharacterAgent))
-                EditorGUILayout.HelpBox("Component does not implement IConvaiCharacterAgent.", MessageType.Warning);
+                WarningBox(
+                    "Not a Convai character",
+                    "The assigned component is not a Convai character, so this trigger has nothing to "
+                    + "talk to. Assign the Convai Character component instead, or turn on Auto Find.");
             else if (charComponent == null && !_autoFindCharacterProp.boolValue)
-            {
-                EditorGUILayout.HelpBox("No character assigned. Enable 'Auto Find' or assign a character.",
-                    MessageType.Warning);
-            }
+                WarningBox("No character assigned", "Enable 'Auto Find' or assign a character.");
+
+            Theme.EndCard();
         }
 
-        private void DrawTriggerSelectionSection()
+        private void DrawTriggerSelectionCard()
         {
+            Theme.BeginCard();
+
             EditorGUILayout.BeginHorizontal();
-            EditorGUILayout.LabelField("Trigger", EditorStyles.boldLabel, GUILayout.Width(50));
+            Theme.SectionHeader(Glyphs.Content, TriggerSection);
 
             GUILayout.FlexibleSpace();
 
             GUI.enabled = !_isFetching && !string.IsNullOrEmpty(_trigger.GetCharacterId());
-            if (GUILayout.Button(_isFetching ? "Fetching..." : "Fetch", GUILayout.Width(60))) FetchTriggers();
+            if (GUILayout.Button(_isFetching ? FetchButtonBusy : FetchButtonIdle, GUILayout.Width(60)))
+                FetchTriggers();
             GUI.enabled = true;
 
             EditorGUILayout.EndHorizontal();
 
-            if (!string.IsNullOrEmpty(_fetchError)) EditorGUILayout.HelpBox(_fetchError, MessageType.Error);
+            if (!string.IsNullOrEmpty(_fetchError))
+                ErrorBox("Fetch failed", _fetchError);
 
             int triggerCount = _availableTriggersProp?.arraySize ?? 0;
 
@@ -215,7 +310,8 @@ namespace Convai.Editor.Inspectors
                 }
 
                 int currentIndex = _selectedTriggerIndexProp.intValue + 1;
-                if (currentIndex < 0) currentIndex = 0;
+                if (currentIndex < 0)
+                    currentIndex = 0;
 
                 EditorGUI.BeginChangeCheck();
                 int newIndex = EditorGUILayout.Popup(currentIndex, triggerOptions);
@@ -229,7 +325,7 @@ namespace Convai.Editor.Inspectors
                         TriggerData selected = triggers[selectedIndex];
                         _triggerIdProp.stringValue = selected.TriggerId;
                         _triggerNameProp.stringValue = selected.TriggerName;
-                        _triggerMessageProp.stringValue = selected.TriggerMessage;
+                        _triggerMessageProp.stringValue = string.Empty;
                     }
                     else
                     {
@@ -257,19 +353,17 @@ namespace Convai.Editor.Inspectors
                 }
             }
             else
-                EditorGUILayout.HelpBox("Click 'Fetch' to load triggers from backend.", MessageType.Info);
+                InfoBox("No triggers loaded", "Click 'Fetch' to load triggers from backend.");
+
+            Theme.EndCard();
         }
 
-        private void DrawActivationSection()
+        private void DrawActivationCard()
         {
-            _activationFoldout = EditorGUILayout.Foldout(_activationFoldout, "Activation Settings", true,
-                EditorStyles.foldoutHeader);
-
-            if (_activationFoldout)
+            if (!DrawSection(SectionActivationId, ActivationSection, Glyphs.Command)) return;
+            DrawSectionBody(() =>
             {
-                EditorGUI.indentLevel++;
-
-                EditorGUILayout.PropertyField(_activationModeProp, new GUIContent("Mode"));
+                EditorGUILayout.PropertyField(_activationModeProp, ModeLabel);
 
                 var mode = (TriggerActivationMode)_activationModeProp.enumValueIndex;
 
@@ -278,136 +372,77 @@ namespace Convai.Editor.Inspectors
                 switch (mode)
                 {
                     case TriggerActivationMode.Collision:
-                        EditorGUILayout.PropertyField(_playerTagProp, new GUIContent("Player Tag"));
-                        EditorGUILayout.PropertyField(_playerLayerProp, new GUIContent("Player Layer"));
+                        EditorGUILayout.PropertyField(_playerTagProp, PlayerTagLabel);
+                        EditorGUILayout.PropertyField(_playerLayerProp, PlayerLayerLabel);
                         break;
 
                     case TriggerActivationMode.TimeBased:
-                        EditorGUILayout.PropertyField(_playerTagProp, new GUIContent("Player Tag"));
-                        EditorGUILayout.PropertyField(_playerLayerProp, new GUIContent("Player Layer"));
-                        EditorGUILayout.PropertyField(_timeDelayProp, new GUIContent("Delay (seconds)"));
+                        EditorGUILayout.PropertyField(_playerTagProp, PlayerTagLabel);
+                        EditorGUILayout.PropertyField(_playerLayerProp, PlayerLayerLabel);
+                        EditorGUILayout.PropertyField(_timeDelayProp, DelayLabel);
                         break;
 
                     case TriggerActivationMode.Proximity:
-                        EditorGUILayout.PropertyField(_proximityRadiusProp, new GUIContent("Radius"));
-                        EditorGUILayout.PropertyField(_playerTagProp, new GUIContent("Player Tag"));
-                        EditorGUILayout.PropertyField(_playerLayerProp, new GUIContent("Player Layer"));
+                        EditorGUILayout.PropertyField(_proximityRadiusProp, RadiusLabel);
+                        EditorGUILayout.PropertyField(_playerTagProp, PlayerTagLabel);
+                        EditorGUILayout.PropertyField(_playerLayerProp, PlayerLayerLabel);
                         break;
 
                     case TriggerActivationMode.Manual:
-                        EditorGUILayout.HelpBox("Call InvokeTrigger() from code.", MessageType.Info);
+                        InfoBox("Manual activation", "Call InvokeTrigger() from code.");
                         break;
                 }
 
                 EditorGUILayout.Space(2);
 
-                EditorGUILayout.PropertyField(_triggerOnceProp, new GUIContent("Trigger Once"));
-
-                if (UnityEngine.Application.isPlaying)
-                {
-                    EditorGUILayout.Space(4);
-
-                    EditorGUI.BeginDisabledGroup(true);
-                    EditorGUILayout.Toggle("Has Triggered", _trigger.HasTriggered);
-                    EditorGUILayout.Toggle("Player In Zone", _trigger.PlayerInZone);
-                    EditorGUI.EndDisabledGroup();
-
-                    EditorGUILayout.BeginHorizontal();
-                    if (GUILayout.Button("Invoke")) _trigger.InvokeTrigger();
-                    if (GUILayout.Button("Reset")) _trigger.ResetTrigger();
-                    EditorGUILayout.EndHorizontal();
-                }
-
-                EditorGUI.indentLevel--;
-            }
+                EditorGUILayout.PropertyField(_triggerOnceProp, TriggerOnceLabel);
+            });
         }
 
-        private void DrawAutoRecoverySection()
+        private void DrawAutoRecoveryCard()
         {
-            _autoRecoveryFoldout = EditorGUILayout.Foldout(_autoRecoveryFoldout, "Auto-Recovery Settings", true,
-                EditorStyles.foldoutHeader);
-
-            if (_autoRecoveryFoldout)
+            if (!DrawSection(SectionAutoRecoveryId, AutoRecoverySection, Glyphs.Routing, defaultExpanded: false)) return;
+            DrawSectionBody(() =>
             {
-                EditorGUI.indentLevel++;
-
-                EditorGUILayout.PropertyField(_autoFindPlayerProp,
-                    new GUIContent("Auto Find Player", "Automatically find the player for proximity detection"));
-                EditorGUILayout.PropertyField(_queueUntilReadyProp,
-                    new GUIContent("Queue Until Ready", "Queue trigger until character is in conversation"));
+                EditorGUILayout.PropertyField(_autoFindPlayerProp, AutoFindPlayerLabel);
+                EditorGUILayout.PropertyField(_queueUntilReadyProp, QueueUntilReadyLabel);
 
                 if (_queueUntilReadyProp.boolValue)
                 {
                     EditorGUI.indentLevel++;
-                    EditorGUILayout.PropertyField(_maxWaitTimeProp,
-                        new GUIContent("Max Wait Time", "Maximum seconds to wait (0 = infinite)"));
+                    EditorGUILayout.PropertyField(_maxWaitTimeProp, MaxWaitTimeLabel);
                     EditorGUI.indentLevel--;
                 }
 
-                EditorGUILayout.PropertyField(_resetOnSceneLoadProp,
-                    new GUIContent("Reset On Scene Load", "Automatically reset trigger when scene reloads"));
-
-                EditorGUI.indentLevel--;
-            }
+                EditorGUILayout.PropertyField(_resetOnSceneLoadProp, ResetOnSceneLoadLabel);
+            });
         }
 
-        private void DrawDiagnosticsSection()
+        private void DrawDiagnosticsCard()
         {
-            _diagnosticsFoldout =
-                EditorGUILayout.Foldout(_diagnosticsFoldout, "Diagnostics", true, EditorStyles.foldoutHeader);
-
-            if (_diagnosticsFoldout)
+            if (!DrawSection(SectionDiagnosticsId, DiagnosticsSection, Glyphs.Validation, defaultExpanded: false, accent: Theme.StatusWarn)) return;
+            DrawSectionBody(() =>
             {
-                EditorGUI.indentLevel++;
-
-                EditorGUILayout.PropertyField(_enableDiagnosticsProp,
-                    new GUIContent("Enable Diagnostics", "Log detailed diagnostic info to console"));
-                EditorGUILayout.PropertyField(_validateOnStartProp,
-                    new GUIContent("Validate On Start", "Run validation checks when the game starts"));
-
-                if (UnityEngine.Application.isPlaying)
-                {
-                    EditorGUILayout.Space(4);
-                    EditorGUILayout.LabelField("Runtime Status", EditorStyles.boldLabel);
-
-                    EditorGUI.BeginDisabledGroup(true);
-                    EditorGUILayout.EnumPopup("Current Status", _trigger.CurrentStatus);
-                    EditorGUILayout.Toggle("Character Ready", _trigger.IsCharacterReady);
-
-                    string lastError = _trigger.LastErrorMessage;
-                    if (!string.IsNullOrEmpty(lastError)) EditorGUILayout.TextField("Last Error", lastError);
-                    EditorGUI.EndDisabledGroup();
-
-                    EditorGUILayout.Space(2);
-                    if (GUILayout.Button("Print Diagnostics to Console")) _trigger.PrintDiagnostics();
-                }
-
-                EditorGUI.indentLevel--;
-            }
+                EditorGUILayout.PropertyField(_enableDiagnosticsProp, EnableDiagnosticsLabel);
+                EditorGUILayout.PropertyField(_validateOnStartProp, ValidateOnStartLabel);
+            });
         }
 
-        private void DrawEventsSection()
+        private void DrawEventsCard()
         {
-            _eventsFoldout = EditorGUILayout.Foldout(_eventsFoldout, "Events", true, EditorStyles.foldoutHeader);
-
-            if (_eventsFoldout)
+            if (!DrawSection(SectionEventsId, EventsSection, Glyphs.Events, defaultExpanded: false)) return;
+            DrawSectionBody(() =>
             {
-                EditorGUI.indentLevel++;
-
-                EditorGUILayout.PropertyField(_onTriggerActivatedProp, new GUIContent("On Trigger Activated"));
+                EditorGUILayout.PropertyField(_onTriggerActivatedProp, OnTriggerActivatedLabel);
                 EditorGUILayout.Space(2);
-                EditorGUILayout.PropertyField(_onPlayerEnterZoneProp, new GUIContent("On Player Enter Zone"));
+                EditorGUILayout.PropertyField(_onPlayerEnterZoneProp, OnPlayerEnterZoneLabel);
                 EditorGUILayout.Space(2);
-                EditorGUILayout.PropertyField(_onPlayerExitZoneProp, new GUIContent("On Player Exit Zone"));
+                EditorGUILayout.PropertyField(_onPlayerExitZoneProp, OnPlayerExitZoneLabel);
                 EditorGUILayout.Space(2);
-                EditorGUILayout.PropertyField(_onTriggerFailedProp,
-                    new GUIContent("On Trigger Failed", "Called with error message when trigger fails"));
+                EditorGUILayout.PropertyField(_onTriggerFailedProp, OnTriggerFailedLabel);
                 EditorGUILayout.Space(2);
-                EditorGUILayout.PropertyField(_onTriggerQueuedProp,
-                    new GUIContent("On Trigger Queued", "Called when trigger is queued waiting for character"));
-
-                EditorGUI.indentLevel--;
-            }
+                EditorGUILayout.PropertyField(_onTriggerQueuedProp, OnTriggerQueuedLabel);
+            });
         }
 
         private void DrawValidationWarnings()
@@ -419,19 +454,19 @@ namespace Convai.Editor.Inspectors
                 var collider = _trigger.GetComponent<Collider>();
                 if (collider == null)
                 {
-                    EditorGUILayout.Space(4);
-                    EditorGUILayout.HelpBox("Requires a Collider component.", MessageType.Warning);
-                    if (GUILayout.Button("Add Box Collider")) Undo.AddComponent<BoxCollider>(_trigger.gameObject);
+                    GUILayout.Space(4);
+                    WarningBox("Missing collider", "Requires a Collider component.",
+                        "Add Box Collider", () => Undo.AddComponent<BoxCollider>(_trigger.gameObject));
                 }
                 else if (!collider.isTrigger)
                 {
-                    EditorGUILayout.Space(4);
-                    EditorGUILayout.HelpBox("Enable 'Is Trigger' on Collider.", MessageType.Warning);
-                    if (GUILayout.Button("Enable Is Trigger"))
-                    {
-                        Undo.RecordObject(collider, "Enable Is Trigger");
-                        collider.isTrigger = true;
-                    }
+                    GUILayout.Space(4);
+                    WarningBox("Collider is not a trigger", "Enable 'Is Trigger' on Collider.",
+                        "Enable Is Trigger", () =>
+                        {
+                            Undo.RecordObject(collider, "Enable Is Trigger");
+                            collider.isTrigger = true;
+                        });
                 }
             }
         }
@@ -440,7 +475,8 @@ namespace Convai.Editor.Inspectors
 
         private async Task FetchTriggersAsync()
         {
-            if (_isFetching) return;
+            if (_isFetching)
+                return;
 
             string characterId = _trigger.GetCharacterId();
             if (string.IsNullOrEmpty(characterId))
@@ -481,16 +517,28 @@ namespace Convai.Editor.Inspectors
         private void CheckCharacterChange()
         {
             var currentCharacter = _characterComponentProp.objectReferenceValue as MonoBehaviour;
+            string currentCharacterId = _trigger.GetCharacterId();
+            bool characterReferenceChanged = currentCharacter != _lastCharacterComponent;
+            bool characterIdChanged = !string.Equals(currentCharacterId, _lastCharacterId, StringComparison.Ordinal);
 
-            if (currentCharacter != _lastCharacterComponent && currentCharacter != null)
+            if (!characterReferenceChanged && !characterIdChanged)
+                return;
+
+            _lastCharacterComponent = currentCharacter;
+            _lastCharacterId = currentCharacterId;
+
+            Undo.RecordObject(_trigger, "Clear Narrative Trigger Selection");
+            _trigger.SetAvailableTriggers(new List<TriggerData>());
+            EditorUtility.SetDirty(_trigger);
+
+            if (currentCharacter != null && !string.IsNullOrEmpty(currentCharacterId))
             {
-                _lastCharacterComponent = currentCharacter;
-
                 if (currentCharacter is IConvaiCharacterAgent)
                 {
                     EditorApplication.delayCall += () =>
                     {
-                        if (_trigger != null && !_isFetching) FetchTriggers();
+                        if (_trigger != null && !_isFetching)
+                            FetchTriggers();
                     };
                 }
             }

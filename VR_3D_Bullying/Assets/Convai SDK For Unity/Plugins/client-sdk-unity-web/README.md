@@ -32,7 +32,7 @@ There are two different ways to build an application using this package :
 2. Still use JS and be able to bridge the Room object by using our npm package. (e.g. [JSExample](https://github.com/livekit/client-sdk-unity-web/tree/main/Samples~/JSExample))
 
 ### Debugging
-To display internal LiveKit logs, add LK DEBUG to define symbols
+To display internal LiveKit logs, add `LK_DEBUG` to the scripting define symbols.
 
 ## Examples
 For a complete example, look at our [demo](https://github.com/livekit/client-unity-demo)

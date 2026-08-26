@@ -1,8 +1,8 @@
 using Convai.Domain.Logging;
+using Convai.Runtime.Actions;
+using Convai.Runtime.Behaviors;
 using Convai.Runtime.Logging;
 using Convai.Runtime.Room;
-using Convai.Shared;
-using Convai.Shared.DependencyInjection;
 using UnityEngine;
 
 namespace Convai.Runtime.Components
@@ -21,19 +21,35 @@ namespace Convai.Runtime.Components
     [AddComponentMenu("Convai/Convai Audio Output")]
     [RequireComponent(typeof(ConvaiCharacter))]
     [RequireComponent(typeof(AudioSource))]
-    public class ConvaiAudioOutput : MonoBehaviour, IInjectable
+    public class ConvaiAudioOutput : MonoBehaviour
     {
         #region Serialized Fields
 
-        [Header("Audio Settings")] [SerializeField] [Range(0f, 1f)]
+        [SerializeField]
+        [ConvaiInspectorSection("Audio Settings")]
+        [Range(0f, 1f)]
+        [Tooltip("Output volume for this character's speech, from silent (0) to full (1).")]
         private float _volume = 1.0f;
 
-        [SerializeField] private bool _isMuted;
+        [SerializeField]
+        [ConvaiInspectorSection("Audio Settings")]
+        [Tooltip("When enabled, this character's speech is silenced regardless of Volume.")]
+        private bool _isMuted;
 
-        [Header("3D Audio")] [SerializeField] private bool _use3DAudio = true;
+        [SerializeField]
+        [ConvaiInspectorSection("3D Audio")]
+        [Tooltip("Whether this character's speech attenuates with distance and direction, like a 3D sound source.")]
+        private bool _use3DAudio = true;
 
-        [SerializeField] private float _minDistance = 1f;
-        [SerializeField] private float _maxDistance = 50f;
+        [SerializeField]
+        [ConvaiInspectorSection("3D Audio")]
+        [Tooltip("Distance at which 3D audio is at full volume. Closer than this has no extra boost.")]
+        private float _minDistance = 1f;
+
+        [SerializeField]
+        [ConvaiInspectorSection("3D Audio")]
+        [Tooltip("Distance at which 3D audio has fully attenuated to silence.")]
+        private float _maxDistance = 50f;
 
         #endregion
 
@@ -41,6 +57,7 @@ namespace Convai.Runtime.Components
 
         private ConvaiCharacter _character;
         private IConvaiRoomAudioService _roomAudioService;
+        private IAgentRegistry _agentRegistry;
 
         #endregion
 
@@ -75,18 +92,54 @@ namespace Convai.Runtime.Components
 
         #region Dependency Injection
 
-        /// <inheritdoc />
-        public void InjectServices(IServiceContainer container)
-        {
-            container.TryGet(out IConvaiRoomAudioService audioService);
-            Inject(audioService);
-        }
-
         /// <summary>
-        ///     Injects the room audio service for track routing.
+        ///     Injects the room audio service and agent registry.
         ///     Called by the ConvaiManager pipeline.
         /// </summary>
-        public void Inject(IConvaiRoomAudioService roomAudioService) => _roomAudioService = roomAudioService;
+        public void Inject(IConvaiRoomAudioService roomAudioService, IAgentRegistry agentRegistry = null)
+        {
+            _roomAudioService = roomAudioService;
+            _agentRegistry = agentRegistry;
+
+            // Register AudioSource with the registry so AudioTrackManager can find it
+            RegisterAudioSourceWithRegistry();
+        }
+
+        private void TryResolveDependencies()
+        {
+            if (_roomAudioService != null && _agentRegistry != null) return;
+
+            ConvaiManager manager = ConvaiManager.ActiveManager;
+            if (manager == null) return;
+
+            manager.TryGetRoomAudioService(out IConvaiRoomAudioService roomAudioService);
+            manager.TryGetAgentRegistry(out IAgentRegistry agentRegistry);
+
+            if (roomAudioService != null || agentRegistry != null)
+                Inject(roomAudioService, agentRegistry);
+        }
+
+        private void RegisterAudioSourceWithRegistry()
+        {
+            if (_agentRegistry == null || _character == null || AudioSource == null) return;
+
+            string characterId = _character.CharacterId;
+            if (string.IsNullOrEmpty(characterId)) return;
+
+            _agentRegistry.SetAudioSource(characterId, AudioSource);
+            ConvaiLogger.Debug($"Registered AudioSource for character '{characterId}'",
+                LogCategory.Audio);
+        }
+
+        private void UnregisterAudioSourceFromRegistry()
+        {
+            if (_agentRegistry == null || _character == null) return;
+
+            string characterId = _character.CharacterId;
+            if (string.IsNullOrEmpty(characterId)) return;
+
+            _agentRegistry.SetAudioSource(characterId, null);
+        }
 
         #endregion
 
@@ -101,9 +154,10 @@ namespace Convai.Runtime.Components
 
         private void OnEnable()
         {
+            TryResolveDependencies();
             if (_character == null)
             {
-                ConvaiLogger.Error($"[ConvaiAudioOutput] ConvaiCharacter component not found on {gameObject.name}",
+                ConvaiLogger.Error($"ConvaiCharacter component not found on {gameObject.name}",
                     LogCategory.Audio);
                 enabled = false;
                 return;
@@ -112,7 +166,11 @@ namespace Convai.Runtime.Components
             SubscribeToEvents();
         }
 
-        private void OnDisable() => UnsubscribeFromEvents();
+        private void OnDisable()
+        {
+            UnsubscribeFromEvents();
+            UnregisterAudioSourceFromRegistry();
+        }
 
         private void OnValidate()
         {

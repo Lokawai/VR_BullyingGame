@@ -8,6 +8,9 @@ namespace LiveKit
 {
     public class HTMLVideoElement : HTMLMediaElement
     {
+        internal static Action<Texture2D> TextureDestroyer = Object.Destroy;
+        internal static Action<int> NativeTextureDestroyer = JSNative.DestroyTexture;
+
         public int VideoWidth
         {
             get
@@ -55,6 +58,7 @@ namespace LiveKit
 
         public Texture2D Texture { get; private set; }
         private readonly int m_TextureId;
+        private JSRef _resizeListenerRef;
 
         [Preserve]
         internal HTMLVideoElement(JSHandle handle) : base(handle)
@@ -62,14 +66,20 @@ namespace LiveKit
             m_TextureId = JSNative.NewTexture();
             SetupTexture();
             JSNative.AttachVideo(NativeHandle, m_TextureId);
-            AddEventListener("resize", ResizeEvent);
+            _resizeListenerRef = AddEventListener("resize", ResizeEvent);
         }
 
         protected override void Dispose(bool disposing)
         {
+            if (_resizeListenerRef != null)
+            {
+                RemoveEventListener("resize", _resizeListenerRef);
+                _resizeListenerRef = null;
+            }
+
             base.Dispose(disposing);
-            Object.Destroy(Texture);
-            JSNative.DestroyTexture(m_TextureId);
+            TextureDestroyer(Texture);
+            NativeTextureDestroyer(m_TextureId);
         }
 
         void SetupTexture()
@@ -80,6 +90,12 @@ namespace LiveKit
             var width = VideoWidth > 0 ? VideoWidth : 1;
             var height = VideoHeight > 0 ? VideoHeight : 1;
             Texture = Texture2D.CreateExternalTexture(width, height, TextureFormat.RGBA32, false, true, (IntPtr)m_TextureId);
+        }
+
+        internal static void ResetTestHooks()
+        {
+            TextureDestroyer = Object.Destroy;
+            NativeTextureDestroyer = JSNative.DestroyTexture;
         }
     }
 }

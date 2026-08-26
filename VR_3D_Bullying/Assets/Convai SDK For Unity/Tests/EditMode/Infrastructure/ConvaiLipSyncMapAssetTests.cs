@@ -72,6 +72,41 @@ namespace Convai.Tests.EditMode.Infrastructure
         }
 
         [Test]
+        public void TryGetEntry_WithValidCurveExponent_PreservesConfiguredValue()
+        {
+            // Arrange
+            ConvaiLipSyncMapAsset map = Track(CreateMapWithSingleEntry("jawOpen", "MouthOpen", false, true));
+            SerializedObject serialized = new(map);
+            serialized.FindProperty("_mappings").GetArrayElementAtIndex(0)
+                .FindPropertyRelative("curveExponent").floatValue = 0.7f;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+
+            // Act
+            bool found = map.TryGetEntry("jawOpen", out ConvaiLipSyncMapAsset.BlendshapeMappingSnapshot snapshot);
+
+            // Assert
+            Assert.IsTrue(found);
+            Assert.AreEqual(0.7f, snapshot.CurveExponent, 1e-5f);
+        }
+
+        [Test]
+        public void TryGetEntry_WithOutOfRangeCurveExponent_FallsBackToLinear()
+        {
+            // Arrange: assets serialized before curveExponent existed deserialize it as 0.
+            ConvaiLipSyncMapAsset map = Track(CreateMapWithSingleEntry("jawOpen", "MouthOpen", false, true));
+            SerializedObject serialized = new(map);
+            serialized.FindProperty("_mappings").GetArrayElementAtIndex(0)
+                .FindPropertyRelative("curveExponent").floatValue = 0f;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+
+            // Act
+            map.TryGetEntry("jawOpen", out ConvaiLipSyncMapAsset.BlendshapeMappingSnapshot snapshot);
+
+            // Assert
+            Assert.AreEqual(1f, snapshot.CurveExponent, 1e-5f);
+        }
+
+        [Test]
         public void InitializeAsSafeDisabledProfile_DisablesAllKnownSourceChannels()
         {
             // Arrange

@@ -2,9 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Threading.Tasks;
+using Convai.Domain.DomainEvents.Runtime;
 using Convai.Domain.EventSystem;
 using Convai.Domain.Logging;
 using Convai.Runtime.Components;
+using Convai.Runtime.Core.DependencyInjection;
 using Convai.Tests.EditMode.Mocks;
 using NUnit.Framework;
 using UnityEngine;
@@ -22,7 +24,7 @@ namespace Convai.Tests.EditMode.Runtime
         private MockRoomAudioService _audioService;
         private MockRoomConnectionService _connectionService;
         private EventHub _eventHub;
-        private MockCharacterLocatorService _locatorService;
+        private MockAgentRegistry _agentRegistry;
         private TestLogger _logger;
 
         [SetUp]
@@ -31,7 +33,7 @@ namespace Convai.Tests.EditMode.Runtime
             _eventHub = new EventHub(new ImmediateScheduler());
             _connectionService = new MockRoomConnectionService();
             _audioService = new MockRoomAudioService();
-            _locatorService = new MockCharacterLocatorService();
+            _agentRegistry = new MockAgentRegistry();
             _logger = new TestLogger();
         }
 
@@ -61,31 +63,46 @@ namespace Convai.Tests.EditMode.Runtime
             string characterName = "TestCharacter")
         {
             ConvaiCharacter character = CreateCharacter(characterId, characterName);
-            character.Inject(_eventHub, _connectionService, _audioService, _locatorService, _logger);
+            character.InjectDependencies(CreateDependencies());
 
             return character;
+        }
+
+        private ConvaiCharacterDependencies CreateDependencies() =>
+            new(_eventHub, _connectionService, _audioService, _agentRegistry, _logger);
+
+        private void PublishCharacterReady(ConvaiCharacter character)
+        {
+            _eventHub.Publish(CharacterReady.Create(character.CharacterId, $"participant-{character.CharacterId}"));
+        }
+
+        private async Task StartConversationWithReadyAsync(ConvaiCharacter character)
+        {
+            var startTask = character.StartConversationAsync();
+            PublishCharacterReady(character);
+            await startTask;
         }
 
         #region Cleanup Tests
 
         [Test]
-        public void OnDisable_UnregistersFromLocator()
+        public void OnDisable_UnregistersFromRegistry()
         {
             var go = new GameObject("TestCharacter");
             _createdObjects.Add(go);
 
             var character = go.AddComponent<ConvaiCharacter>();
             character.Configure("test-char-id", "TestCharacter");
-            character.Inject(_eventHub, _connectionService, _audioService, _locatorService, _logger);
+            character.InjectDependencies(CreateDependencies());
 
-            Assert.IsTrue(_locatorService.HasCharacter("test-char-id"),
+            Assert.IsTrue(_agentRegistry.HasCharacter("test-char-id"),
                 "Character should be registered after injection");
 
             MethodInfo onDisableMethod =
                 typeof(ConvaiCharacter).GetMethod("OnDisable", BindingFlags.NonPublic | BindingFlags.Instance);
             onDisableMethod.Invoke(character, null);
 
-            Assert.IsFalse(_locatorService.HasCharacter("test-char-id"),
+            Assert.IsFalse(_agentRegistry.HasCharacter("test-char-id"),
                 "Character should be unregistered after OnDisable");
         }
 
@@ -170,19 +187,19 @@ namespace Convai.Tests.EditMode.Runtime
         {
             ConvaiCharacter character = CreateCharacter();
 
-            character.Inject(_eventHub, _connectionService, _audioService, _locatorService, _logger);
+            character.InjectDependencies(CreateDependencies());
 
             Assert.IsTrue(_audioService.IsRemoteAudioEnabled(character.CharacterId),
                 "Remote audio should be enabled after initialization with default settings");
         }
 
         [Test]
-        public void Initialization_RegistersWithLocator()
+        public void Initialization_RegistersWithRegistry()
         {
             ConvaiCharacter character = CreateAndInjectCharacter();
 
-            Assert.IsTrue(_locatorService.HasCharacter("test-char-id"),
-                "Character should be registered with the locator service after injection");
+            Assert.IsTrue(_agentRegistry.HasCharacter("test-char-id"),
+                "Character should be registered with the agent registry after injection");
         }
 
         [Test]
@@ -192,7 +209,7 @@ namespace Convai.Tests.EditMode.Runtime
 
             Assert.IsFalse(character.IsInjected, "IsInjected should be false before injection");
 
-            character.Inject(_eventHub, _connectionService, _audioService, _locatorService, _logger);
+            character.InjectDependencies(CreateDependencies());
 
             Assert.IsTrue(character.IsInjected, "IsInjected should be true after injection");
         }
@@ -208,10 +225,7 @@ namespace Convai.Tests.EditMode.Runtime
 
             Assert.IsFalse(character.IsSessionConnected, "Should not be connected initially");
 
-            Task<bool> startTask = character.StartConversationAsync();
-
-            await Task.Yield();
-
+            await StartConversationWithReadyAsync(character);
             Assert.IsTrue(character.IsSessionConnected,
                 "Character should be connected after StartConversationAsync");
         }
@@ -221,7 +235,7 @@ namespace Convai.Tests.EditMode.Runtime
         {
             ConvaiCharacter character = CreateAndInjectCharacter();
 
-            await character.StartConversationAsync();
+            await StartConversationWithReadyAsync(character);
             Assert.IsTrue(character.IsSessionConnected, "Should be connected after StartConversationAsync");
 
             await character.StopConversationAsync();
@@ -231,28 +245,14 @@ namespace Convai.Tests.EditMode.Runtime
         }
 
         [Test]
-        public async Task StartConversation_WhenAlreadyConnected_ReturnsTrue()
+        public async Task StartConversation_WhenAlreadyConnected_CompletesSuccessfully()
         {
             ConvaiCharacter character = CreateAndInjectCharacter();
 
-            await character.StartConversationAsync();
+            await StartConversationWithReadyAsync(character);
             Assert.IsTrue(character.IsSessionConnected);
 
-            bool result = await character.StartConversationAsync();
-
-            Assert.IsTrue(result,
-                "StartConversationAsync should return true when already connected");
-        }
-
-        [Test]
-        public async Task StopConversation_WhenAlreadyDisconnected_DoesNotThrow()
-        {
-            ConvaiCharacter character = CreateAndInjectCharacter();
-
-            Assert.IsFalse(character.IsSessionConnected, "Should not be connected initially");
-
-            await character.StopConversationAsync();
-            Assert.Pass("StopConversationAsync should not throw when already disconnected");
+            await character.StartConversationAsync();
         }
 
         #endregion

@@ -1,10 +1,10 @@
 using System;
 using System.Collections.Generic;
+using Convai.Runtime.Components;
 using Convai.Runtime.Presentation.Services.Settings;
 using Convai.Runtime.Presentation.Services.Utilities;
-using Convai.Shared;
+using Convai.Runtime.Room;
 using Convai.Shared.Abstractions;
-using Convai.Shared.DependencyInjection;
 using Convai.Shared.Types;
 using TMPro;
 using UnityEngine;
@@ -16,39 +16,50 @@ namespace Convai.Runtime.Presentation.Views.Settings
     ///     Runtime settings panel view.
     ///     Rendering and input collection live here; all behavior is handled by <see cref="SettingsPanelPresenter" />.
     /// </summary>
-    public class SettingsPanel : MonoBehaviour, ISettingsPanelView, IInjectable
+    public class SettingsPanel : MonoBehaviour, ISettingsPanelView
     {
         [Header("Data")] [SerializeField] private float fadeDuration = 0.5f;
 
-        [Header("Visuals")] [SerializeField] private TMP_Dropdown transcriptStyleDropdown;
-
-        [SerializeField] private TMP_Dropdown voiceInputDropdown;
+        [Header("Visuals")]
         [SerializeField] private TMP_InputField playerNameInputField;
+        [SerializeField] private TMP_Dropdown voiceInputDropdown;
+        [SerializeField] private TMP_Dropdown conversationModeDropdown;
         [SerializeField] private Toggle transcriptToggle;
         [SerializeField] private Toggle notificationToggle;
         [SerializeField] private Button saveButton;
         [SerializeField] private Button closeButton;
         [SerializeField] private GameObject microphoneDropContainer;
         [SerializeField] private GameObject transcriptModeContainer;
+        [SerializeField] private GameObject conversationModeContainer;
+
+        private static readonly List<string> ConversationModeLabels = new() { "Hands Free", "Push to Talk" };
 
         private readonly List<ConvaiMicrophoneDevice> _microphoneOptions = new();
-        private readonly List<ConvaiTranscriptMode> _transcriptModes = new();
         private CanvasFader _canvasFader;
 
         private CanvasGroup _canvasGroup;
-        private IServiceContainer _container;
-
+        private Func<string> _effectivePlayerNameProvider;
         private bool _isPresenterBound;
         private IMicrophoneDeviceService _microphoneDeviceService;
 
         private IConvaiSettingsPanelController _panelController;
         private SettingsPanelPresenter _presenter;
+        private IConvaiRoomConnectionService _roomConnectionService;
         private IConvaiRuntimeSettingsService _runtimeSettingsService;
         private bool _visibilitySubscribed;
 
         private void Awake()
         {
             EnsureFadeComponents();
+
+            if (conversationModeDropdown != null)
+            {
+                conversationModeDropdown.ClearOptions();
+                conversationModeDropdown.AddOptions(ConversationModeLabels);
+            }
+
+            if (transcriptModeContainer != null)
+                transcriptModeContainer.SetActive(false);
 
             if (saveButton != null) saveButton.onClick.AddListener(HandleSaveClicked);
 
@@ -59,7 +70,7 @@ namespace Convai.Runtime.Presentation.Views.Settings
 
         private void OnEnable()
         {
-            EnsureDependencies();
+            TryResolveDependencies();
             TryInitializePresenter();
             SubscribeToVisibility();
 
@@ -87,20 +98,10 @@ namespace Convai.Runtime.Presentation.Views.Settings
             _presenter = null;
         }
 
-        /// <inheritdoc />
-        public void InjectServices(IServiceContainer container)
-        {
-            _container = container;
-            container.TryGet(out IConvaiSettingsPanelController panelController);
-            container.TryGet(out IConvaiRuntimeSettingsService runtimeSettings);
-            container.TryGet(out IMicrophoneDeviceService micDeviceService);
-            Inject(panelController, runtimeSettings, micDeviceService);
-        }
-
         public event Action SaveRequested;
         public event Action CloseRequested;
 
-        public string PlayerDisplayNameInput => playerNameInputField != null ? playerNameInputField.text : string.Empty;
+        public string PlayerDisplayNameInput => playerNameInputField != null ? playerNameInputField.text : null;
         public bool TranscriptEnabledInput => transcriptToggle == null || transcriptToggle.isOn;
         public bool NotificationsEnabledInput => notificationToggle != null && notificationToggle.isOn;
 
@@ -115,22 +116,31 @@ namespace Convai.Runtime.Presentation.Views.Settings
             }
         }
 
-        public ConvaiTranscriptMode SelectedTranscriptModeInput
+        public ConversationInputMode SelectedConversationInputModeInput
         {
             get
             {
-                if (_transcriptModes.Count == 0 || transcriptStyleDropdown == null) return ConvaiTranscriptMode.Chat;
-
-                int index = Mathf.Clamp(transcriptStyleDropdown.value, 0, _transcriptModes.Count - 1);
-                return _transcriptModes[index];
+                if (conversationModeDropdown == null) return ConversationInputMode.HandsFree;
+                return conversationModeDropdown.value == 1 ? ConversationInputMode.PushToTalk : ConversationInputMode.HandsFree;
             }
         }
 
         public void SetPlayerDisplayName(string value)
         {
-            if (playerNameInputField == null) return;
+            playerNameInputField?.SetTextWithoutNotify(value ?? string.Empty);
+        }
 
-            playerNameInputField.SetTextWithoutNotify(value ?? string.Empty);
+        public void SetConversationInputMode(ConversationInputMode mode)
+        {
+            conversationModeDropdown?.SetValueWithoutNotify(mode == ConversationInputMode.PushToTalk ? 1 : 0);
+        }
+
+        public void SetConversationInputModeVisible(bool visible)
+        {
+            if (conversationModeContainer != null)
+                conversationModeContainer.SetActive(visible);
+            else if (conversationModeDropdown != null)
+                conversationModeDropdown.gameObject.SetActive(visible);
         }
 
         public void SetTranscriptEnabled(bool value)
@@ -184,57 +194,50 @@ namespace Convai.Runtime.Presentation.Views.Settings
             if (microphoneDropContainer != null) microphoneDropContainer.SetActive(_microphoneOptions.Count > 0);
         }
 
-        public void SetTranscriptModes(IReadOnlyList<ConvaiTranscriptMode> modes, ConvaiTranscriptMode selectedMode)
-        {
-            _transcriptModes.Clear();
-            if (modes != null)
-            {
-                for (int i = 0; i < modes.Count; i++)
-                    _transcriptModes.Add(modes[i]);
-            }
-
-            if (_transcriptModes.Count == 0) _transcriptModes.Add(ConvaiTranscriptMode.Chat);
-
-            if (transcriptStyleDropdown != null)
-            {
-                transcriptStyleDropdown.ClearOptions();
-
-                var labels = new List<string>(_transcriptModes.Count);
-                for (int i = 0; i < _transcriptModes.Count; i++) labels.Add(ToTranscriptModeLabel(_transcriptModes[i]));
-
-                transcriptStyleDropdown.AddOptions(labels);
-
-                int selectedIndex = 0;
-                for (int i = 0; i < _transcriptModes.Count; i++)
-                {
-                    if (_transcriptModes[i] == selectedMode)
-                    {
-                        selectedIndex = i;
-                        break;
-                    }
-                }
-
-                transcriptStyleDropdown.SetValueWithoutNotify(selectedIndex);
-            }
-
-            GameObject modeContainer = transcriptModeContainer;
-            if (modeContainer == null && transcriptStyleDropdown != null)
-                modeContainer = transcriptStyleDropdown.gameObject;
-
-            if (modeContainer != null) modeContainer.SetActive(_transcriptModes.Count > 1);
-        }
-
         public void Inject(
             IConvaiSettingsPanelController panelController,
             IConvaiRuntimeSettingsService runtimeSettingsService,
-            IMicrophoneDeviceService microphoneDeviceService)
+            IMicrophoneDeviceService microphoneDeviceService,
+            IConvaiRoomConnectionService roomConnectionService = null,
+            Func<string> effectivePlayerNameProvider = null)
         {
+            UnsubscribeFromVisibility();
+            UnbindPresenter();
+            _presenter?.Dispose();
+            _presenter = null;
+
             _panelController = panelController;
             _runtimeSettingsService = runtimeSettingsService;
             _microphoneDeviceService = microphoneDeviceService;
+            _roomConnectionService = roomConnectionService;
+            _effectivePlayerNameProvider = effectivePlayerNameProvider;
 
             TryInitializePresenter();
             SubscribeToVisibility();
+        }
+
+        private void TryResolveDependencies()
+        {
+            if (_panelController != null &&
+                _runtimeSettingsService != null &&
+                _microphoneDeviceService != null)
+                return;
+
+            ConvaiManager manager = ConvaiManager.ActiveManager;
+            if (manager == null) return;
+
+            manager.TryGetSettingsPanelController(out IConvaiSettingsPanelController panelController);
+            manager.TryGetRuntimeSettingsService(out IConvaiRuntimeSettingsService runtimeSettingsService);
+            manager.TryGetMicrophoneDeviceService(out IMicrophoneDeviceService microphoneDeviceService);
+            manager.TryGetRoomConnectionService(out IConvaiRoomConnectionService roomConnectionService);
+
+            if (panelController != null && runtimeSettingsService != null && microphoneDeviceService != null)
+                Inject(
+                    panelController,
+                    runtimeSettingsService,
+                    microphoneDeviceService,
+                    roomConnectionService,
+                    () => manager.Player?.PlayerName);
         }
 
         private void HandleSaveClicked() => SaveRequested?.Invoke();
@@ -284,17 +287,6 @@ namespace Convai.Runtime.Presentation.Views.Settings
             _canvasGroup.blocksRaycasts = false;
         }
 
-        private void EnsureDependencies()
-        {
-            if (_container == null) return;
-
-            if (_panelController == null) _container.TryGet(out _panelController);
-
-            if (_runtimeSettingsService == null) _container.TryGet(out _runtimeSettingsService);
-
-            if (_microphoneDeviceService == null) _container.TryGet(out _microphoneDeviceService);
-        }
-
         private void TryInitializePresenter()
         {
             if (_panelController == null || _runtimeSettingsService == null || _microphoneDeviceService == null) return;
@@ -302,7 +294,12 @@ namespace Convai.Runtime.Presentation.Views.Settings
             if (_presenter == null)
             {
                 _presenter =
-                    new SettingsPanelPresenter(_runtimeSettingsService, _panelController, _microphoneDeviceService);
+                    new SettingsPanelPresenter(
+                        _runtimeSettingsService,
+                        _panelController,
+                        _microphoneDeviceService,
+                        _roomConnectionService,
+                        _effectivePlayerNameProvider);
             }
 
             if (!_isPresenterBound)
@@ -346,16 +343,6 @@ namespace Convai.Runtime.Presentation.Views.Settings
 
             if (_canvasFader == null)
                 _canvasFader = GetComponent<CanvasFader>() ?? GetComponentInChildren<CanvasFader>();
-        }
-
-        private static string ToTranscriptModeLabel(ConvaiTranscriptMode mode)
-        {
-            return mode switch
-            {
-                ConvaiTranscriptMode.Subtitle => "Subtitle",
-                ConvaiTranscriptMode.QuestionAnswer => "Question Answer",
-                _ => "Chat"
-            };
         }
     }
 }

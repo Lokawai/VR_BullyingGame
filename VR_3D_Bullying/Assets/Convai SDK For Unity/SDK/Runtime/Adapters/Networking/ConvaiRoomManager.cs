@@ -1,12 +1,11 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Convai.Domain.Abstractions;
+using Convai.Domain.DomainEvents.LipSync;
 using Convai.Domain.DomainEvents.Runtime;
 using Convai.Domain.DomainEvents.Session;
-using Convai.Domain.Errors;
 using Convai.Domain.EventSystem;
 using Convai.Domain.Identity;
 using Convai.Domain.Logging;
@@ -17,51 +16,67 @@ using Convai.Infrastructure.Networking.Services;
 using Convai.Infrastructure.Networking.Transport;
 using Convai.Infrastructure.Persistence;
 using Convai.Infrastructure.Protocol.Messages;
+using Convai.RestAPI.Services;
 using Convai.Runtime.Behaviors;
 using Convai.Runtime.Components;
+using Convai.Runtime.Core;
+using Convai.Runtime.Core.Configuration;
+using Convai.Runtime.Core.Coordinators;
+using Convai.Runtime.Core.DependencyInjection;
+using Convai.Runtime.DynamicContext;
+using Convai.Runtime.Core.Registry;
 using Convai.Runtime.Logging;
 using Convai.Runtime.Networking.Media;
+using Convai.Runtime.NarrativeDesign;
 using Convai.Runtime.Persistence;
 using Convai.Runtime.Room;
-using Convai.Runtime.Vision;
-using Convai.Shared;
+using Convai.Runtime.Vision.Context;
 using Convai.Shared.Abstractions;
-using Convai.Shared.DependencyInjection;
-using Convai.Shared.Interfaces;
 using Convai.Shared.Types;
 using UnityEngine;
+using UnityEngine.Serialization;
+using RtviSceneMetadata = Convai.Infrastructure.Protocol.Messages.SceneMetadata;
 using ISessionPersistence = Convai.Domain.Abstractions.ISessionPersistence;
 using ILogger = Convai.Domain.Logging.ILogger;
 
 namespace Convai.Runtime.Adapters.Networking
 {
+    internal enum RoomOwnershipRebindOutcome
+    {
+        DeferredUntilStartup = 0,
+        AppliedImmediately,
+        PendingReconnect,
+        RejectedTransitionState,
+        RejectedInvalidOwnership
+    }
+
     /// <summary>
-    ///     Unity MonoBehaviour that manages Convai room connections and audio services.
-    ///     Implements IConvaiRoomConnectionService and IConvaiRoomAudioService.
-    ///     Owns room connection lifecycle, retry/rejoin bookkeeping, scene discovery, and audio preferences.
+    ///     Unity-facing room and audio component managed by <see cref="ConvaiManager" />.
+    ///     Implements the scene-level room connection and room audio service contracts.
     /// </summary>
     public partial class ConvaiRoomManager : MonoBehaviour, IConvaiRoomConnectionService, IConvaiRoomAudioService,
-        IInjectable
+        IConvaiRoomAudioTimelineService, IConvaiRoomAudioMediaTimelineService,
+        IConvaiDynamicContextTransport, IInjectable<IConvaiRoomManagerDependencies>
     {
-        private static readonly TimeSpan[] _defaultRetryDelays =
-        {
-            TimeSpan.Zero, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(4)
-        };
-
         #region IConvaiRoomAudioService Properties
 
         /// <inheritdoc />
-        public bool IsMicMuted =>
-            _audioTrackManager?.IsMicMuted ??
-            _audioManager?.IsMicMuted ??
-            _convaiRoomController?.IsMicMuted ??
-            false;
+        public bool IsMicMuted => _roomAudioCoordinator?.IsMicMuted ?? false;
 
         #endregion
 
         /// <inheritdoc />
-        public bool RequiresUserGestureForAudio =>
-            RealtimeTransportFactory.GetCapabilities().RequiresUserGestureForAudio;
+        public bool RequiresUserGestureForAudio
+        {
+            get
+            {
+                IRealtimeTransportAccessor accessor = TryGetTransportAccessor();
+                if (accessor != null)
+                    return accessor.Capabilities.RequiresUserGestureForAudio;
+
+                return _transportProvider?.Capabilities.RequiresUserGestureForAudio ?? false;
+            }
+        }
 
         /// <inheritdoc />
         public bool IsAudioPlaybackActive
@@ -97,9 +112,9 @@ namespace Convai.Runtime.Adapters.Networking
         public void EnableAudioAndStartListening()
         {
             EnableAudioPlayback();
-            StartListeningAsync().ContinueWith(
+            StartListeningAsync().AsTask().ContinueWith(
                 static t => ConvaiLogger.Error(
-                    $"[ConvaiRoomManager] StartListeningAsync failed: {t.Exception?.GetBaseException().Message}",
+                    $"StartListeningAsync failed: {t.Exception?.GetBaseException().Message}",
                     LogCategory.SDK),
                 CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted,
@@ -118,9 +133,9 @@ namespace Convai.Runtime.Adapters.Networking
                 return;
             }
 
-            StartListeningAsync().ContinueWith(
+            StartListeningAsync().AsTask().ContinueWith(
                 static t => ConvaiLogger.Error(
-                    $"[ConvaiRoomManager] StartListeningAsync failed: {t.Exception?.GetBaseException().Message}",
+                    $"StartListeningAsync failed: {t.Exception?.GetBaseException().Message}",
                     LogCategory.SDK),
                 CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted,
@@ -129,15 +144,36 @@ namespace Convai.Runtime.Adapters.Networking
 
         #region Serialized Fields
 
-        /// <summary>Gets the connection type used for character sessions.</summary>
-        [field: SerializeField]
-        [field: Tooltip("The connection type for character sessions (Audio or Video)")]
-        public ConvaiConnectionType ConnectionType { get; private set; } = ConvaiConnectionType.Audio;
+        [Header("Configuration")]
+        [SerializeField]
+        [Tooltip(
+            "Choose whether this component uses scene-specific room settings or a reusable Room Manager Profile asset.")]
+        private ConvaiConfigSourceMode _configurationSource = ConvaiConfigSourceMode.Inline;
 
-        /// <summary>Gets the LLM provider used for character responses.</summary>
+        [SerializeField] [HideInInspector] private bool _configurationSourceInitialized;
+
+        [SerializeField] [HideInInspector] private bool _legacyConversationSettingsMigrated;
+
+        [SerializeField]
+        [Tooltip(
+            "Optional reusable Room Manager Profile asset. Switch Room Setup Source to Room Manager Profile Asset to make this the active source of truth.")]
+        [FormerlySerializedAs("_runtimeProfile")]
+        private ConvaiRoomManagerProfile _roomConfigAsset;
+
+        /// <summary>
+        ///     The connection type used for character sessions when Room Setup Source is set to Scene Defaults.
+        ///     This private field is exposed publicly via the <see cref="ConnectionType" /> property and
+        ///     <see cref="EffectiveConnectionType" /> property, which resolves between asset and inline configuration.
+        /// </summary>
+        [SerializeField] [Tooltip("Connection type used when Room Setup Source is set to Scene Defaults.")]
+        private ConvaiConnectionType _connectionType = ConvaiConnectionType.Audio;
+
+        /// <summary>Gets the outgoing video track name used for room sessions in Inline mode.</summary>
         [field: SerializeField]
-        [field: Tooltip("The LLM provider for character responses")]
-        public ConvaiLLMProvider LLMProvider { get; private set; } = ConvaiLLMProvider.Dynamic;
+        [field:
+            Tooltip(
+                "Optional outgoing video track name used when Room Setup Source is set to Scene Defaults. Leave blank to use publisher defaults.")]
+        public string VideoTrackName { get; private set; } = string.Empty;
 
         /// <summary>Gets the base URL of the Convai core server (without endpoint path).</summary>
         [field: SerializeField]
@@ -146,17 +182,80 @@ namespace Convai.Runtime.Adapters.Networking
                 "The base URL of the Convai core server (without endpoint path). Leave blank to use ConvaiSettings.ServerUrl. Example: https://api.convai.com")]
         public string CoreServerBaseURL { get; private set; }
 
-        /// <summary>Gets the core server endpoint used for room connections.</summary>
         [field: SerializeField]
-        [field: Tooltip("The endpoint to use for room connections")]
+        [field:
+            Tooltip(
+                "Room endpoint used when Room Setup Source is set to Scene Defaults.")]
         public ConvaiServerEndpoint ServerEndpoint { get; private set; } = ConvaiServerEndpoint.Connect;
 
         /// <summary>Gets a value indicating whether the manager connects automatically on <see cref="Start" />.</summary>
         [field: SerializeField]
         [field:
             Tooltip(
-                "If false, connection will not start automatically. Use ConnectAsync() to initiate connection manually.")]
+                "Whether the manager connects automatically on Start when Room Setup Source is set to Scene Defaults.")]
         public bool ConnectOnStart { get; private set; } = true;
+
+        [SerializeField]
+        [Tooltip(
+            "Advanced room-level turn-taking, microphone startup, and initial STT defaults used when Room Setup Source is set to Scene Defaults.")]
+        private TurnTakingOptions _turnTakingOptions = TurnTakingOptions.CreateHandsFreeDefault();
+
+        [SerializeField]
+        [Tooltip(
+            "Advanced backend user voice activity detection defaults used when Room Setup Source is set to Scene Defaults.")]
+        private UserVadSettings _userVadSettings = UserVadSettings.CreateDefault();
+
+        [Header("Dynamic Vision Context")]
+        [SerializeField]
+        [Tooltip("Controls backend dynamic context vision. Auto follows the configured Connection Type (Video enables it); Enabled always uses video; Disabled never sends vision config.")]
+        private ConvaiVisionContextMode _visionContextMode = ConvaiVisionContextMode.Auto;
+
+        [SerializeField] [Tooltip("Backend frame sampling settings for dynamic context vision.")]
+        private ConvaiVisionInputSettings _visionInputSettings = ConvaiVisionInputSettings.CreateDefault();
+
+        [SerializeField] [Tooltip("Backend response mode policy for dynamic context vision updates and triggers.")]
+        private ConvaiVisionRespondModeSettings _visionRespondModes = ConvaiVisionRespondModeSettings.CreateDefault();
+
+        [SerializeField] [Tooltip("Keyboard key used by the built-in push-to-talk flow for this scene.")]
+        private KeyCode _pushToTalkKey = KeyCode.T;
+
+        [Header("Inline Reconnect Defaults")]
+        [SerializeField]
+        [Min(0f)]
+        [Tooltip(
+            "How long a room can be rejoined before forcing a fresh room when Room Setup Source is set to Scene Defaults.")]
+        private float _roomRejoinTtlSeconds = 60f;
+
+        [SerializeField]
+        [Tooltip("How session resume behaves on reconnect when Room Setup Source is set to Scene Defaults.")]
+        private ResumePolicy _resumePolicy = ResumePolicy.ResumeIfPossible;
+
+        [SerializeField]
+        [Min(0)]
+        [Tooltip("Maximum reconnect attempts before giving up when Room Setup Source is set to Scene Defaults.")]
+        private int _maxReconnectAttempts = 3;
+
+        [SerializeField]
+        [Tooltip("Whether the agent should spawn again when rejoining an existing room in Inline mode.")]
+        private bool _spawnAgentOnRejoin = true;
+
+        [SerializeField] [Min(0)] [Tooltip("How long ConnectAsync waits for Start() before timing out in Inline mode.")]
+        private int _startWaitTimeoutMs = 5000;
+
+        [SerializeField]
+        [Min(0f)]
+        [Tooltip("Delay before starting the microphone after a successful connection in Inline mode.")]
+        private float _autoMicStartDelaySeconds = 0.5f;
+
+        /// <summary>
+        ///     When true, the connect request sends debug=true so the backend enables RTVI metrics for this session
+        ///     (debug/analytics).
+        /// </summary>
+        [field: SerializeField]
+        [field:
+            Tooltip(
+                "Enable debug mode: backend will enable RTVI metrics for this session. Use for debugging or analytics; leave off in production.")]
+        public bool Debug { get; private set; }
 
         // These fields must always be serialized to maintain consistent serialization layout across platforms.
         // They are read/written only in ConvaiRoomManager.Editor.cs (editor-only partial).
@@ -173,24 +272,258 @@ namespace Convai.Runtime.Adapters.Networking
 
         #region Public Properties
 
-        private string ResolvedCoreServerBaseURL =>
-            string.IsNullOrWhiteSpace(CoreServerBaseURL) ? ConvaiSettings.Instance.ServerUrl : CoreServerBaseURL;
+        private string ResolvedCoreServerBaseURL
+        {
+            get
+            {
+                if (!string.IsNullOrWhiteSpace(CoreServerBaseURL))
+                    return CoreServerBaseURL;
+
+                return TryGetRuntimeCredentials(out RuntimeCredentials credentials)
+                    ? credentials.CoreServerUrl
+                    : ConvaiSettings.Instance?.ServerUrl;
+            }
+        }
 
         /// <summary>
         ///     Gets the full Core Server URL with the endpoint path appended.
         /// </summary>
-        public string CoreServerURL => ServerEndpoint.BuildUrl(ResolvedCoreServerBaseURL);
+        public string CoreServerURL => EffectiveServerEndpoint.BuildUrl(ResolvedCoreServerBaseURL);
+
+        public ConvaiConfigSourceMode ConfigurationSource => ResolveConfigurationSourceMode();
+
+        public ConvaiRoomManagerProfile RoomConfigAsset => _roomConfigAsset;
+
+        /// <summary>
+        ///     Gets the connection type for this room after resolving dynamic vision capability:
+        ///     the configured value, upgraded to Video only when the vision mode is explicitly Enabled.
+        /// </summary>
+        public ConvaiConnectionType EffectiveConnectionType => ResolveEffectiveConnectionType();
+
+        /// <summary>Gets the dynamic vision context mode, resolving from asset or inline configuration.</summary>
+        public ConvaiVisionContextMode EffectiveVisionContextMode =>
+            UsesRoomConfigAsset ? _roomConfigAsset.VisionContextMode : _visionContextMode;
+
+        /// <summary>
+        ///     Gets whether this room will send dynamic-vision config on connect: true when the mode is
+        ///     Enabled, or Auto with the connection type configured to Video.
+        /// </summary>
+        public bool EffectiveVisionContextEnabled => ResolveVisionContextEnabled();
+
+        /// <summary>Gets a copy of the vision frame-sampling settings, resolving from asset or inline configuration.</summary>
+        public ConvaiVisionInputSettings EffectiveVisionInputSettings =>
+            UsesRoomConfigAsset
+                ? _roomConfigAsset.VisionInputSettings
+                : _visionInputSettings?.Clone() ?? ConvaiVisionInputSettings.CreateDefault();
+
+        /// <summary>Gets a copy of the per-lane respond-mode defaults, resolving from asset or inline configuration.</summary>
+        public ConvaiVisionRespondModeSettings EffectiveVisionRespondModes =>
+            UsesRoomConfigAsset
+                ? _roomConfigAsset.VisionRespondModes
+                : _visionRespondModes?.Clone() ?? ConvaiVisionRespondModeSettings.CreateDefault();
+
+        public ConvaiServerEndpoint EffectiveServerEndpoint =>
+            UsesRoomConfigAsset ? _roomConfigAsset.ServerEndpoint : ServerEndpoint;
+
+        public bool EffectiveConnectOnStart =>
+            UsesRoomConfigAsset ? _roomConfigAsset.ConnectOnStart : ConnectOnStart;
+
+        public bool EffectiveDebug => Debug;
+
+        public KeyCode PushToTalkKey => _pushToTalkKey;
+
+        public TurnTakingOptions EffectiveTurnTakingOptions =>
+            UsesRoomConfigAsset
+                ? _roomConfigAsset.TurnTakingOptions
+                : _turnTakingOptions?.Clone() ?? TurnTakingOptions.CreateHandsFreeDefault();
+
+        public UserVadSettings EffectiveUserVadSettings =>
+            UsesRoomConfigAsset
+                ? _roomConfigAsset.UserVadSettings
+                : _userVadSettings?.Clone() ?? UserVadSettings.CreateDefault();
+
+        public string EffectiveVideoTrackName => ResolveVideoTrackName();
+
+        public string EffectiveReconnectPolicyDescription
+        {
+            get
+            {
+                if (!_isInjected)
+                    return CreateConfiguredReconnectPolicy().ToString();
+
+                return (_reconnectPolicy ?? ReconnectPolicy.Default).ToString();
+            }
+        }
+
+        private bool UsesRoomConfigAsset =>
+            ResolveConfigurationSourceMode() == ConvaiConfigSourceMode.Asset && _roomConfigAsset != null;
+
+        private ConvaiConfigSourceMode ResolveConfigurationSourceMode() =>
+            !_configurationSourceInitialized
+                ? _roomConfigAsset != null ? ConvaiConfigSourceMode.Asset : ConvaiConfigSourceMode.Inline
+                : _configurationSource;
+
+        private ConvaiConnectionType ConfiguredConnectionType =>
+            UsesRoomConfigAsset ? _roomConfigAsset.ConnectionType : _connectionType;
+
+        // Deliberately conservative: only an explicit Enabled changes the configured connection
+        // type. Disabled must NOT force Audio — it only stops the dynamic-vision connect config
+        // from being sent, so legacy native-video paths (e.g. Gemini Live) keep their video track.
+        private ConvaiConnectionType ResolveEffectiveConnectionType() =>
+            EffectiveVisionContextMode == ConvaiVisionContextMode.Enabled
+                ? ConvaiConnectionType.Video
+                : ConfiguredConnectionType;
+
+        private bool ResolveVisionContextEnabled()
+        {
+            switch (EffectiveVisionContextMode)
+            {
+                case ConvaiVisionContextMode.Enabled:
+                    return true;
+                case ConvaiVisionContextMode.Auto:
+                    // Auto never upgrades an Audio room: enabling vision changes what the backend
+                    // bills per turn, so it must follow an explicit Video configuration (or an
+                    // explicit Enabled), never the mere presence of a publisher component.
+                    return ConfiguredConnectionType == ConvaiConnectionType.Video;
+                default:
+                    return false;
+            }
+        }
+
+        internal RoomVisionInputConfig CreateEffectiveVisionInputConfig() =>
+            EffectiveVisionContextEnabled ? EffectiveVisionInputSettings.ToRoomVisionInputConfig() : null;
+
+        // Respond modes are NOT vision-gated: the context_update, trigger, and scene_metadata
+        // lanes govern plain dynamic-context features, so the lane policy must reach the backend
+        // even when dynamic vision is disabled for the room.
+        internal RoomRespondModesConfig CreateEffectiveVisionRespondModes() =>
+            EffectiveVisionRespondModes.ToRoomRespondModesConfig();
+
+        private void EnsureConfigurationSourceInitialized()
+        {
+            if (_configurationSourceInitialized) return;
+
+            _configurationSource =
+                _roomConfigAsset != null ? ConvaiConfigSourceMode.Asset : ConvaiConfigSourceMode.Inline;
+            _configurationSourceInitialized = true;
+        }
+
+        private ReconnectPolicy CreateInlineReconnectPolicy() =>
+            new(
+                _roomRejoinTtlSeconds,
+                _resumePolicy,
+                _maxReconnectAttempts,
+                _spawnAgentOnRejoin,
+                _startWaitTimeoutMs,
+                _autoMicStartDelaySeconds);
+
+        private ReconnectPolicy CreateConfiguredReconnectPolicy() =>
+            UsesRoomConfigAsset ? _roomConfigAsset.CreateReconnectPolicy() : CreateInlineReconnectPolicy();
+
+        internal void AdoptLegacyManagerConversationSettings(
+            ConvaiManagerConversationMode legacyConversationMode,
+            KeyCode legacyPushToTalkKey,
+            bool interruptBotOnPress,
+            bool requireTurnCompletionBeforeNextPress,
+            int pushToTalkTurnCompletionTimeoutMs)
+        {
+            if (_legacyConversationSettingsMigrated)
+                return;
+
+            bool hasExplicitRoomConfigAsset = _roomConfigAsset != null;
+            bool roomManagerAlreadyOwnsConversationSettings =
+                _configurationSourceInitialized && !HasDefaultInlineConversationSetup();
+
+            if (hasExplicitRoomConfigAsset || roomManagerAlreadyOwnsConversationSettings)
+            {
+                _legacyConversationSettingsMigrated = true;
+                return;
+            }
+
+            if (legacyPushToTalkKey != KeyCode.T && _pushToTalkKey == KeyCode.T)
+                _pushToTalkKey = legacyPushToTalkKey;
+
+            if (legacyConversationMode == ConvaiManagerConversationMode.UseRoomDefaults)
+            {
+                _legacyConversationSettingsMigrated = true;
+                return;
+            }
+
+            _configurationSource = ConvaiConfigSourceMode.Inline;
+            _configurationSourceInitialized = true;
+            _turnTakingOptions = ConvaiManager.CreateConversationModeTurnTakingOverride(
+                                     legacyConversationMode,
+                                     interruptBotOnPress,
+                                     requireTurnCompletionBeforeNextPress,
+                                     pushToTalkTurnCompletionTimeoutMs)
+                                 ?? _turnTakingOptions?.Clone()
+                                 ?? TurnTakingOptions.CreateHandsFreeDefault();
+            _legacyConversationSettingsMigrated = true;
+        }
+
+        private bool HasDefaultInlineConversationSetup()
+        {
+            if (_pushToTalkKey != KeyCode.T)
+                return false;
+
+            TurnTakingOptions options = _turnTakingOptions ?? TurnTakingOptions.CreateHandsFreeDefault();
+            PushToTalkPolicy pushToTalkPolicy = options.PushToTalkPolicy ?? PushToTalkPolicy.CreateDefault();
+            LocalAudioPolicy localAudioPolicy = options.LocalAudioPolicy ?? LocalAudioPolicy.CreateDefault();
+            SmartTurnSettings smartTurn = options.CustomTurnDetection ?? SmartTurnSettings.CreateDefault();
+
+            return options.Mode == ConversationInputMode.HandsFree &&
+                   options.TurnDetection == TurnDetectionMode.UseDefault &&
+                   options.InitialServerStt == ServerSttInitialState.UseDefault &&
+                   localAudioPolicy.StartMutedInPushToTalk &&
+                   !localAudioPolicy.EnableAcousticEchoCancellation &&
+                   localAudioPolicy.PushToTalkStartupMode == PushToTalkMicStartupMode.PrewarmMuted &&
+                   pushToTalkPolicy.EnableServerSttToggle &&
+                   pushToTalkPolicy.InterruptBotOnPress &&
+                   pushToTalkPolicy.RequireTurnCompletionBeforeNextPress &&
+                   pushToTalkPolicy.TurnCompletionTimeoutMs == PushToTalkPolicy.DefaultTurnCompletionTimeoutMs &&
+                   !pushToTalkPolicy.AllowSpeechStoppedFallbackAfterSpeechStart &&
+                   Mathf.Approximately(smartTurn.StopSecs, SmartTurnSettings.DefaultStopSecs) &&
+                   smartTurn.PreSpeechMs == SmartTurnSettings.DefaultPreSpeechMs &&
+                   Mathf.Approximately(smartTurn.MaxDurationSecs, SmartTurnSettings.DefaultMaxDurationSecs);
+        }
+
+        private bool TryGetRuntimeCredentials(out RuntimeCredentials credentials)
+        {
+            credentials = default;
+            if (_credentialProvider == null)
+                return false;
+
+            string apiKey = _credentialProvider.GetApiKey();
+            string serverUrl = _credentialProvider.GetServerUrl();
+            if (string.IsNullOrEmpty(apiKey))
+                return false;
+
+            credentials = new RuntimeCredentials(apiKey, serverUrl);
+            return true;
+        }
 
         /// <summary>Gets the current player agent, when available.</summary>
         public IConvaiPlayerAgent Player { get; private set; }
 
-        /// <summary>Gets a map of discovered scene characters to their audio data.</summary>
-        public IReadOnlyDictionary<IConvaiCharacterAgent, CharacterAudioData> CharacterToParticipantMap =>
-            _sceneDiscovery?.CharacterToParticipantMap;
-
         /// <summary>Gets the list of discovered scene character agents.</summary>
         public IReadOnlyList<IConvaiCharacterAgent> CharacterList => _characterList;
 
+        public int ConnectAttemptCount { get; private set; }
+
+        public int ReconnectCount { get; private set; }
+
+        public string LastSessionErrorCode => _lastSessionErrorCode ?? string.Empty;
+        public string LastSessionErrorMessage => _lastSessionErrorMessage ?? string.Empty;
+        public DateTime? LastSuccessfulConnectionUtc { get; private set; }
+
+        public string LastOwnershipRebindOutcome => _lastOwnershipRebindOutcome ?? string.Empty;
+        public string CurrentRoomName => _convaiRoomController?.RoomName ?? string.Empty;
+        public string CurrentSessionId => _convaiRoomController?.SessionID ?? string.Empty;
+        public string CurrentCharacterSessionId => _convaiRoomController?.CharacterSessionID ?? string.Empty;
+        public string RoomControllerTypeName => _convaiRoomController?.GetType().Name ?? string.Empty;
+        public string TransportAccessorTypeName => TryGetTransportAccessor()?.GetType().Name ?? string.Empty;
+
+        private IConvaiCharacterAgent _activeCharacter;
         private List<IConvaiCharacterAgent> _characterList;
 
         #endregion
@@ -201,10 +534,19 @@ namespace Convai.Runtime.Adapters.Networking
         public event Action Connected;
 
         /// <inheritdoc />
-        public event Action ConnectionFailed;
+        public event Action<SessionError> OnSessionError;
 
         /// <inheritdoc />
         public event Action<SessionStateChanged> OnSessionStateChanged;
+
+        /// <inheritdoc />
+        public event Action<ConversationInputMode> ConversationInputModeChanged;
+
+        /// <summary>
+        ///     Raised when an RTVI metrics message is received (only when Debug is enabled on this manager).
+        ///     Use for troubleshooting latency (ttfb, processing) or custom metrics (e.g. NeuroSync).
+        /// </summary>
+        public event Action<RTVIMetricsPayload> OnRtvMetricsReceived;
 
         #endregion
 
@@ -221,6 +563,9 @@ namespace Convai.Runtime.Adapters.Networking
         #region IConvaiRoomConnectionService Properties
 
         /// <inheritdoc />
+        public ConvaiConnectionType ConnectionType => EffectiveConnectionType;
+
+        /// <inheritdoc />
         public SessionState CurrentState => _sessionStateMachine?.CurrentState ?? SessionState.Disconnected;
 
         /// <inheritdoc />
@@ -228,6 +573,15 @@ namespace Convai.Runtime.Adapters.Networking
 
         /// <inheritdoc />
         public bool HasRoomDetails => _convaiRoomController?.HasRoomDetails ?? false;
+
+        /// <inheritdoc />
+        public bool HasPendingOwnershipReconnect { get; private set; }
+
+        /// <inheritdoc />
+        public ConversationInputMode ActiveConversationInputMode =>
+            _hasConnectedSessionTurnTakingState
+                ? CurrentResolvedTurnTakingOptions.Mode
+                : EffectiveTurnTakingOptions.Mode;
 
         /// <inheritdoc />
         /// <remarks>
@@ -248,22 +602,33 @@ namespace Convai.Runtime.Adapters.Networking
         public RTVIHandler RtvHandler => _convaiRoomController?.RTVIHandler;
 
         /// <inheritdoc />
-        public bool SendTrigger(string triggerName, string triggerMessage = null)
+        public bool SendNarrativeTrigger(ConvaiNarrativeTriggerRequest request)
         {
             RTVIHandler handler = RtvHandler;
             if (handler == null) return false;
 
-            handler.SendData(new RTVITriggerMessage(triggerName, triggerMessage));
+            handler.SendData(new RTVITriggerMessage(request));
             return true;
         }
 
         /// <inheritdoc />
-        public bool SendDynamicInfo(string contextText)
+        public bool UpdateSceneMetadata(IReadOnlyList<RtviSceneMetadata> sceneMetadata)
         {
             RTVIHandler handler = RtvHandler;
-            if (handler == null) return false;
+            if (handler == null || sceneMetadata == null) return false;
 
-            handler.SendData(new RTVIUpdateDynamicInfo(new DynamicInfo { Text = contextText }));
+            List<RtviSceneMetadata> payload =
+                sceneMetadata as List<RtviSceneMetadata> ?? new List<RtviSceneMetadata>(sceneMetadata);
+            handler.SendData(new RTVIUpdateSceneMetadata(payload));
+            return true;
+        }
+
+        bool IConvaiDynamicContextTransport.SendDynamicContext(ConvaiDynamicContextUpdate update)
+        {
+            RTVIHandler handler = RtvHandler;
+            if (handler == null || update == null) return false;
+
+            handler.SendData(new RTVIUpdateDynamicContext(update));
             return true;
         }
 
@@ -277,109 +642,282 @@ namespace Convai.Runtime.Adapters.Networking
             return true;
         }
 
+        /// <inheritdoc />
+        public bool SetTtsEnabled(bool ttsEnabled)
+        {
+            RTVIHandler handler = RtvHandler;
+            if (handler == null) return false;
+
+            handler.SendData(new RTVITtsToggle(ttsEnabled));
+            return true;
+        }
+
+        /// <inheritdoc />
+        public bool SetSttMuted(bool muted)
+        {
+            RTVIHandler handler = RtvHandler;
+            if (handler == null) return false;
+
+            handler.SendData(new RTVISttToggle(muted));
+            return true;
+        }
+
+        /// <inheritdoc />
+        public bool InterruptBot()
+            => SendInterruption(BargeInTrigger.Manual, requireActivePlayback: false);
+
+        private bool SendInterruption(BargeInTrigger trigger, bool requireActivePlayback)
+        {
+            RTVIHandler handler = RtvHandler;
+            if (handler == null) return false;
+            if (requireActivePlayback && !(_bargeInCoordinator?.HasActivePlayback ?? false))
+                return false;
+
+            _clientLatencyMetricsCollector?.RecordBargeInMarker(
+                BargeInMarker.Create(BargeInMarkerStage.InterruptRequested, trigger));
+            _bargeInCoordinator?.Commit(trigger);
+            handler.SendData(new RTVIInterruptBot());
+            _clientLatencyMetricsCollector?.RecordBargeInMarker(
+                BargeInMarker.Create(BargeInMarkerStage.InterruptSent, trigger));
+            return true;
+        }
+
+        /// <inheritdoc />
+        public bool KillPipeline()
+        {
+            RTVIHandler handler = RtvHandler;
+            if (handler == null) return false;
+
+            handler.SendData(new RTVIKillPipeline());
+            return true;
+        }
+
+        /// <inheritdoc />
+        public bool ForceUserStoppedSpeaking()
+        {
+            RTVIHandler handler = RtvHandler;
+            if (handler == null) return false;
+
+            handler.SendData(new RTVIForceUserStoppedSpeaking());
+            return true;
+        }
+
+        /// <inheritdoc />
+        public bool ResetIdleTimer()
+        {
+            RTVIHandler handler = RtvHandler;
+            if (handler == null) return false;
+
+            handler.SendData(new RTVIResetIdleTimer());
+            return true;
+        }
+
+        /// <inheritdoc />
+        public bool RequestVisionStatus(string updateId = null)
+        {
+            RTVIHandler handler = RtvHandler;
+            if (handler == null) return false;
+
+            handler.SendData(new RTVIVisionStatus(updateId));
+            return true;
+        }
+
+        /// <inheritdoc />
+        public bool TriggerVision(ConvaiVisionTriggerRequest request)
+        {
+            RTVIHandler handler = RtvHandler;
+            if (handler == null) return false;
+
+            handler.SendData(new RTVIVisionTrigger(request));
+            return true;
+        }
+
+        /// <inheritdoc />
+        public bool UpdateRespondMode(ConvaiRespondModeLane lane, ConvaiRespondMode mode, string updateId = null)
+        {
+            RTVIHandler handler = RtvHandler;
+            if (handler == null) return false;
+
+            handler.SendData(new RTVIRespondModeUpdate(lane, mode, updateId));
+            return true;
+        }
+
         #endregion
 
         #region Private Fields
 
-        private readonly object _connectionStateTcsLock = new();
-        private readonly TaskCompletionSource<bool> _startCompletedTcs = new();
-        private SceneCharacterDiscovery _sceneDiscovery;
         private RemoteAudioPreferenceManager _remoteAudioPreferences;
 
         private AudioTrackManager _audioTrackManager;
 
         private IConvaiRoomController _convaiRoomController;
         private ILogger _logger;
-        private IServiceContainer _container;
         private IConvaiRoomControllerFactory _controllerFactory;
         private IMicrophoneSourceFactory _microphoneSourceFactory;
+        private ITransportProvider _transportProvider;
+
+        private IRealtimeTransportAccessor TryGetTransportAccessor() => null;
 
         private IRealtimeTransport TryGetTransport()
         {
-            if (_container != null && _container.TryGet(out IRealtimeTransportAccessor accessor) &&
-                accessor?.Transport != null) return accessor.Transport;
-            return null;
+            IRealtimeTransportAccessor accessor = TryGetTransportAccessor();
+            return accessor?.Transport;
         }
 
-        private CharacterRegistryAdapter _characterRegistry;
         private PlayerSessionAdapter _playerSession;
-        private ConfigurationProviderAdapter _configProvider;
-        private MainThreadDispatcherAdapter _dispatcher;
-        private IEndUserIdProvider _endUserIdProvider;
+        private ICredentialProvider _credentialProvider;
+        private IEndUserIdentityProvider _endUserIdentityProvider;
+        private IEndUserMetadataProvider _endUserMetadataProvider;
+        private readonly MutableEndUserContextProvider _mutableEndUserContextProvider = new();
 
         private IEventHub _eventHub;
+        private IRoomOwnershipProvider _roomOwnershipProvider;
         private SubscriptionToken _characterReadyToken;
+        private SubscriptionToken _characterSpeechStateToken;
+        private SubscriptionToken _characterTtsTextToken;
+        private SubscriptionToken _lipSyncPackedDataToken;
+        private SubscriptionToken _clientVoiceActivityStateToken;
+        private SubscriptionToken _playerSpeakingStateToken;
+        private SubscriptionToken _sessionStateToken;
         private ISessionPersistence _sessionPersistence;
-        private IConvaiAudioManager _audioManager;
 
-        private TaskCompletionSource<bool> _connectionStateTcs;
-        private Task<bool> _connectTask;
         private ConnectionContext _connectionContext = ConnectionContext.Empty;
-        private bool _hasStartedOnce;
+        private string _pendingOwnershipRequestedCharacterId;
         private ReconnectPolicy _reconnectPolicy = ReconnectPolicy.Default;
         private ISessionStateMachine _sessionStateMachine;
         private ISessionService _sessionService;
+        private RoomSessionDiagnostics _sessionDiagnostics;
+        private RoomCharacterLifecycleCoordinator _characterLifecycleCoordinator;
+        private RoomControllerEventBinder _roomControllerEventBinder;
+        private RTVIHandler _metricsRtviHandler;
+        private ClientLatencyMetricsCollector _clientLatencyMetricsCollector;
+        private BargeInCoordinator _bargeInCoordinator;
+        private IDebugMetricsFileWriter _debugMetricsFileWriter;
         private INarrativeSectionNameResolver _sectionNameResolver;
         private IConvaiRuntimeSettingsService _runtimeSettingsService;
         private IMicrophoneDeviceService _microphoneDeviceService;
+        private ConvaiRuntimeDiagnosticsService _runtimeDiagnosticsService;
+        private string _lastSessionErrorCode;
+        private string _lastSessionErrorMessage;
+        private string _lastOwnershipRebindOutcome;
 
         private bool _isInjected;
 
         private static ConvaiRoomManager _instance;
 
+        private RoomAudioCoordinator _roomAudioCoordinator;
+        private RoomDisconnectRuntimeAdapter _roomDisconnectRuntimeAdapter;
+        private RoomConnectionRuntimeAdapter _roomConnectionRuntimeAdapter;
+        private RoomAudioRuntimeAdapter _roomAudioRuntimeAdapter;
+        private RoomRuntimeAssembly _roomRuntimeAssembly;
+        private readonly RoomRuntimeAssemblyFactory _roomRuntimeAssemblyFactory = new();
+        private readonly RoomCompositionService _roomCompositionService = new();
+        private readonly object _connectOptionsLock = new();
+        private readonly SemaphoreSlim _conversationInputModeTransitionGate = new(1, 1);
+        private Coroutine _autoStartMicrophoneCoroutine;
+        private bool _autoStartMicrophoneCompleted;
+        private bool _autoStartMicrophonePending;
+        private int _autoStartMicrophoneRequestId;
+        private RoomSessionConnectOptions _pendingConnectOptions;
+        private TurnTakingOptions _sessionTurnTakingSourceOptions;
+        private bool _hasConnectedSessionTurnTakingState;
+        private bool _conversationInputModeTransitionInProgress;
+
+        private ResolvedTurnTakingOptions
+            _currentResolvedTurnTakingOptions = ResolvedTurnTakingOptions.DefaultHandsFree;
+
+        /// <summary>
+        ///     The room runtime instance created by the runtime assembly factory.
+        /// </summary>
+        /// <remarks>
+        ///     RC-2: Stored for access by <see cref="DeferredRoomRuntime" /> via <see cref="GetRoomRuntime" />.
+        /// </remarks>
+        private RoomRuntime _roomRuntime;
+
+        #endregion
+
+        #region Coordinators
+
+        public IRoomDiagnostics DiagnosticsCoordinator { get; private set; }
+
+        public IRoomAudioCoordinator AudioCoordinator => _roomAudioCoordinator;
+
+        public IRoomOwnershipCoordinator OwnershipCoordinator { get; private set; }
+
+        public IRoomConnectionCoordinator ConnectionCoordinator { get; private set; }
+
+        public IAgentRegistry AgentRegistry { get; private set; }
+
         #endregion
 
         #region Public Methods
 
-        /// <summary>
-        ///     Infrastructure component: injects before others so that services it registers
-        ///     (IConvaiRoomConnectionService, IConvaiRoomAudioService, IConvaiAudioManager)
-        ///     are available when downstream IInjectables resolve them.
-        /// </summary>
-        int IInjectable.InjectionOrder => -100;
+        /// <remarks>
+        ///     Typed injection entrypoint used by the runtime host.
+        /// </remarks>
+        void IInjectable<IConvaiRoomManagerDependencies>.
+            InjectDependencies(IConvaiRoomManagerDependencies dependencies) =>
+            InjectDependencies(dependencies);
 
-        /// <inheritdoc />
-        public void InjectServices(IServiceContainer container)
+        internal void InjectDependencies(IConvaiRoomManagerDependencies dependencies)
         {
-            _container = container;
+            if (dependencies == null) throw new ArgumentNullException(nameof(dependencies));
 
-            // 1. Register self as room services
-            if (!container.IsRegistered<IConvaiRoomConnectionService>())
-                container.Register(ServiceDescriptor.Singleton<IConvaiRoomConnectionService>(this));
+            _transportProvider = dependencies.TransportProvider;
+            AgentRegistry = dependencies.AgentRegistry;
+            _eventHub = dependencies.EventHub;
+            _logger = (dependencies.Logger ?? new ConvaiLogger()).WithTag(nameof(ConvaiRoomManager));
+            _runtimeDiagnosticsService = dependencies.RuntimeDiagnosticsService;
+            _runtimeSettingsService = dependencies.RuntimeSettingsService;
+            _microphoneDeviceService = dependencies.MicrophoneDeviceService;
+            _roomOwnershipProvider = dependencies.RoomOwnershipProvider;
+            _sessionPersistence =
+                dependencies.SessionPersistence ?? new KeyValueStoreSessionPersistence(new PlayerPrefsKeyValueStore());
+            _credentialProvider = dependencies.CredentialProvider ?? CredentialProviderFactory.Create();
+            UpdateEndUserContextProviders(
+                dependencies.EndUserIdentityProvider,
+                dependencies.EndUserMetadataProvider);
+            _sectionNameResolver = dependencies.SectionNameResolver;
+            _sessionService = dependencies.SessionService;
 
-            if (!container.IsRegistered<IConvaiRoomAudioService>())
-                container.Register(ServiceDescriptor.Singleton<IConvaiRoomAudioService>(this));
-
-            // 2. Resolve own dependencies
-            var eventHub = container.Get<IEventHub>();
-            container.TryGet(out ISessionPersistence sessionPersistence);
-            container.TryGet(out IConvaiAudioManager audioManager);
-            container.TryGet(out IEndUserIdProvider endUserIdProvider);
-            container.TryGet(out ISessionStateMachine sessionStateMachine);
-            container.TryGet(out ISessionService sessionService);
-            container.TryGet(out INarrativeSectionNameResolver sectionNameResolver);
-
-            // 3. Resolve platform/factory services
-            container.TryGet(out _controllerFactory);
-            container.TryGet(out _microphoneSourceFactory);
-            container.TryGet(out _runtimeSettingsService);
-            container.TryGet(out _microphoneDeviceService);
-
-            Inject(eventHub, sessionPersistence, audioManager,
-                endUserIdProvider, sessionStateMachine, sessionService,
-                sectionNameResolver);
-
-            // 4. Register IConvaiAudioManager if not already registered (needs room services above)
-            if (!container.IsRegistered<IConvaiAudioManager>())
+            if (_transportProvider != null)
             {
-                container.Register(ServiceDescriptor.Singleton<IConvaiAudioManager>(c =>
-                {
-                    var connService = c.Get<IConvaiRoomConnectionService>();
-                    var audioService = c.Get<IConvaiRoomAudioService>();
-                    c.TryGet(out ILogger logger);
-                    return new DefaultAudioManager(connService, audioService, logger);
-                }));
+                _controllerFactory = _transportProvider.CreateRoomControllerFactory();
+                _microphoneSourceFactory = _transportProvider.CreateMicrophoneFactory();
             }
+
+            _logger ??= new ConvaiLogger();
+
+            if (_sessionStateToken != default)
+                _eventHub.Unsubscribe(_sessionStateToken);
+
+            _sessionStateMachine = dependencies.SessionStateMachine ?? new SessionStateMachine(_eventHub, _logger);
+            _sessionStateToken = _eventHub.Subscribe<SessionStateChanged>(OnSessionStateMachineStateChanged);
+            _reconnectPolicy = ResolveConfiguredReconnectPolicy();
+            _connectionContext = ConnectionContext.Empty;
+            ConnectAttemptCount = 0;
+            ReconnectCount = 0;
+            _lastSessionErrorCode = null;
+            _lastSessionErrorMessage = null;
+            _lastOwnershipRebindOutcome = null;
+            LastSuccessfulConnectionUtc = null;
+
+            _roomRuntimeAssembly = _roomRuntimeAssemblyFactory.Create(CreateRoomManagerRuntimeContext());
+            ApplyRuntimeAssembly(_roomRuntimeAssembly);
+            _runtimeDiagnosticsService?.AttachRoomManager(this);
+
+            AttachRuntimeEventBridges();
+            _isInjected = true;
+            ConvaiLogger.Debug("Dependencies injected via typed bundle", LogCategory.SDK);
+        }
+
+        internal void UpdateEndUserContextProviders(
+            IEndUserIdentityProvider identityProvider,
+            IEndUserMetadataProvider metadataProvider)
+        {
+            _mutableEndUserContextProvider.SetProviders(identityProvider, metadataProvider);
+            _endUserIdentityProvider = _mutableEndUserContextProvider;
+            _endUserMetadataProvider = _mutableEndUserContextProvider;
         }
 
         /// <summary>
@@ -388,244 +926,144 @@ namespace Convai.Runtime.Adapters.Networking
         public void SetReconnectPolicy(ReconnectPolicy policy)
         {
             _reconnectPolicy = policy ?? ReconnectPolicy.Default;
-            ConvaiLogger.Debug($"[ConvaiRoomManager] Reconnect policy set: {policy}", LogCategory.SDK);
+            ConvaiLogger.Debug($"Reconnect policy set: {policy}", LogCategory.SDK);
         }
 
         /// <summary>
-        ///     Injects dependencies into ConvaiRoomManager.
-        ///     Called by the ConvaiManager pipeline during scene initialization.
+        ///     Gets the room runtime instance created by the runtime assembly factory.
         /// </summary>
-        public void Inject(
-            IEventHub eventHub,
-            ISessionPersistence sessionPersistence = null,
-            IConvaiAudioManager audioManager = null,
-            IEndUserIdProvider endUserIdProvider = null,
-            ISessionStateMachine sessionStateMachine = null,
-            ISessionService sessionService = null,
-            INarrativeSectionNameResolver sectionNameResolver = null)
+        /// <returns>The room runtime, or null if not yet initialized.</returns>
+        /// <remarks>
+        ///     RC-2: Used by <see cref="DeferredRoomRuntime" /> to delegate room operations.
+        /// </remarks>
+        internal IRoomRuntime GetRoomRuntime() => _roomRuntime;
+
+        private RoomManagerRuntimeContext CreateRoomManagerRuntimeContext()
         {
-            _eventHub = eventHub ?? throw new ArgumentNullException(nameof(eventHub),
-                "IEventHub is required for ConvaiRoomManager.");
+            AgentRegistry ??= new AgentRegistry();
 
-            _sessionPersistence =
-                sessionPersistence ?? new KeyValueStoreSessionPersistence(new PlayerPrefsKeyValueStore());
-            _audioManager = audioManager;
-            _endUserIdProvider = endUserIdProvider;
-            _sectionNameResolver = sectionNameResolver;
-
-            _logger = new ConvaiLogger();
-
-            if (_sessionStateMachine != null)
-                _sessionStateMachine.StateChanged -= OnSessionStateMachineStateChanged;
-
-            _sessionStateMachine = sessionStateMachine ?? new SessionStateMachine(_eventHub, _logger);
-            _sessionStateMachine.StateChanged += OnSessionStateMachineStateChanged;
-            _sessionService = sessionService;
-            _reconnectPolicy = ReconnectPolicy.Default;
-            _connectionContext = ConnectionContext.Empty;
-
-            _remoteAudioPreferences = new RemoteAudioPreferenceManager(null, _logger);
-            _remoteAudioPreferences.RemoteAudioEnabledChanged += OnRemoteAudioPreferenceChanged;
-
-            _sceneDiscovery = new SceneCharacterDiscovery(_logger, (characterId, enabled) =>
+            return new RoomManagerRuntimeContext
             {
-                _remoteAudioPreferences.InitializePreference(characterId, enabled);
-            });
-
-            _characterReadyToken = _eventHub.Subscribe<CharacterReady>(HandleCharacterReadyEvent);
-
-            _isInjected = true;
-            ConvaiLogger.Debug("[ConvaiRoomManager] Dependencies injected via ConvaiManager pipeline", LogCategory.SDK);
-        }
-
-        #endregion
-
-        #region Unity Lifecycle
-
-        // Editor-only vision setup (OnValidate, QueueVisionSetupPrompt, etc.)
-        // is defined in ConvaiRoomManager.Editor.cs
-
-        private void Awake()
-        {
-            if (!_isInjected && ConvaiManager.Instance == null)
-            {
-                string errorMessage =
-                    "[Convai SDK Setup Error] ConvaiRoomManager dependencies not injected!\n\n" +
-                    "ConvaiRoomManager requires ConvaiManager setup to inject its dependencies.\n\n" +
-                    "To fix this:\n" +
-                    "1. Add ConvaiManager to your scene:\n" +
-                    "   → Use menu: GameObject > Convai > Setup Required Components\n\n" +
-                    "2. Verify ConvaiManager is active/enabled in the scene.\n\n" +
-                    "📖 See: https://docs.convai.com/unity/quickstart";
-
-                ConvaiLogger.Error(errorMessage, LogCategory.SDK);
-                enabled = false;
-                return;
-            }
-
-            if (transform.parent != null) transform.SetParent(null);
-
-            if (_instance == null)
-            {
-                _instance = this;
-                DontDestroyOnLoad(gameObject);
-            }
-            else if (_instance != this) Destroy(gameObject);
-        }
-
-        private IEnumerator Start()
-        {
-            if (!_isInjected)
-            {
-                string errorMessage =
-                    "[Convai SDK Setup Error] ConvaiRoomManager dependencies were not injected before Start().\n\n" +
-                    "ConvaiRoomManager requires ConvaiManager setup to inject its dependencies.\n\n" +
-                    "To fix this:\n" +
-                    "1. Add ConvaiManager to your scene:\n" +
-                    "   → Use menu: GameObject > Convai > Setup Required Components\n\n" +
-                    "2. Verify ConvaiManager is active/enabled in the scene.\n\n" +
-                    "📖 See: https://docs.convai.com/unity/quickstart";
-
-                ConvaiLogger.Error(errorMessage, LogCategory.SDK);
-                enabled = false;
-                yield break;
-            }
-
-            ConvaiLogger.Debug("[ConvaiRoomManager] *** Initializing room connection... ***", LogCategory.SDK);
-
-            var settings = ConvaiSettings.Instance;
-            if (settings == null || !settings.HasApiKey)
-            {
-                ConvaiLogger.Error(
-                    "Convai Settings not configured. Please set your API key in Edit > Project Settings > Convai SDK",
-                    LogCategory.SDK);
-
-                // Publish SessionError for missing API key
-                _eventHub?.Publish(SessionError.Create(SessionErrorCodes.ConfigApiKeyMissing,
-                    "API key not configured in ConvaiSettings"));
-
-                HandleRoomConnectionFailed();
-                yield break;
-            }
-
-            EnsureRuntimeSettingsDependencies();
-
-            Player = _sceneDiscovery.DiscoverPlayer();
-            if (Player == null)
-            {
-                HandleRoomConnectionFailed();
-                yield break;
-            }
-
-            Player.OnTextMessageSent += HandlePlayerTextMessage;
-
-            _characterRegistry = new CharacterRegistryAdapter(
-                _sceneDiscovery.CharacterToParticipantMap,
-                new List<IConvaiCharacterAgent>());
-
-            _characterList = _sceneDiscovery.DiscoverCharacters(_characterRegistry);
-            if (_characterList.Count == 0)
-            {
-                HandleRoomConnectionFailed();
-                yield break;
-            }
-
-            ConvaiLogger.Debug(
-                $"[ConvaiRoomManager] Discovered {CharacterList.Count} Character(s), connecting to first Character...",
-                LogCategory.SDK);
-
-            _playerSession = new PlayerSessionAdapter(Player, _eventHub);
-            _configProvider = new ConfigurationProviderAdapter(settings)
-            {
-                ConnectionType = ConnectionType,
-                VideoTrackName = ResolveVideoTrackName(),
-                LlmProvider = LLMProvider,
-                ServerEndpoint = ServerEndpoint,
-                LipSyncTransportOptions = ResolveLipSyncTransportOptions()
-            };
-            WarnIfVisionComponentsMissing();
-            _dispatcher = new MainThreadDispatcherAdapter(UnityScheduler.Post);
-
-            // Create room controller using the platform-appropriate factory
-            IConvaiRoomControllerFactory controllerFactory = _controllerFactory;
-            if (controllerFactory == null)
-            {
-                ConvaiLogger.Error(
-                    "[ConvaiRoomManager] IConvaiRoomControllerFactory not registered. " +
-                    "Platform networking services were not composed before room startup. " +
-                    "Ensure ConvaiServiceBootstrap completed successfully and that the current platform networking assembly was preserved in the player build.",
-                    LogCategory.SDK);
-                yield break;
-            }
-
-            _convaiRoomController = controllerFactory.Create(
-                _characterRegistry,
-                _playerSession,
-                _configProvider,
-                _dispatcher,
-                _logger,
-                _eventHub,
-                _sectionNameResolver);
-
-            if (_convaiRoomController == null)
-            {
-                ConvaiLogger.Error("[ConvaiRoomManager] Failed to create room controller.", LogCategory.SDK);
-                yield break;
-            }
-
-            ConvaiLogger.Debug("[ConvaiRoomManager] Room controller created via factory.", LogCategory.SDK);
-
-            _convaiRoomController.SetAudioSubscriptionPolicy(_remoteAudioPreferences.ShouldSubscribe);
-
-            AudioSource audioSourceResolver(string characterId) =>
-                _characterRegistry.TryGetAudioSource(characterId, out AudioSource source) ? source : null;
-
-            _audioTrackManager?.Dispose();
-            _container.TryGet(out IAudioStreamFactory audioStreamFactory);
-            _audioTrackManager = new AudioTrackManager(
-                () => CurrentRoom,
-                _characterRegistry,
-                _logger,
-                audioSourceResolver,
-                audioStreamFactory: audioStreamFactory,
-                eventHub: _eventHub);
-            _audioTrackManager.OnMicMuteChanged += HandleMicMuteChanged;
-
-            _convaiRoomController.OnRoomConnectionSuccessful += HandleRoomConnectionSuccessful;
-            _convaiRoomController.OnRoomConnectionFailed += HandleRoomConnectionFailed;
-            _convaiRoomController.OnMicMuteChanged += HandleMicMuteChanged;
-            _convaiRoomController.OnRoomReconnecting += HandleRoomReconnecting;
-            _convaiRoomController.OnRoomReconnected += HandleRoomReconnected;
-            _convaiRoomController.OnUnexpectedRoomDisconnected += HandleUnexpectedRoomDisconnected;
-            _convaiRoomController.OnRemoteAudioTrackSubscribed += HandleRemoteAudioTrackSubscribed;
-            _convaiRoomController.OnRemoteAudioTrackUnsubscribed += HandleRemoteAudioTrackUnsubscribed;
-
-            EnsureAudioManager();
-
-            SignalStartCompleted();
-
-            if (!ConnectOnStart)
-            {
-                ConvaiLogger.Debug("[ConvaiRoomManager] Lazy connection mode - waiting for manual ConnectAsync() call",
-                    LogCategory.SDK);
-                yield break;
-            }
-
-            ConvaiLogger.Debug("[ConvaiRoomManager] Initialization complete. Auto-connecting...", LogCategory.SDK);
-            _ = ConnectAsync().ContinueWith(task =>
-            {
-                if (task.IsFaulted)
+                AgentRegistry = AgentRegistry,
+                Logger = _logger,
+                EventHub = _eventHub,
+                SessionStateMachine = _sessionStateMachine,
+                SessionService = _sessionService,
+                SessionIdProvider = () => _convaiRoomController?.SessionID,
+                CurrentStateProvider = () => CurrentState,
+                IsConnectedProvider = () => IsConnected,
+                CanConnectProvider = () => isActiveAndEnabled,
+                StartWaitTimeoutProvider = () =>
+                    Math.Max(500,
+                        (_reconnectPolicy?.StartWaitTimeoutMs ?? ReconnectPolicy.Default.StartWaitTimeoutMs) + 500),
+                PrepareConnection = PrepareOwnershipCompositionForNextConnect,
+                ActiveCharacterProvider = () => _activeCharacter,
+                ConnectionContextProvider = () => _connectionContext,
+                SetConnectionContext = context => _connectionContext = context,
+                ResolveReconnectPolicy = ResolveConfiguredReconnectPolicy,
+                SetReconnectPolicy = policy => _reconnectPolicy = policy ?? ReconnectPolicy.Default,
+                OnConnectAttemptStarted = hasValidRoom =>
                 {
-                    ConvaiLogger.Error(
-                        $"[ConvaiRoomManager] Auto-connect failed: {task.Exception?.GetBaseException()?.Message}",
-                        LogCategory.SDK);
-                }
-            }, TaskScheduler.FromCurrentSynchronizationContext());
+                    _bargeInCoordinator?.ResetForConnectionBoundary();
+                    ConnectAttemptCount++;
+                    ReconnectCount = hasValidRoom ? ReconnectCount + 1 : 0;
+                },
+                ControllerProvider = () => _convaiRoomController,
+                ConnectionTypeProvider = () => EffectiveConnectionType,
+                CredentialProvider = () => _credentialProvider,
+                CoreServerUrlProvider = () => CoreServerURL,
+                ConfiguredTurnTakingOptionsProvider = () => EffectiveTurnTakingOptions,
+                ConfiguredUserVadSettingsProvider = () => EffectiveUserVadSettings,
+                VisionInputConfigProvider = CreateEffectiveVisionInputConfig,
+                RespondModesProvider = CreateEffectiveVisionRespondModes,
+                ConsumePendingConnectOptions = ConsumePendingConnectOptions,
+                PrepareSessionTurnTakingState = PrepareSessionTurnTakingState,
+                SetCurrentResolvedTurnTakingOptions = SetCurrentResolvedTurnTakingOptions,
+                CurrentResolvedTurnTakingOptionsProvider = () => CurrentResolvedTurnTakingOptions,
+                SessionPersistenceProvider = () => _sessionPersistence,
+                AudioTrackManagerProvider = () => _audioTrackManager,
+                UpdateSessionState = UpdateSessionState,
+                RecordConnectionSuccess = RecordConnectionSuccess,
+                RecordConnectionFailure = RecordConnectionFailure,
+                CompleteDisconnectionTracking = CompleteDisconnectionTracking,
+                ResetBargeInCoordinatorState =
+                    () => _bargeInCoordinator?.ResetForConnectionBoundary(),
+                RequiresUserGestureForAudioProvider = () => RequiresUserGestureForAudio,
+                IsAudioPlaybackActiveProvider = () => IsAudioPlaybackActive,
+                MicrophoneSourceFactoryProvider = () => _microphoneSourceFactory,
+                SetMicrophoneSourceFactory = factory => _microphoneSourceFactory = factory,
+                TransportProviderProvider = () => _transportProvider,
+                PreferredMicrophoneDeviceIdProvider = () => _runtimeSettingsService?.Current.PreferredMicrophoneDeviceId,
+                MicrophoneDeviceServiceProvider = () => _microphoneDeviceService,
+                GameObjectProvider = () => gameObject,
+                CharacterListProvider = () => CharacterList,
+                HandleMicMuteChanged = HandleMicMuteChanged,
+                HandleUnexpectedRoomDisconnected = HandleUnexpectedRoomDisconnected,
+                HandleRemoteAudioTrackSubscribed = HandleRemoteAudioTrackSubscribed,
+                HandleRemoteAudioTrackUnsubscribed = HandleRemoteAudioTrackUnsubscribed
+            };
         }
 
-        private void OnDestroy()
+        private void ApplyRuntimeAssembly(RoomRuntimeAssembly assembly)
         {
-            if (Player != null) Player.OnTextMessageSent -= HandlePlayerTextMessage;
+            _roomRuntimeAssembly = assembly;
+            _sessionDiagnostics = assembly?.SessionDiagnostics;
+            _characterLifecycleCoordinator = assembly?.CharacterLifecycleCoordinator;
+            _roomDisconnectRuntimeAdapter = assembly?.DisconnectRuntimeAdapter;
+            _roomControllerEventBinder = assembly?.RoomControllerEventBinder;
+            _remoteAudioPreferences = assembly?.RemoteAudioPreferences;
+            _roomConnectionRuntimeAdapter = assembly?.ConnectionRuntimeAdapter;
+            _roomAudioRuntimeAdapter = assembly?.AudioRuntimeAdapter;
+            _roomRuntime = assembly?.RoomRuntime;
+            DiagnosticsCoordinator = assembly?.DiagnosticsCoordinator;
+            ConnectionCoordinator = assembly?.ConnectionCoordinator;
+            _roomAudioCoordinator = assembly?.AudioCoordinator;
+            OwnershipCoordinator = assembly?.OwnershipCoordinator;
+        }
+
+        private void AttachRuntimeEventBridges()
+        {
+            if (_remoteAudioPreferences != null)
+                _remoteAudioPreferences.RemoteAudioEnabledChanged += OnRemoteAudioPreferenceChanged;
+
+            if (ConnectionCoordinator != null)
+                ConnectionCoordinator.StateChanged += HandleCoordinatorStateChanged;
+
+            if (_characterReadyToken == default && _eventHub != null)
+                _characterReadyToken = _eventHub.Subscribe<CharacterReady>(HandleCharacterReadyEvent);
+
+            if (_characterSpeechStateToken == default && _eventHub != null)
+            {
+                _characterSpeechStateToken =
+                    _eventHub.Subscribe<CharacterSpeechStateChanged>(HandleCharacterSpeechEvidence);
+            }
+
+            if (_characterTtsTextToken == default && _eventHub != null)
+                _characterTtsTextToken = _eventHub.Subscribe<CharacterTtsTextChunk>(HandleCharacterTtsEvidence);
+
+            if (_lipSyncPackedDataToken == default && _eventHub != null)
+                _lipSyncPackedDataToken = _eventHub.Subscribe<LipSyncPackedDataReceived>(HandleLipSyncEvidence);
+
+            if (_playerSpeakingStateToken == default && _eventHub != null)
+            {
+                _playerSpeakingStateToken =
+                    _eventHub.Subscribe<PlayerSpeakingStateChanged>(HandlePlayerSpeakingEvidence);
+            }
+
+            if (_clientVoiceActivityStateToken == default && _eventHub != null)
+            {
+                _clientVoiceActivityStateToken =
+                    _eventHub.Subscribe<ClientVoiceActivityStateChanged>(HandleClientVoiceActivity);
+            }
+        }
+
+        private void DetachRuntimeEventBridges()
+        {
+            if (_remoteAudioPreferences != null)
+                _remoteAudioPreferences.RemoteAudioEnabledChanged -= OnRemoteAudioPreferenceChanged;
+
+            if (ConnectionCoordinator != null)
+                ConnectionCoordinator.StateChanged -= HandleCoordinatorStateChanged;
 
             if (_characterReadyToken != default && _eventHub != null)
             {
@@ -633,854 +1071,36 @@ namespace Convai.Runtime.Adapters.Networking
                 _characterReadyToken = default;
             }
 
-            if (_sessionStateMachine != null)
-                _sessionStateMachine.StateChanged -= OnSessionStateMachineStateChanged;
-
-            if (_remoteAudioPreferences != null)
-                _remoteAudioPreferences.RemoteAudioEnabledChanged -= OnRemoteAudioPreferenceChanged;
-
-            _audioTrackManager?.Dispose();
-            _convaiRoomController?.Dispose();
-            _playerSession?.Dispose();
-        }
-
-        #endregion
-
-        #region IConvaiRoomConnectionService Methods
-
-        /// <inheritdoc />
-        public async Task<bool> ConnectAsync(CancellationToken cancellationToken = default)
-        {
-            if (!isActiveAndEnabled)
+            if (_characterSpeechStateToken != default && _eventHub != null)
             {
-                ConvaiLogger.Warning("[ConvaiRoomManager] ConnectAsync called but component is disabled.",
-                    LogCategory.SDK);
-                return false;
+                _eventHub.Unsubscribe(_characterSpeechStateToken);
+                _characterSpeechStateToken = default;
             }
 
-            if (IsConnected) return true;
-
-            if (CurrentState == SessionState.Error)
+            if (_characterTtsTextToken != default && _eventHub != null)
             {
-                _logger?.Warning("[ConvaiRoomManager] ConnectAsync called but room is in error state.", LogCategory.SDK);
-                return false;
+                _eventHub.Unsubscribe(_characterTtsTextToken);
+                _characterTtsTextToken = default;
             }
 
-            if (CurrentState == SessionState.Disconnected)
+            if (_lipSyncPackedDataToken != default && _eventHub != null)
             {
-                if (!_hasStartedOnce)
-                {
-                    _logger?.Info("[ConvaiRoomManager] ConnectAsync waiting for Start() to complete...",
-                        LogCategory.SDK);
-
-                    int timeoutMs = _reconnectPolicy.StartWaitTimeoutMs;
-                    using var timeoutCts = new CancellationTokenSource(timeoutMs);
-                    using var linkedCts =
-                        CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-
-                    try
-                    {
-                        await Task.WhenAny(_startCompletedTcs.Task, Task.Delay(Timeout.Infinite, linkedCts.Token));
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        if (cancellationToken.IsCancellationRequested)
-                            return false;
-                    }
-
-                    if (!_hasStartedOnce)
-                    {
-                        _logger?.Error("[ConvaiRoomManager] ConnectAsync timed out waiting for Start().",
-                            LogCategory.SDK);
-                        return false;
-                    }
-                }
-
-                if (_convaiRoomController == null)
-                {
-                    _logger?.Error("[ConvaiRoomManager] Cannot connect: controller not initialized.", LogCategory.SDK);
-                    return false;
-                }
-
-                if (_connectTask is { IsCompleted: false }) return await _connectTask;
-
-                UpdateSessionState(SessionState.Connecting);
-                _connectTask = ConnectInternalAsync(cancellationToken);
-                return await _connectTask;
+                _eventHub.Unsubscribe(_lipSyncPackedDataToken);
+                _lipSyncPackedDataToken = default;
             }
 
-            if (CurrentState == SessionState.Connecting)
+            if (_playerSpeakingStateToken != default && _eventHub != null)
             {
-                _logger?.Info("[ConvaiRoomManager] ConnectAsync waiting for connection to complete...",
-                    LogCategory.SDK);
-
-                TaskCompletionSource<bool> tcs = GetOrCreateConnectionStateTcs();
-
-                try
-                {
-                    await Task.WhenAny(tcs.Task, Task.Delay(Timeout.Infinite, cancellationToken));
-                }
-                catch (OperationCanceledException)
-                {
-                }
-
-                if (cancellationToken.IsCancellationRequested) return false;
-
-                return tcs.Task.IsCompletedSuccessfully && tcs.Task.Result;
+                _eventHub.Unsubscribe(_playerSpeakingStateToken);
+                _playerSpeakingStateToken = default;
             }
 
-            if (CurrentState == SessionState.Disconnecting)
+            if (_clientVoiceActivityStateToken != default && _eventHub != null)
             {
-                _logger?.Warning("[ConvaiRoomManager] ConnectAsync called while disconnecting.", LogCategory.SDK);
-                return false;
-            }
-
-            return IsConnected;
-        }
-
-        /// <inheritdoc />
-        public async Task DisconnectAsync(DisconnectReason reason = DisconnectReason.ClientInitiated,
-            CancellationToken cancellationToken = default)
-        {
-            if (_audioTrackManager != null)
-            {
-                try
-                {
-                    await _audioTrackManager.UnpublishMicrophoneAsync();
-                }
-                catch (Exception ex)
-                {
-                    ConvaiLogger.Warning(
-                        $"[ConvaiRoomManager] DisconnectAsync failed to unpublish microphone cleanly: {ex.Message}",
-                        LogCategory.SDK);
-                }
-            }
-
-            _audioTrackManager?.ClearState();
-
-            _logger?.Info($"[ConvaiRoomManager] DisconnectAsync called with reason: {reason}", LogCategory.SDK);
-
-            UpdateSessionState(SessionState.Disconnecting);
-
-            if (_convaiRoomController != null) await _convaiRoomController.DisconnectFromRoomAsync(cancellationToken);
-
-            CompleteDisconnectionTracking(true, "Disconnected from room");
-        }
-
-        /// <summary>
-        ///     Disconnects from the Convai room synchronously (fire-and-forget).
-        /// </summary>
-        public void DisconnectFromRoom()
-        {
-            DisconnectAsync().ContinueWith(
-                static t => ConvaiLogger.Error(
-                    $"[ConvaiRoomManager] DisconnectAsync failed: {t.Exception?.GetBaseException().Message}",
-                    LogCategory.SDK),
-                CancellationToken.None,
-                TaskContinuationOptions.OnlyOnFaulted,
-                TaskScheduler.FromCurrentSynchronizationContext());
-        }
-
-        #endregion
-
-        #region IConvaiRoomAudioService Methods
-
-        /// <summary>Sets whether the local microphone is muted.</summary>
-        /// <param name="mute">True to mute; false to unmute.</param>
-        public void SetMicMuted(bool mute)
-        {
-            _logger?.Debug($"[ConvaiRoomManager] SetMicMuted called: mute={mute}");
-            if (_audioTrackManager != null) _audioTrackManager.SetMicMuted(mute);
-            else if (_audioManager != null) _audioManager.SetMicMuted(mute);
-            else _convaiRoomController?.SetMicMuted(mute);
-        }
-
-        /// <summary>Toggles the local microphone mute state.</summary>
-        public bool ToggleMicMute()
-        {
-            bool newState = !IsMicMuted;
-            SetMicMuted(newState);
-            return newState;
-        }
-
-        /// <summary>Starts capturing and publishing microphone audio.</summary>
-        /// <param name="microphoneIndex">Microphone device index.</param>
-        /// <param name="cancellationToken">Cancellation token.</param>
-        public async Task StartListeningAsync(int microphoneIndex = 0, CancellationToken cancellationToken = default)
-        {
-            if (RequiresUserGestureForAudio && !IsAudioPlaybackActive)
-            {
-                ConvaiLogger.Warning(
-                    "[ConvaiRoomManager] StartListeningAsync aborted: call EnableAudioPlayback() from a user gesture before enabling microphone on this platform.",
-                    LogCategory.SDK);
-                _eventHub?.Publish(SessionError.Create(SessionErrorCodes.AudioMicPermissionDenied,
-                    "User gesture required for microphone on this platform", null, true));
-                return;
-            }
-
-            if (_audioTrackManager == null || !(_convaiRoomController?.IsConnectedToRoom ?? false))
-            {
-                ConvaiLogger.Warning(
-                    "[ConvaiRoomManager] StartListeningAsync aborted: AudioTrackManager or Room not initialized.",
-                    LogCategory.SDK);
-                return;
-            }
-
-            if (_microphoneSourceFactory == null) _container?.TryGet(out _microphoneSourceFactory);
-
-            IMicrophoneSourceFactory microphoneFactory = _microphoneSourceFactory;
-            if (microphoneFactory == null)
-            {
-                ConvaiLogger.Error("[ConvaiRoomManager] StartListeningAsync: IMicrophoneSourceFactory not registered.",
-                    LogCategory.SDK);
-                return;
-            }
-
-            string[] devices = microphoneFactory.GetAvailableDevices() ?? Array.Empty<string>();
-            if (devices.Length == 0)
-            {
-                ConvaiLogger.Warning("[ConvaiRoomManager] StartListeningAsync: No microphone devices detected.",
-                    LogCategory.SDK);
-                _eventHub?.Publish(SessionError.Create(SessionErrorCodes.AudioMicUnavailable,
-                    "No microphone devices detected", null, true));
-            }
-
-            int deviceIndex = devices.Length == 0
-                ? 0
-                : Mathf.Clamp(microphoneIndex, 0, devices.Length - 1);
-            string deviceName = devices.Length == 0 ? null : devices[deviceIndex];
-
-            IMicrophoneSource microphoneSource = microphoneFactory.Create(deviceName, deviceIndex, gameObject);
-            var publishOptions = AudioPublishOptions.DefaultMicrophone;
-
-            bool published = await _audioTrackManager.PublishMicrophoneAsync(microphoneSource, publishOptions);
-            if (!published)
-            {
-                ConvaiLogger.Error("[ConvaiRoomManager] StartListeningAsync: failed to publish microphone.",
-                    LogCategory.SDK);
-                _eventHub?.Publish(SessionError.Create(SessionErrorCodes.AudioMicPublishFailed,
-                    "Failed to publish microphone audio", null, true));
+                _eventHub.Unsubscribe(_clientVoiceActivityStateToken);
+                _clientVoiceActivityStateToken = default;
             }
         }
-
-        /// <summary>Stops capturing and publishing microphone audio.</summary>
-        /// <param name="cancellationToken">Cancellation token.</param>
-        public async Task StopListeningAsync(CancellationToken cancellationToken = default)
-        {
-            if (_audioTrackManager != null) await _audioTrackManager.UnpublishMicrophoneAsync();
-        }
-
-        /// <inheritdoc />
-        public bool SetCharacterMuted(string characterId, bool muted)
-        {
-            if (string.IsNullOrEmpty(characterId)) return false;
-            if (_audioTrackManager != null)
-            {
-                _audioTrackManager.SetCharacterAudioMuted(characterId, muted);
-                return true;
-            }
-
-            if (_audioManager != null)
-            {
-                _audioManager.MuteCharacter(characterId, muted);
-                return true;
-            }
-
-            return _convaiRoomController?.SetCharacterAudioMuted(characterId, muted) ?? false;
-        }
-
-        /// <inheritdoc />
-        public bool IsCharacterMuted(string characterId)
-        {
-            return !string.IsNullOrEmpty(characterId) &&
-                   (_audioTrackManager?.IsCharacterAudioMuted(characterId) ??
-                    _convaiRoomController?.IsCharacterAudioMuted(characterId) ?? false);
-        }
-
-        /// <inheritdoc />
-        public bool SetRemoteAudioEnabled(string characterId, bool enabled)
-        {
-            bool result = _remoteAudioPreferences?.SetRemoteAudioEnabled(characterId, enabled) ?? false;
-
-            if (result && _convaiRoomController != null)
-                _convaiRoomController.ApplyRemoteAudioPreference(characterId, enabled);
-
-            return result;
-        }
-
-        /// <inheritdoc />
-        public bool IsRemoteAudioEnabled(string characterId) =>
-            _remoteAudioPreferences?.IsRemoteAudioEnabled(characterId) ?? false;
-
-        #endregion
-
-        #region Character Audio Convenience Methods
-
-        /// <summary>Sets whether the given character's audio is muted.</summary>
-        /// <param name="character">Character agent.</param>
-        /// <param name="mute">True to mute; false to unmute.</param>
-        /// <returns>True when the state is applied; otherwise false.</returns>
-        public bool SetCharacterAudioMuted(IConvaiCharacterAgent character, bool mute) =>
-            character != null && SetCharacterMuted(character.CharacterId, mute);
-
-        /// <summary>Mutes the given character's audio.</summary>
-        /// <param name="character">Character agent.</param>
-        /// <returns>True when the state is applied; otherwise false.</returns>
-        public bool MuteCharacter(IConvaiCharacterAgent character) => SetCharacterAudioMuted(character, true);
-
-        /// <summary>Unmutes the given character's audio.</summary>
-        /// <param name="character">Character agent.</param>
-        /// <returns>True when the state is applied; otherwise false.</returns>
-        public bool UnmuteCharacter(IConvaiCharacterAgent character) => SetCharacterAudioMuted(character, false);
-
-        /// <summary>Gets whether the given character's audio is muted.</summary>
-        /// <param name="character">Character agent.</param>
-        /// <returns>True if muted; otherwise false.</returns>
-        public bool IsCharacterAudioMuted(IConvaiCharacterAgent character) =>
-            character != null && IsCharacterMuted(character.CharacterId);
-
-        #endregion
-
-        #region Private Methods
-
-        private void EnsureAudioManager()
-        {
-            if (_audioManager != null || _convaiRoomController == null ||
-                _sceneDiscovery?.CharacterToParticipantMap == null) return;
-
-            try
-            {
-                _audioManager = new DefaultAudioManager(this, this, _logger);
-            }
-            catch (Exception ex)
-            {
-                ConvaiLogger.Error($"[ConvaiRoomManager] Failed to create DefaultAudioManager: {ex.Message}",
-                    LogCategory.SDK);
-            }
-        }
-
-        // WebGL bootstrap recovery methods are defined in ConvaiRoomManager.WebGL.cs
-
-        private void EnsureRuntimeSettingsDependencies()
-        {
-            if (_container == null) return;
-
-            if (_runtimeSettingsService == null) _container.TryGet(out _runtimeSettingsService);
-
-            if (_microphoneDeviceService == null) _container.TryGet(out _microphoneDeviceService);
-        }
-
-        private void WarnIfVisionComponentsMissing()
-        {
-            if (ConnectionType != ConvaiConnectionType.Video) return;
-
-            (bool hasPublisher, bool hasFrameSource) = GetVisionComponentFlags();
-            if (hasPublisher && hasFrameSource) return;
-
-            ConvaiLogger.Warning(
-                "[ConvaiRoomManager] ConnectionType is Video but vision components are missing. Add ConvaiVideoPublisher and CameraVisionFrameSource (or another IVisionFrameSource) under this RoomManager to enable vision streaming.",
-                LogCategory.SDK);
-        }
-
-        private (bool hasPublisher, bool hasFrameSource) GetVisionComponentFlags()
-        {
-            bool hasPublisher = false;
-            bool hasFrameSource = false;
-
-            foreach (MonoBehaviour component in GetComponentsInChildren<MonoBehaviour>(true))
-            {
-                if (!hasPublisher && component is IVideoPublisher) hasPublisher = true;
-
-                if (!hasFrameSource && component is IVisionFrameSource) hasFrameSource = true;
-
-                if (hasPublisher && hasFrameSource) break;
-            }
-
-            return (hasPublisher, hasFrameSource);
-        }
-
-        private LipSyncTransportOptions ResolveLipSyncTransportOptions()
-        {
-            if (CharacterList == null || CharacterList.Count == 0)
-            {
-                ConvaiLogger.Debug(
-                    "[ConvaiRoomManager] No characters available for lip sync capability discovery. Lip sync transport remains disabled.",
-                    LogCategory.LipSync);
-                return LipSyncTransportOptions.Disabled;
-            }
-
-            var resolvedOptions = new List<LipSyncTransportOptions>(CharacterList.Count);
-            var resolvedSources = new List<string>(CharacterList.Count);
-
-            foreach (IConvaiCharacterAgent characterAgent in CharacterList)
-            {
-                if (characterAgent is not MonoBehaviour characterMono) continue;
-
-                ILipSyncCapabilitySource source = characterMono.GetComponent<ILipSyncCapabilitySource>() ??
-                                                  characterMono.GetComponentInChildren<ILipSyncCapabilitySource>(true);
-
-                if (source == null) continue;
-
-                if (!source.TryGetLipSyncTransportOptions(out LipSyncTransportOptions options) ||
-                    !options.IsValid) continue;
-
-                resolvedOptions.Add(options);
-                resolvedSources.Add(characterMono.name);
-            }
-
-            if (resolvedOptions.Count == 0)
-            {
-                ConvaiLogger.Debug(
-                    "[ConvaiRoomManager] No valid lip sync capability source found. Lip sync transport remains disabled.",
-                    LogCategory.LipSync);
-                return LipSyncTransportOptions.Disabled;
-            }
-
-            var uniqueOptions = new Dictionary<string, LipSyncTransportOptions>(StringComparer.Ordinal);
-            for (int i = 0; i < resolvedOptions.Count; i++)
-            {
-                LipSyncTransportOptions option = resolvedOptions[i];
-                uniqueOptions[BuildLipSyncContractKey(option)] = option;
-            }
-
-            if (uniqueOptions.Count > 1)
-            {
-                string joinedSources = string.Join(", ", resolvedSources);
-                ConvaiLogger.Error(
-                    $"[ConvaiRoomManager] Conflicting lip sync contracts detected across characters ({joinedSources}). Lip sync transport has been disabled for this room.",
-                    LogCategory.LipSync);
-                _eventHub?.Publish(SessionError.Create(
-                    "lipsync.contract_conflict",
-                    "Multiple characters advertise conflicting lip sync transport contracts in a single room."));
-                return LipSyncTransportOptions.Disabled;
-            }
-
-            LipSyncTransportOptions selected = default;
-            foreach (KeyValuePair<string, LipSyncTransportOptions> pair in uniqueOptions)
-            {
-                selected = pair.Value;
-                break;
-            }
-
-            ConvaiLogger.Info(
-                $"[ConvaiRoomManager] Lip sync transport resolved: provider={selected.Provider}, format={selected.Format}, profileId={selected.ProfileId}, fps={selected.OutputFps}, chunk={selected.ChunkSize}, sourceCount={selected.SourceBlendshapeNames.Count}",
-                LogCategory.LipSync);
-            return selected;
-        }
-
-        private static string BuildLipSyncContractKey(LipSyncTransportOptions options)
-        {
-            string sourceKey = options.SourceBlendshapeNames == null
-                ? string.Empty
-                : string.Join("|", options.SourceBlendshapeNames);
-
-            return string.Concat(
-                options.Provider, "::",
-                options.Format, "::",
-                options.ProfileId.Value, "::",
-                options.EnableChunking ? "1" : "0", "::",
-                options.ChunkSize.ToString(), "::",
-                options.OutputFps.ToString(), "::",
-                sourceKey);
-        }
-
-        private string ResolveVideoTrackName()
-        {
-            foreach (MonoBehaviour component in GetComponentsInChildren<MonoBehaviour>(true))
-            {
-                if (component is IVideoPublisher publisher &&
-                    !string.IsNullOrWhiteSpace(publisher.VideoTrackName))
-                    return publisher.VideoTrackName;
-            }
-
-            return VideoPublishOptions.Default.TrackName;
-        }
-
-        private void HandleRoomConnectionSuccessful()
-        {
-            ConvaiLogger.Info("[ConvaiRoomManager] *** Room connection successful! ***", LogCategory.SDK);
-
-            RecordConnectionSuccess(
-                _convaiRoomController?.RoomName,
-                _convaiRoomController?.CharacterSessionID,
-                _convaiRoomController?.SessionID,
-                CharacterList?.Count > 0 ? CharacterList[0]?.CharacterId : null);
-
-            StartCoroutine(AutoStartMicrophoneCoroutine());
-        }
-
-        private void HandleRoomConnectionFailed()
-        {
-            ConvaiLogger.Error("[ConvaiRoomManager] *** Room connection FAILED! ***", LogCategory.SDK);
-
-            RecordConnectionFailure(SessionErrorCodes.ConnectionFailed,
-                "Failed to connect to Convai room");
-        }
-
-        private void HandleMicMuteChanged(bool isMuted)
-        {
-            _eventHub?.Publish(Domain.DomainEvents.Runtime.MicMuteChanged.Create(isMuted));
-            MicMuteChanged?.Invoke(isMuted);
-        }
-
-        private void HandleRoomReconnecting()
-        {
-            ConvaiLogger.Info("[ConvaiRoomManager] Room is reconnecting...", LogCategory.SDK);
-            UpdateSessionState(SessionState.Reconnecting);
-        }
-
-        private void HandleRoomReconnected()
-        {
-            ConvaiLogger.Info("[ConvaiRoomManager] Room reconnected successfully!", LogCategory.SDK);
-            Connected?.Invoke();
-        }
-
-        private void HandleUnexpectedRoomDisconnected()
-        {
-            ConvaiLogger.Info(
-                "[ConvaiRoomManager] Room disconnected unexpectedly; clearing runtime media/session state.",
-                LogCategory.SDK);
-            _audioTrackManager?.SetMicMuted(false);
-            _audioTrackManager?.ClearState();
-            CompleteDisconnectionTracking(CurrentState != SessionState.Disconnected,
-                "Handled unexpected room disconnect");
-        }
-
-        private void HandlePlayerTextMessage(string text)
-        {
-            if (string.IsNullOrWhiteSpace(text))
-            {
-                ConvaiLogger.Warning("[ConvaiRoomManager] HandlePlayerTextMessage received empty text; ignoring.",
-                    LogCategory.SDK);
-                return;
-            }
-
-            if (!IsConnected)
-            {
-                ConvaiLogger.Warning(
-                    "[ConvaiRoomManager] HandlePlayerTextMessage called while not connected; message dropped.",
-                    LogCategory.SDK);
-                return;
-            }
-
-            if (RtvHandler == null)
-            {
-                ConvaiLogger.Warning(
-                    "[ConvaiRoomManager] HandlePlayerTextMessage: RtvHandler is null; message dropped.",
-                    LogCategory.SDK);
-                return;
-            }
-
-            var message = new RTVIUserTextMessage(text);
-            RtvHandler.SendData(message);
-            ConvaiLogger.Debug($"[ConvaiRoomManager] Sent user text message: {text}", LogCategory.SDK);
-        }
-
-        private void HandleRemoteAudioTrackSubscribed(IRemoteAudioTrack audioTrack, string participantSid,
-            string characterId)
-        {
-            // Track is already wrapped in the platform-agnostic abstraction by the adapter/controller
-            _audioTrackManager?.HandleRemoteAudioTrackSubscribed(audioTrack, participantSid, characterId);
-        }
-
-        private void HandleRemoteAudioTrackUnsubscribed(string participantSid, string characterId) =>
-            _audioTrackManager?.HandleRemoteAudioTrackUnsubscribed(participantSid);
-
-        private IEnumerator AutoStartMicrophoneCoroutine()
-        {
-            yield return new WaitForSeconds(_reconnectPolicy.AutoMicStartDelaySeconds);
-
-            if (RequiresUserGestureForAudio && !IsAudioPlaybackActive)
-            {
-                ConvaiLogger.Debug(
-                    "[ConvaiRoomManager] Skipping auto-start microphone: platform requires a user gesture first. " +
-                    "Call EnableAudioAndStartListening() from a UI button.", LogCategory.SDK);
-                yield break;
-            }
-
-            if (IsConnected)
-            {
-                EnsureRuntimeSettingsDependencies();
-
-                int microphoneIndex = 0;
-                if (_runtimeSettingsService != null && _microphoneDeviceService != null)
-                {
-                    string preferredDeviceId = _runtimeSettingsService.Current.PreferredMicrophoneDeviceId;
-                    int resolvedIndex = _microphoneDeviceService.ResolvePreferredDeviceIndex(preferredDeviceId);
-                    if (resolvedIndex >= 0) microphoneIndex = resolvedIndex;
-                }
-
-                StartListeningAsync(microphoneIndex).ContinueWith(
-                    static t => ConvaiLogger.Error(
-                        $"[ConvaiRoomManager] StartListeningAsync failed: {t.Exception?.GetBaseException().Message}",
-                        LogCategory.SDK),
-                    CancellationToken.None,
-                    TaskContinuationOptions.OnlyOnFaulted,
-                    TaskScheduler.FromCurrentSynchronizationContext());
-            }
-        }
-
-        private void SignalStartCompleted()
-        {
-            _hasStartedOnce = true;
-            _startCompletedTcs.TrySetResult(true);
-        }
-
-        private void UpdateSessionState(SessionState newState, string errorCode = null)
-        {
-            if (_sessionStateMachine == null)
-            {
-                _logger?.Warning("[ConvaiRoomManager] Session state machine not initialized; skipping state update.",
-                    LogCategory.SDK);
-                return;
-            }
-
-            string sessionId = _convaiRoomController?.SessionID;
-
-            if (!_sessionStateMachine.TryTransition(newState, sessionId, errorCode))
-            {
-                _logger?.Warning($"[ConvaiRoomManager] Invalid transition to {newState}; forcing transition.",
-                    LogCategory.SDK);
-                _sessionStateMachine.ForceTransition(newState, sessionId, errorCode);
-            }
-        }
-
-        private async Task<bool> ConnectInternalAsync(CancellationToken cancellationToken)
-        {
-            try
-            {
-                IConvaiCharacterAgent activeCharacter = CharacterList?.Count > 0 ? CharacterList[0] : null;
-                if (activeCharacter == null)
-                {
-                    _logger?.Error("[ConvaiRoomManager] Cannot connect: no active character.", LogCategory.SDK);
-                    UpdateSessionState(SessionState.Error);
-                    return false;
-                }
-
-                string characterId = activeCharacter.CharacterId;
-                string characterName = activeCharacter.CharacterName;
-                bool enableSessionResume = activeCharacter.EnableSessionResume;
-
-                ResumePolicy effectiveResumePolicy = enableSessionResume
-                    ? _reconnectPolicy.ResumePolicy
-                    : ResumePolicy.AlwaysFresh;
-
-                RoomJoinOptions joinOptions = RoomJoinOptions.FromContext(_connectionContext, _reconnectPolicy);
-
-                if (effectiveResumePolicy == ResumePolicy.AlwaysFresh)
-                {
-                    joinOptions = joinOptions.IsJoinRequest
-                        ? new RoomJoinOptions(joinOptions.RoomName, null, joinOptions.SpawnAgent,
-                            joinOptions.MaxNumParticipants)
-                        : RoomJoinOptions.CreateNew(null, joinOptions.MaxNumParticipants);
-                }
-
-                string reconnectMode = joinOptions.IsJoinRequest ? "rejoin" : "create";
-                _logger?.Info($"[ConvaiRoomManager] Attempting {reconnectMode} for character: {characterName}",
-                    LogCategory.SDK);
-
-                return await ConnectWithRetryAsync(characterId, enableSessionResume, joinOptions, cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                _logger?.Error($"[ConvaiRoomManager] ConnectInternalAsync failed: {ex.Message}", LogCategory.SDK);
-                UpdateSessionState(SessionState.Error);
-                return false;
-            }
-        }
-
-        private async Task<bool> ConnectWithRetryAsync(
-            string characterId,
-            bool enableSessionResume,
-            RoomJoinOptions joinOptions,
-            CancellationToken cancellationToken)
-        {
-            if (_convaiRoomController == null)
-                throw new InvalidOperationException("Connection controller has not been initialized.");
-
-            string sessionId = joinOptions?.CharacterSessionId;
-            if (string.IsNullOrEmpty(sessionId) && enableSessionResume)
-                sessionId = _sessionPersistence?.LoadSession(characterId);
-
-            for (int attempt = 0; attempt < _defaultRetryDelays.Length; attempt++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                string mode = joinOptions?.IsJoinRequest == true ? "join" : "create";
-                _logger?.Info(
-                    $"[ConvaiRoomManager] Attempt {attempt + 1} connecting character {characterId} (mode={mode})",
-                    LogCategory.SDK);
-
-                bool connected = await _convaiRoomController.InitializeAsync(
-                    ConnectionType.ToApiString(),
-                    LLMProvider.ToApiString(),
-                    CoreServerURL,
-                    characterId,
-                    sessionId,
-                    enableSessionResume,
-                    joinOptions,
-                    cancellationToken);
-
-                if (connected)
-                {
-                    PersistSession(characterId, enableSessionResume);
-                    _logger?.Info(
-                        $"[ConvaiRoomManager] Character {characterId} connected successfully (mode={mode}).",
-                        LogCategory.SDK);
-                    return true;
-                }
-
-                if (joinOptions?.IsJoinRequest == true && attempt == 0)
-                {
-                    _logger?.Info(
-                        $"[ConvaiRoomManager] Join failed for room {joinOptions.RoomName}, falling back to create mode.",
-                        LogCategory.SDK);
-                    joinOptions = RoomJoinOptions.CreateNew(sessionId, joinOptions.MaxNumParticipants);
-                }
-
-                if (attempt >= _defaultRetryDelays.Length - 1) break;
-
-                TimeSpan delay = _defaultRetryDelays[attempt + 1];
-                if (delay > TimeSpan.Zero) await Task.Delay(delay, cancellationToken);
-
-                sessionId = null;
-            }
-
-            _logger?.Error(
-                $"[ConvaiRoomManager] Failed to connect character {characterId} after {_defaultRetryDelays.Length} attempts.",
-                LogCategory.SDK);
-            return false;
-        }
-
-        private void PersistSession(string characterId, bool enableSessionResume)
-        {
-            if (!enableSessionResume || _sessionPersistence == null) return;
-
-            string sessionId = _convaiRoomController?.CharacterSessionID;
-            if (!string.IsNullOrEmpty(sessionId)) _sessionPersistence.SaveSession(characterId, sessionId);
-        }
-
-        private void RecordConnectionSuccess(string roomName, string characterSessionId, string sessionId,
-            string characterId)
-        {
-            _connectionContext = new ConnectionContext(
-                roomName,
-                characterSessionId,
-                sessionId,
-                characterId,
-                DateTime.UtcNow);
-
-            if (_sessionService != null)
-            {
-                _sessionService.SetActiveSession(characterId, sessionId);
-
-                IConvaiCharacterAgent activeCharacter = CharacterList?.Count > 0 ? CharacterList[0] : null;
-                bool enableSessionResume = activeCharacter?.EnableSessionResume ?? false;
-                if (enableSessionResume && !string.IsNullOrEmpty(characterSessionId))
-                    _sessionService.StoreSession(characterId, characterSessionId);
-            }
-
-            Connected?.Invoke();
-        }
-
-        private void RecordConnectionFailure(string errorCode, string errorMessage)
-        {
-            UpdateSessionState(SessionState.Error, errorCode);
-            _eventHub?.Publish(SessionError.Create(errorCode, errorMessage, _convaiRoomController?.SessionID));
-            ConnectionFailed?.Invoke();
-        }
-
-        private void CompleteDisconnectionTracking(bool updateSessionState, string completionMessage)
-        {
-            if (updateSessionState) UpdateSessionState(SessionState.Disconnected);
-
-            if (_connectionContext.HasValidRoom)
-                _connectionContext = _connectionContext.WithDisconnection(DateTime.UtcNow);
-
-            _sessionService?.ClearActiveSession();
-
-            _logger?.Info($"[ConvaiRoomManager] {completionMessage}", LogCategory.SDK);
-        }
-
-        private void OnSessionStateMachineStateChanged(SessionStateChanged stateChanged)
-        {
-            OnSessionStateChanged?.Invoke(stateChanged);
-            SignalConnectionStateWaiters(stateChanged.NewState);
-        }
-
-        private void SignalConnectionStateWaiters(SessionState newState)
-        {
-            lock (_connectionStateTcsLock)
-            {
-                if (_connectionStateTcs == null || _connectionStateTcs.Task.IsCompleted)
-                    return;
-
-                switch (newState)
-                {
-                    case SessionState.Connected:
-                        _connectionStateTcs.TrySetResult(true);
-                        break;
-                    case SessionState.Error:
-                    case SessionState.Disconnected:
-                        _connectionStateTcs.TrySetResult(false);
-                        break;
-                }
-            }
-        }
-
-        private TaskCompletionSource<bool> GetOrCreateConnectionStateTcs()
-        {
-            lock (_connectionStateTcsLock)
-            {
-                if (_connectionStateTcs == null || _connectionStateTcs.Task.IsCompleted)
-                    _connectionStateTcs = new TaskCompletionSource<bool>();
-                return _connectionStateTcs;
-            }
-        }
-
-        private void HandleCharacterReadyEvent(CharacterReady readyEvent)
-        {
-            SessionState currentState = CurrentState;
-            if (currentState != SessionState.Connecting && currentState != SessionState.Reconnecting) return;
-
-            string activeCharacterId = CharacterList?.Count > 0 ? CharacterList[0]?.CharacterId : null;
-
-            if (!string.IsNullOrEmpty(activeCharacterId))
-            {
-                bool matchesByCharacterId = !string.IsNullOrEmpty(readyEvent.CharacterId) &&
-                                            string.Equals(activeCharacterId, readyEvent.CharacterId,
-                                                StringComparison.OrdinalIgnoreCase);
-
-                bool matchesByParticipantId = false;
-                if (!string.IsNullOrEmpty(readyEvent.ParticipantId) &&
-                    _characterRegistry != null &&
-                    _characterRegistry.TryGetCharacter(activeCharacterId, out CharacterDescriptor activeDescriptor))
-                {
-                    if (!string.IsNullOrEmpty(activeDescriptor.ParticipantId))
-                    {
-                        matchesByParticipantId = string.Equals(activeDescriptor.ParticipantId, readyEvent.ParticipantId,
-                            StringComparison.OrdinalIgnoreCase);
-                    }
-                    else
-                    {
-                        if (CharacterList != null && CharacterList.Count == 1)
-                        {
-                            _characterRegistry.RegisterCharacter(
-                                activeDescriptor.WithParticipantId(readyEvent.ParticipantId));
-                            matchesByParticipantId = true;
-                        }
-                    }
-                }
-
-                // If neither match applies, ignore (likely another character in multi-bot rooms).
-                if (!matchesByCharacterId && !matchesByParticipantId) return;
-            }
-
-            UpdateSessionState(SessionState.Connected);
-        }
-
-        private void OnRemoteAudioPreferenceChanged(string characterId, bool enabled) =>
-            RemoteAudioEnabledChanged?.Invoke(characterId, enabled);
 
         #endregion
     }

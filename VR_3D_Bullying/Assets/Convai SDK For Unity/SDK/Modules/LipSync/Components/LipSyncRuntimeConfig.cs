@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Convai.Domain.Models.LipSync;
+using Convai.Modules.LipSync.Profiles;
 using UnityEngine;
 
 namespace Convai.Modules.LipSync
@@ -14,6 +15,8 @@ namespace Convai.Modules.LipSync
         public float TimeOffsetSeconds { get; }
         public float MaxBufferedSeconds { get; }
         public float MinResumeHeadroomSeconds { get; }
+        public bool DeliverChunksAhead { get; }
+        public float FadeInDuration { get; }
 
         public LipSyncRuntimeConfig(
             LipSyncProfileId profileId,
@@ -23,7 +26,9 @@ namespace Convai.Modules.LipSync
             float smoothingFactor,
             float timeOffsetSeconds,
             float maxBufferedSeconds,
-            float minResumeHeadroomSeconds)
+            float minResumeHeadroomSeconds,
+            bool deliverChunksAhead,
+            float fadeInDuration = 0.1f)
         {
             ProfileId = profileId;
             Mapping = mapping;
@@ -33,6 +38,8 @@ namespace Convai.Modules.LipSync
             TimeOffsetSeconds = timeOffsetSeconds;
             MaxBufferedSeconds = maxBufferedSeconds;
             MinResumeHeadroomSeconds = minResumeHeadroomSeconds;
+            DeliverChunksAhead = deliverChunksAhead;
+            FadeInDuration = fadeInDuration;
         }
 
         public LipSyncEngineConfig ToEngineConfig()
@@ -42,7 +49,36 @@ namespace Convai.Modules.LipSync
                 SmoothingFactor,
                 TimeOffsetSeconds,
                 MaxBufferedSeconds,
-                MinResumeHeadroomSeconds);
+                MinResumeHeadroomSeconds,
+                DeliverChunksAhead,
+                FadeInDuration);
+        }
+
+        public static LipSyncRuntimeConfig CreateNormalized(
+            string profileId,
+            ConvaiLipSyncMapAsset mapping,
+            IReadOnlyList<SkinnedMeshRenderer> targetMeshes,
+            float fadeOutDuration,
+            float smoothingFactor,
+            float timeOffsetSeconds,
+            float maxBufferedSeconds,
+            float minResumeHeadroomSeconds,
+            bool deliverChunksAhead,
+            float fadeInDuration)
+        {
+            LipSyncProfileId requested = new(profileId);
+            LipSyncProfileId canonical = LipSyncProfileCatalog.CanonicalizeProfileId(requested);
+            return new LipSyncRuntimeConfig(
+                canonical,
+                mapping,
+                targetMeshes,
+                fadeOutDuration,
+                smoothingFactor,
+                timeOffsetSeconds,
+                maxBufferedSeconds,
+                minResumeHeadroomSeconds,
+                deliverChunksAhead,
+                fadeInDuration);
         }
     }
 }

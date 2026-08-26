@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
-using System.Threading.Tasks;
+using Convai.Runtime.Core.Async;
+using Convai.Runtime.Core.Coordinators;
 using Convai.Runtime.Room;
 
 namespace Convai.Runtime.Facades
@@ -56,11 +57,12 @@ namespace Convai.Runtime.Facades
         }
 
         /// <summary>Starts microphone capture and publishes an audio track.</summary>
-        public Task StartListeningAsync(int microphoneIndex = 0, CancellationToken cancellationToken = default) =>
+        public IConvaiOperation<Unit> StartListeningAsync(int microphoneIndex = 0,
+            CancellationToken cancellationToken = default) =>
             _audioService.StartListeningAsync(microphoneIndex, cancellationToken);
 
         /// <summary>Stops microphone capture and unpublishes the audio track.</summary>
-        public Task StopListeningAsync(CancellationToken cancellationToken = default) =>
+        public IConvaiOperation<Unit> StopListeningAsync(CancellationToken cancellationToken = default) =>
             _audioService.StopListeningAsync(cancellationToken);
 
         /// <summary>Sets per-character playback mute state.</summary>

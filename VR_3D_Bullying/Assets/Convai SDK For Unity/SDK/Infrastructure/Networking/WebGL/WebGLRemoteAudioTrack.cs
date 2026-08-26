@@ -105,7 +105,7 @@ namespace Convai.Infrastructure.Networking.WebGL
         {
             if (IsAttached)
             {
-                ConvaiLogger.Warning("[WebGLRemoteAudioTrack] Track is already attached.", LogCategory.Audio);
+                ConvaiLogger.Warning("Track is already attached.", LogCategory.Audio);
                 return;
             }
 
@@ -113,7 +113,7 @@ namespace Convai.Infrastructure.Networking.WebGL
             UnderlyingTrack.Attach();
             IsAttached = true;
 
-            ConvaiLogger.Info($"[WebGLRemoteAudioTrack] Attached audio track '{Name}' to browser audio. " +
+            ConvaiLogger.Info($"Attached audio track '{Name}' to browser audio. " +
                               "Note: Unity AudioSource parameter is ignored on WebGL.",
                 LogCategory.Audio);
         }
@@ -134,18 +134,12 @@ namespace Convai.Infrastructure.Networking.WebGL
 
         #region Internal Methods
 
-        /// <summary>
-        ///     Sets the subscription state of this track.
-        /// </summary>
         internal void SetSubscribed(bool subscribed)
         {
             IsSubscribed = subscribed;
             if (!subscribed) Detach();
         }
 
-        /// <summary>
-        ///     Gets the underlying LiveKit remote track.
-        /// </summary>
         internal RemoteTrack UnderlyingTrack { get; }
 
         #endregion

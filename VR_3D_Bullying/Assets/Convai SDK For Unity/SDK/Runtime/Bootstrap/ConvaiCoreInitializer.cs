@@ -1,4 +1,5 @@
 using Convai.Domain.Logging;
+using Convai.Runtime.Core.Configuration;
 using Convai.Runtime.Logging;
 using UnityEngine;
 
@@ -36,12 +37,22 @@ namespace Convai.Runtime.Bootstrap
                 return;
             }
 
-            if (!settings.HasApiKey)
+            if (settings.AuthMode == ConvaiAuthMode.ApiKey && !settings.HasApiKey)
             {
                 ConvaiLogger.Warning(
                     "Convai Bootstrapper: API key not configured. Please set your API key in Edit > Project Settings > Convai SDK.",
                     LogCategory.Bootstrap);
+                return;
             }
+
+            if (settings.AuthMode != ConvaiAuthMode.AuthToken || settings.HasValidAuthConfig)
+                return;
+
+            // A code-based provider is commonly registered later from a scene Awake callback. Keep this diagnostic
+            // informational here; the room startup gate performs the authoritative validation after all Awakes run.
+            ConvaiLogger.Info(
+                "Convai Bootstrapper: Auth Token mode is awaiting a registered provider or a valid endpoint before the first connection.",
+                LogCategory.Bootstrap);
         }
     }
 }

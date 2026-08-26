@@ -73,7 +73,7 @@ namespace Convai.Editor.ConfigurationWindow.Components.Sections.ServerAnimation
             _totalDownloads = animations.Count;
             _downloadCount = 0;
             EditorUtility.DisplayProgressBar("Importing Animations", "Downloading Animations", 0f);
-            ConvaiRestClientOptions options = new ConvaiRestClientOptions(settings.ApiKey);
+            ConvaiRestClientOptions options = ConvaiRestOptionsFactory.Create(settings.ApiKey);
             using ConvaiRestClient client = new ConvaiRestClient(options);
 
             foreach (ServerAnimationItemResponse anim in animations)

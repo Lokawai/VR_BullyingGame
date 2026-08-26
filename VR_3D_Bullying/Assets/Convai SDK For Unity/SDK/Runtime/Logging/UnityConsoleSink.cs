@@ -14,11 +14,6 @@ namespace Convai.Runtime.Logging
     /// </remarks>
     internal sealed class UnityConsoleSink : ILogSink
     {
-        /// <summary>
-        ///     Gets or sets whether colored output is enabled.
-        /// </summary>
-        public bool ColoredOutput { get; set; } = true;
-
         /// <inheritdoc />
         public string Name => "UnityConsole";
 
@@ -44,9 +39,13 @@ namespace Convai.Runtime.Logging
                     break;
                 case LogLevel.Error:
                     if (entry.Exception != null)
-                        Debug.LogException(entry.Exception);
-                    else
+                    {
                         Debug.LogError(formattedMessage);
+                        Debug.LogException(entry.Exception);
+                        break;
+                    }
+
+                    Debug.LogError(formattedMessage);
                     break;
             }
         }
@@ -73,7 +72,7 @@ namespace Convai.Runtime.Logging
 
             string levelName = LogFormatting.GetLevelName(entry.Level);
             string categoryName = LogFormatting.GetCategoryName(entry.Category);
-            string color = ColoredOutput ? LogFormatting.GetLevelColor(entry.Level) : null;
+            string color = LoggingConfig.ColoredOutput ? LogFormatting.GetLevelColor(entry.Level) : null;
 
             if (!string.IsNullOrEmpty(color)) sb.Append("<color=").Append(color).Append('>');
 
@@ -101,7 +100,12 @@ namespace Convai.Runtime.Logging
             }
 
             if (entry.Exception != null)
+            {
                 sb.Append('\n').Append(entry.Exception.GetType().Name).Append(": ").Append(entry.Exception.Message);
+
+                if (LoggingConfig.IncludeStackTraces && !string.IsNullOrEmpty(entry.Exception.StackTrace))
+                    sb.Append('\n').Append(entry.Exception.StackTrace);
+            }
 
             if (!string.IsNullOrEmpty(color)) sb.Append("</color>");
 

@@ -10,13 +10,13 @@ namespace Convai.Domain.Identity
     ///     </para>
     ///     <list type="bullet">
     ///         <item>
-    ///             <description>Account-based Long-Term Memory (LTM) - Characters remember users across devices</description>
+    ///             <description>Account-based end-user identity across devices</description>
     ///         </item>
     ///         <item>
-    ///             <description>User-specific analytics and tracking</description>
+    ///             <description>User-specific analytics, management, and tracking</description>
     ///         </item>
     ///         <item>
-    ///             <description>Cross-device session continuity for logged-in users</description>
+    ///             <description>Character-scoped memory continuity when memory is enabled</description>
     ///         </item>
     ///     </list>
     ///     <para>
@@ -24,7 +24,7 @@ namespace Convai.Domain.Identity
     ///         instead of the device-based ID for more reliable cross-session tracking.
     ///     </para>
     ///     <para>
-    ///         <b>Integration Example:</b>
+    ///         Example implementation:
     ///     </para>
     ///     <code>
     /// public class MyAuthProvider : IAuthenticationProvider

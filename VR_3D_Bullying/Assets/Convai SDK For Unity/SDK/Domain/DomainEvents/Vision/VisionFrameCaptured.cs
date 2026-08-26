@@ -10,29 +10,7 @@ namespace Convai.Domain.DomainEvents.Vision
     ///     This event is published via EventHub whenever a vision frame is successfully captured.
     ///     Note: This event does NOT contain the frame data itself to avoid memory overhead.
     ///     The actual frame data is passed directly to the video track publisher.
-    ///     Integration Example:
-    ///     <code>
-    /// 
-    /// private readonly IEventHub _eventHub;
-    /// 
-    /// private void OnFrameCaptured(byte[] frameData)
-    /// {
-    ///     _eventHub.Publish(VisionFrameCaptured.Create(
-    ///         width: _width,
-    ///         height: _height,
-    ///         frameIndex: _frameCount,
-    ///         sizeBytes: frameData.Length
-    ///     ));
-    /// }
-    /// 
-    /// 
-    /// _eventHub.Subscribe&lt;VisionFrameCaptured&gt;(this, e =>
-    /// {
-    ///     Debug.Log($"Frame {e.FrameIndex}: {e.SizeBytes} bytes");
-    /// });
-    /// </code>
-    ///     Delivery Policy:
-    ///     - Use EventDeliveryPolicy.Immediate to avoid blocking capture pipeline
+    ///     Use EventDeliveryPolicy.Immediate to avoid blocking the capture pipeline.
     /// </remarks>
     public readonly struct VisionFrameCaptured
     {

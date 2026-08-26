@@ -1,8 +1,11 @@
 using System.Collections.Generic;
-using Convai.Infrastructure.Networking;
+using Convai.Domain.Emotion;
 using Convai.Infrastructure.Networking.Audio;
-using Convai.Infrastructure.Networking.Models;
+using Convai.Runtime.Behaviors;
+using Convai.Runtime.DynamicContext;
+using Convai.Tests.EditMode.Mocks;
 using NUnit.Framework;
+using UnityEngine;
 
 namespace Convai.Tests.EditMode.Infrastructure
 {
@@ -16,62 +19,36 @@ namespace Convai.Tests.EditMode.Infrastructure
         [SetUp]
         public void SetUp()
         {
-            _mockRegistry = new MockCharacterRegistry();
+            _mockRegistry = new MockAgentRegistry();
             _manager = new RemoteAudioPreferenceManager(_mockRegistry);
         }
 
         private RemoteAudioPreferenceManager _manager;
-        private MockCharacterRegistry _mockRegistry;
+        private MockAgentRegistry _mockRegistry;
 
         /// <summary>
-        ///     Mock implementation of ICharacterRegistry for testing.
-        ///     Supports identity-to-character mapping for Strategy 1 tests.
+        ///     Minimal mock implementation of IConvaiCharacterAgent for testing.
         /// </summary>
-        private sealed class MockCharacterRegistry : ICharacterRegistry
+        private sealed class TestCharacterAgent : IConvaiCharacterAgent
         {
-            private readonly Dictionary<string, CharacterDescriptor> _characters = new();
-            private readonly Dictionary<string, CharacterDescriptor> _identityMap = new();
-            private readonly Dictionary<string, CharacterDescriptor> _participantMap = new();
-
-            public void RegisterCharacter(CharacterDescriptor descriptor)
+            public TestCharacterAgent(string characterId, string characterName = "Test Character")
             {
-                _characters[descriptor.CharacterId] = descriptor;
-                if (!string.IsNullOrEmpty(descriptor.ParticipantId))
-                    _participantMap[descriptor.ParticipantId] = descriptor;
+                CharacterId = characterId;
+                CharacterName = characterName;
             }
 
-            public void UnregisterCharacter(string characterId)
-            {
-                if (_characters.TryGetValue(characterId, out CharacterDescriptor desc))
-                {
-                    _characters.Remove(characterId);
-                    if (!string.IsNullOrEmpty(desc.ParticipantId)) _participantMap.Remove(desc.ParticipantId);
-                }
-            }
-
-            public bool TryGetCharacter(string characterId, out CharacterDescriptor descriptor)
-            {
-                if (_identityMap.TryGetValue(characterId, out descriptor)) return true;
-                return _characters.TryGetValue(characterId, out descriptor);
-            }
-
-            public bool TryGetCharacterByParticipantId(string participantId, out CharacterDescriptor descriptor) =>
-                _participantMap.TryGetValue(participantId, out descriptor);
-
-            public IReadOnlyList<CharacterDescriptor> GetAllCharacters() =>
-                new List<CharacterDescriptor>(_characters.Values);
-
-            public void SetCharacterMuted(string characterId, bool muted) { }
-            public void Clear() => _characters.Clear();
-
-            /// <summary>
-            ///     Registers a character with a specific identity mapping (for Strategy 1 testing).
-            /// </summary>
-            public void RegisterWithIdentity(string identity, CharacterDescriptor descriptor)
-            {
-                RegisterCharacter(descriptor);
-                _identityMap[identity] = descriptor;
-            }
+            public string CharacterId { get; }
+            public string CharacterName { get; }
+            public Color NameTagColor => Color.white;
+            public bool EnableSessionResume => false;
+            public string InitialDynamicInfoText => string.Empty;
+            public bool InitialDynamicInfoKeepInContext => false;
+            public IConvaiDynamicContext DynamicContext { get; } = new MockDynamicContext();
+            public EmotionDetectionMode EmotionDetectionMode => Convai.Domain.Emotion.EmotionDetectionMode.Off;
+            public void SendTrigger(string triggerName) { }
+            public void SendNarrativeEvent(string eventMessage) { }
+            public void SendNarrativeSpeech(string speechText) { }
+            public void UpdateTemplateKeys(Dictionary<string, string> templateKeys) { }
         }
 
         [Test]
@@ -111,14 +88,16 @@ namespace Convai.Tests.EditMode.Infrastructure
         [Test]
         public void ShouldSubscribe_IdentityMatchesRegisteredCharacter_UsesCharacterPreference()
         {
-            var descriptor = new CharacterDescriptor("inst-1", "char-123", "Test Character", "", false);
-            _mockRegistry.RegisterWithIdentity("ConvAI-Bot", descriptor);
+            // Register a character with char-123 as the ID
+            var agent = new TestCharacterAgent("char-123");
+            _mockRegistry.RegisterCharacter(agent);
 
             _manager.SetRemoteAudioEnabled("char-123", false);
-            Assert.IsFalse(_manager.ShouldSubscribe("ConvAI-Bot"));
+            // When looking up by character ID, it should use the preference
+            Assert.IsFalse(_manager.ShouldSubscribe("char-123"));
 
             _manager.SetRemoteAudioEnabled("char-123", true);
-            Assert.IsTrue(_manager.ShouldSubscribe("ConvAI-Bot"));
+            Assert.IsTrue(_manager.ShouldSubscribe("char-123"));
         }
 
         [Test]

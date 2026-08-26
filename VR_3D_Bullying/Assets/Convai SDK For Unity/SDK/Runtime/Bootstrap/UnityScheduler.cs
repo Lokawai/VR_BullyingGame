@@ -33,6 +33,7 @@ namespace Convai.Runtime
         private static readonly object _lock = new();
 
         private readonly ConcurrentQueue<Action> _mainThreadQueue = new();
+        private bool _initialized;
         private int _mainThreadId;
         private int? _maxPerFrame;
 
@@ -58,6 +59,10 @@ namespace Convai.Runtime
         ///     Gets the singleton instance of UnityScheduler.
         ///     Creates the instance if it doesn't exist.
         /// </summary>
+        /// <remarks>
+        ///     The instance is created automatically via <see cref="Bootstrap" /> before any scene loads.
+        ///     Direct creation only occurs if accessed before Bootstrap runs (e.g., from static constructors).
+        /// </remarks>
         public static UnityScheduler Instance
         {
             get
@@ -68,20 +73,12 @@ namespace Convai.Runtime
                     {
                         if (_instance == null)
                         {
-                            _instance = FindFirstObjectByType<UnityScheduler>();
-
-                            if (_instance == null)
-                            {
-                                GameObject go = new("UnityScheduler");
-                                _instance = go.AddComponent<UnityScheduler>();
-                                if (UnityEngine.Application.isPlaying)
-                                {
-                                    DontDestroyOnLoad(go);
-                                    go.hideFlags = HideFlags.HideInHierarchy;
-                                }
-                                else
-                                    go.hideFlags = HideFlags.HideAndDontSave;
-                            }
+                            // Create directly - no scene discovery needed.
+                            // Bootstrap() ensures this runs before any scene code,
+                            // and Awake() handles duplicate detection if a scene already has one.
+                            GameObject go = new("UnityScheduler");
+                            _instance = go.AddComponent<UnityScheduler>();
+                            _instance.Initialize();
                         }
                     }
                 }
@@ -102,13 +99,20 @@ namespace Convai.Runtime
         {
             if (_instance != null && _instance != this)
             {
-                ConvaiLogger.Warning("[UnityScheduler] Duplicate instance detected. Destroying duplicate.",
+                ConvaiLogger.Warning("Duplicate instance detected. Destroying duplicate.",
                     LogCategory.Events);
                 Destroy(gameObject);
                 return;
             }
 
             _instance = this;
+            Initialize();
+        }
+
+        private void Initialize()
+        {
+            if (_initialized) return;
+
             _mainThreadId = Thread.CurrentThread.ManagedThreadId;
             if (UnityEngine.Application.isPlaying)
             {
@@ -118,7 +122,8 @@ namespace Convai.Runtime
             else
                 gameObject.hideFlags = HideFlags.HideAndDontSave;
 
-            ConvaiLogger.Info($"[UnityScheduler] Initialized on thread {_mainThreadId}", LogCategory.Events);
+            _initialized = true;
+            ConvaiLogger.Info($"Initialized on thread {_mainThreadId}", LogCategory.Events);
         }
 
         /// <summary>
@@ -135,7 +140,7 @@ namespace Convai.Runtime
                 }
                 catch (Exception ex)
                 {
-                    ConvaiLogger.Error($"[UnityScheduler] Exception in main thread action: {ex}", LogCategory.Events);
+                    ConvaiLogger.Error($"Exception in main thread action: {ex}", LogCategory.Events);
                 }
 
                 processed++;
@@ -150,7 +155,7 @@ namespace Convai.Runtime
         {
             if (_instance == this)
             {
-                ConvaiLogger.Info("[UnityScheduler] Shutting down", LogCategory.Events);
+                ConvaiLogger.Info("Shutting down", LogCategory.Events);
                 _instance = null;
             }
         }
@@ -162,7 +167,7 @@ namespace Convai.Runtime
         {
             if (_instance == this)
             {
-                ConvaiLogger.Info("[UnityScheduler] Application quitting - cleaning up", LogCategory.Events);
+                ConvaiLogger.Info("Application quitting - cleaning up", LogCategory.Events);
                 while (_mainThreadQueue.TryDequeue(out _)) { }
 
                 _instance = null;
@@ -187,7 +192,7 @@ namespace Convai.Runtime
                 }
                 catch (Exception ex)
                 {
-                    ConvaiLogger.Error($"[UnityScheduler] Exception in immediate main thread action: {ex}",
+                    ConvaiLogger.Error($"Exception in immediate main thread action: {ex}",
                         LogCategory.Events);
                 }
             }
@@ -215,7 +220,7 @@ namespace Convai.Runtime
                 {
                     ScheduleOnMainThread(() =>
                     {
-                        ConvaiLogger.Error($"[UnityScheduler] Exception in background thread action: {ex}",
+                        ConvaiLogger.Error($"Exception in background thread action: {ex}",
                             LogCategory.Events);
                     });
                 }
@@ -240,7 +245,7 @@ namespace Convai.Runtime
         {
             if (_instance != null)
             {
-                ConvaiLogger.Info("[UnityScheduler] Manual shutdown requested", LogCategory.Events);
+                ConvaiLogger.Info("Manual shutdown requested", LogCategory.Events);
                 while (_instance._mainThreadQueue.TryDequeue(out _)) { }
 
                 if (UnityEngine.Application.isPlaying)
@@ -269,7 +274,6 @@ namespace Convai.Runtime
         /// </summary>
         public static bool IsOnMainThread => Instance?.IsMainThread() ?? false;
 
-        /// <summary>Gets the number of pending queued actions.</summary>
         public static int PendingCount => Instance?._mainThreadQueue?.Count ?? 0;
 
         /// <summary>
@@ -285,7 +289,7 @@ namespace Convai.Runtime
             UnityScheduler instance = Instance;
             if (instance == null)
             {
-                ConvaiLogger.Warning("[UnityScheduler] Post called before Bootstrap.", LogCategory.Bootstrap);
+                ConvaiLogger.Warning("Post called before Bootstrap.", LogCategory.Bootstrap);
                 return false;
             }
 
@@ -372,7 +376,7 @@ namespace Convai.Runtime
             if (_instance == this)
             {
                 _instance = null;
-                ConvaiLogger.Info("[UnityScheduler] Instance reset", LogCategory.Events);
+                ConvaiLogger.Info("Instance reset", LogCategory.Events);
             }
         }
 
@@ -381,7 +385,7 @@ namespace Convai.Runtime
         /// </summary>
         [ContextMenu("Show Queue Size")]
         private void ShowQueueSize() =>
-            ConvaiLogger.Info($"[UnityScheduler] Queue size: {QueueSize}", LogCategory.Events);
+            ConvaiLogger.Info($"Queue size: {QueueSize}", LogCategory.Events);
 
         #endregion
     }

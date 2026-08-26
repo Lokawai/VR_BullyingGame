@@ -1,71 +1,54 @@
-# Convai SDK (Source + Architecture)
+# Convai SDK (Internal Source Guide)
 
-If you're integrating Convai into a Unity project (devs + designers), start with:
+If you are integrating the SDK into a Unity project, start with:
 
 - `Documentation~/SETUP.md`
 - `Documentation~/API-ENTRYPOINTS.md`
+- `Documentation~/SOURCE-REFERENCE.md` (types ↔ `SDK/` file paths)
 
-This `SDK/` folder is the **implementation** of the Convai Unity SDK. It's most useful when you need to:
+This `SDK/` folder is the implementation of the Convai Unity SDK. Use it when you need to debug runtime behavior, trace ownership between layers, or change subsystem internals.
 
-- customize behavior/UI beyond the samples
-- debug transport/session/audio issues
-- contribute changes upstream
+## Core source-tree layout
 
-## Key runtime objects (what you add to scenes)
+- `Domain/` — engine-free models, domain events, logging, and shared runtime value types
+- `Runtime/` — Unity-facing shells, facades, configuration assets, composition host, and room runtime contracts
+- `Infrastructure/Networking/` — Native and WebGL LiveKit transport implementations
+- `Modules/` — Attention, client VAD, conversation flow, dialogue animation, embodiment, emotion, facial animation, gaze, lip sync, narrative, and vision features
+- `Editor/` — inspectors, project settings UI, tooling, and authoring workflows
+- `Samples/` and `SamplesShared/` — reference scenes and shared sample assets
 
-- `ConvaiManager` (`Runtime/Components/ConvaiManager.cs`) — primary scene entrypoint; ensures required Convai runtime components exist and are wired
-- `ConvaiCharacter` (`Runtime/Components/ConvaiCharacter.cs`) — the NPC/agent you talk to
-- `ConvaiPlayer` (`Runtime/Components/ConvaiPlayer.cs`) — local player identity + text input event
-- `ConvaiAudioOutput` (`Runtime/Components/ConvaiAudioOutput.cs`) — recommended audio output companion (AudioSource config + optional 3D audio)
-- `ConvaiRoomSession` (`Application/ConvaiRoomSession.cs`) — static session API for room-level events (connected/disconnected/participants)
-- `ConvaiSDK` (`Application/ConvaiSDK.cs`) — static SDK metadata API (for example `Version`)
+## Primary runtime entrypoints
 
-Internal runtime component (advanced):
-
-- `ConvaiRoomManager` (`Runtime/Adapters/Networking/ConvaiRoomManager.cs`) — room/session lifecycle, mic, and transport (managed by `ConvaiManager`)
-
-## Naming and ownership rules
-
-- `Manager` is used for scene/runtime lifecycle MonoBehaviours and owned component coordinators.
-- `Service` is used for DI/business orchestration.
-- `Bridge` and `Adapter` are used for cross-layer translation and boundary wiring.
-- `SDK` is reserved for static package identity/metadata surfaces (`Application/ConvaiSDK.cs`).
-- Session/runtime hierarchical error codes are centralized in `Domain/Errors/SessionErrorCodes.cs`.
-
-## Where configuration lives
-
-- Project settings: `Edit > Project Settings > Convai SDK` (backed by `Runtime/Configuration/ConvaiSettings.cs`)
-- Scene bootstrap helper: `GameObject > Convai > Setup Required Components` (adds `ConvaiManager`)
-
-## Architecture in 30 seconds
-
-The SDK is organized into layered folders to keep Unity-specific code separate from core logic:
-
-- **Domain** — events, models, and interfaces; no Unity dependencies
-- **Infrastructure** — networking/persistence/protocol implementations (LiveKit/WebRTC, etc.)
-- **Application** — orchestration (room-level session API, services)
-- **Runtime** — Unity MonoBehaviours, manager-driven bootstrap pipeline, adapters, and presentation/UI
-- **Shared** — DI container + injectable interfaces
-- **Modules** — optional features (Narrative, Vision, LipSync)
-
-Rule of thumb: inner layers should not depend on outer layers.
+- `Runtime/Components/ConvaiManager.cs` — main Unity entrypoint and lifecycle shell
+- `Runtime/Core/Composition/ConvaiRuntimeHost.cs` — explicit composition root for the active runtime
+- `Runtime/Adapters/Networking/ConvaiRoomManager.cs` — room/session adapter owned by `ConvaiManager`
+- `Runtime/Components/ConvaiCharacter.cs` — per-character scene component
+- `Runtime/Components/ConvaiPlayer.cs` — local player identity and text-input surface
+- `Runtime/Components/ConvaiAudioOutput.cs` — recommended audio output companion
 
 ## Start points by task
 
-- Start/stop a conversation: `Runtime/Components/ConvaiCharacter.cs`
-- Scene-level connect/disconnect + mic helpers: `Runtime/Components/ConvaiManager.cs`
-- Session internals + transport/mic lifecycle: `Runtime/Adapters/Networking/ConvaiRoomManager.cs`
-- Transcript UI routing/customization: `Runtime/Presentation/README.md`
-- Vision publishing: `Modules/Vision/README.md` and `Runtime/Vision/IVisionFrameSource.cs`
-- Lip sync module: `Modules/LipSync/README.md`
-- Networking deep dive (LiveKit/WebRTC): `Infrastructure/Networking/README.md`
+- Scene setup and room lifecycle: `Runtime/Components/ConvaiManager.cs`
+- Character identity and conversation flow: `Runtime/Components/ConvaiCharacter.cs`
+- Room transport, mic, and ownership internals: `Runtime/Adapters/Networking/ConvaiRoomManager.cs`
+- Transport deep dive: `Infrastructure/Networking/README.md`
+- Vision publishing: `Modules/Vision/README.md`
+- Lip sync pipeline: `Modules/LipSync/README.md`
+- Narrative integration: `Modules/Narrative/README.md`
 
-## Layer documentation
+## Configuration pointers
 
-- [Domain](Domain/README.md)
-- [Domain Event System](Domain/EventSystem/README.md)
-- [Infrastructure](Infrastructure/README.md)
-- [Application](Application/README.md)
-- [Runtime](Runtime/README.md)
-- [Shared](Shared/README.md)
-- [Modules](Modules/README.md)
+- Project-wide settings live in `Edit > Project Settings > Convai SDK`
+- `ConvaiRoomManager` uses `Room Setup Source` to switch between scene defaults and a Room Manager Profile asset
+- `ConvaiCharacter` uses `Character Setup Source` to switch between inline values and a Character Profile asset
+
+## Logging
+
+- Prefer `ConvaiLogger` or injected `ILogger` for new SDK logging.
+- The project settings logging controls feed the built-in Unity console sink.
+- `Include Stack Traces` and `Colored Output` apply to that sink.
+- Raw `Debug.*` calls still exist in a few legacy runtime/editor paths, so logging is not fully centralized yet.
+
+## Scene ownership
+
+Use `ConvaiSceneInstaller` when scene ownership is additive or otherwise ambiguous. Do not assume scene-load events automatically reconnect or rebind every agent; make the product's scene-transition policy explicit and validate it with the actual navigation flow.

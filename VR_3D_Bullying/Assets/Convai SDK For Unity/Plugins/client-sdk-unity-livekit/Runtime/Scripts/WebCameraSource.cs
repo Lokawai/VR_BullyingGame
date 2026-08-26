@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 
 namespace LiveKit
 {
+    // VideoSource for Unity WebCamTexture
     public class WebCameraSource : RtcVideoSource
     {
         TextureFormat _textureFormat;
@@ -27,10 +28,12 @@ namespace LiveKit
         {
             switch (CamTexture.videoRotationAngle)
             {
+                case 0: return VideoRotation._0;
                 case 90: return VideoRotation._90;
-                case 180: return VideoRotation._0;
+                case 180: return VideoRotation._180;
+                case 270: return VideoRotation._270;
             }
-            return VideoRotation._180;
+            return VideoRotation._0;
         }
 
         public WebCameraSource(WebCamTexture texture, VideoBufferType bufferType = VideoBufferType.Rgba) : base(VideoStreamSource.Texture, bufferType)
@@ -44,8 +47,20 @@ namespace LiveKit
             Dispose(false);
         }
 
+        protected override void Dispose(bool disposing)
+        {
+            if (_tempTexture != null)
+            {
+                _tempTexture.Release();
+                UnityEngine.Object.Destroy(_tempTexture);
+                _tempTexture = null;
+            }
+            base.Dispose(disposing);
+        }
+
         private Color32[] _readBuffer;
 
+        // Read the texture data into a native array asynchronously
         protected override bool ReadBuffer()
         {
             if (_reading && !CamTexture.isPlaying)
@@ -60,10 +75,20 @@ namespace LiveKit
                 _previewTexture.width != width ||
                 _previewTexture.height != height)
             {
+                // Free previously allocated GPU/native resources before reallocating;
+                // otherwise the old textures and NativeArray leak on every resolution change.
+                if (_previewTexture != null)
+                    UnityEngine.Object.Destroy(_previewTexture);
+                if (_tempTexture != null)
+                {
+                    _tempTexture.Release();
+                    UnityEngine.Object.Destroy(_tempTexture);
+                    _tempTexture = null;
+                }
                 if (_captureBuffer.IsCreated)
                     _captureBuffer.Dispose();
 
-                var compatibleFormat = SystemInfo.GetCompatibleFormat(CamTexture.graphicsFormat, GraphicsFormatUsage.ReadPixels);
+                var compatibleFormat = SystemInfo.GetCompatibleFormat(CamTexture.graphicsFormat, FormatUsage.ReadPixels);
                 _textureFormat = GraphicsFormatUtility.GetTextureFormat(compatibleFormat);
                 _bufferType = GetVideoBufferType(_textureFormat);
 
@@ -78,8 +103,13 @@ namespace LiveKit
             }
 
             CamTexture.GetPixels32(_readBuffer);
-            MemoryMarshal.Cast<Color32, byte>(_readBuffer)
-                .CopyTo(_captureBuffer.AsSpan());
+            // GetPixels32 returns rows bottom-up; WebRTC expects top-down. Flip while copying.
+            var src = MemoryMarshal.Cast<Color32, byte>(_readBuffer);
+            var dst = _captureBuffer.AsSpan();
+            int rowBytes = width * GetStrideForBuffer(_bufferType);
+            for (int y = 0; y < height; y++)
+                src.Slice(y * rowBytes, rowBytes)
+                   .CopyTo(dst.Slice((height - 1 - y) * rowBytes, rowBytes));
 
             _requestPending = true;
 
@@ -102,4 +132,3 @@ namespace LiveKit
         }
     }
 }
-

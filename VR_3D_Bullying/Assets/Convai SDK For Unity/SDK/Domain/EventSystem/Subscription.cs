@@ -7,17 +7,7 @@ namespace Convai.Domain.EventSystem
     ///     Used by EventHub to track subscribers and their delivery preferences.
     /// </summary>
     /// <remarks>
-    ///     This class is internal and not exposed in the public API.
-    ///     Users interact with subscriptions via SubscriptionToken only.
-    ///     Key Features:
-    ///     - Weak reference to subscriber (prevents memory leaks)
-    ///     - Stores delivery policy for routing
-    ///     - Tracks event type for type-safe dispatch
-    ///     - Provides IsAlive check for cleanup
-    ///     Lifecycle:
-    ///     - Created when Subscribe() is called
-    ///     - Stored in EventHub's subscription registry
-    ///     - Cleaned up when subscriber is garbage collected or Unsubscribe() is called
+    ///     Tracks the subscriber, delivery policy, event type, and liveness state used by EventHub.
     /// </remarks>
     internal sealed class Subscription
     {

@@ -5,7 +5,8 @@ using UnityEngine;
 namespace Convai.Runtime.Identity
 {
     /// <summary>
-    ///     Generates an end user identifier using Unity's device identifier with a persisted GUID fallback.
+    ///     Generates an end user identifier using a persisted editor fallback or a device identifier with
+    ///     a persisted GUID fallback in player builds.
     ///     All Unity API calls (<see cref="PlayerPrefs" />, <see cref="SystemInfo" />) are marshaled to
     ///     the main thread via <see cref="UnityScheduler" /> to prevent threading violations.
     /// </summary>
@@ -14,17 +15,19 @@ namespace Convai.Runtime.Identity
     ///         This provider generates a stable, device-specific identifier that allows the Convai server
     ///         to track end users across sessions. This enables features like:
     ///     </para>
+    ///     <list type="bullet">
+    ///         <item>Stable identity tracking across sessions</item>
+    ///         <item>End-user management and analytics</item>
+    ///         <item>Character-scoped memory continuity when memory is enabled</item>
+    ///     </list>
     ///     <para>
-    ///         When the device identifier is unavailable, a GUID is generated once and persisted via
-    ///         <see cref="PlayerPrefs" /> so the same fallback is reused across sessions.
-    ///         <list type="bullet">
-    ///             <item>Long-Term Memory (LTM) - Characters remember previous conversations</item>
-    ///             <item>Monthly Active User (MAU) tracking for billing</item>
-    ///             <item>Cross-session conversation continuity</item>
-    ///         </list>
+    ///         In the Unity Editor, this provider always uses a persisted <see cref="PlayerPrefs" /> fallback
+    ///         so Play Mode sessions keep a stable end-user identity for the same project/editor environment.
+    ///         In player builds, when the device identifier is unavailable, a GUID is generated once and
+    ///         persisted via <see cref="PlayerPrefs" /> so the same fallback is reused across sessions.
     ///     </para>
     /// </remarks>
-    public sealed class DeviceEndUserIdProvider : IEndUserIdProvider
+    public sealed class DeviceEndUserIdProvider : IEndUserIdProvider, IEndUserIdentityProvider
     {
         private const string FallbackIdKey = "convai.end_user_id";
         private readonly IDeviceInfoProvider _deviceInfoProvider;
@@ -49,19 +52,23 @@ namespace Convai.Runtime.Identity
             _deviceInfoProvider = deviceInfoProvider ?? new SystemDeviceInfoProvider();
         }
 
-        /// <summary>
-        ///     Generates a stable end user identifier for this device.
-        /// </summary>
-        /// <returns>
-        ///     The device's unique identifier from <see cref="IDeviceInfoProvider.GetDeviceUniqueIdentifier" />,
-        ///     or a persisted GUID if the device identifier is unavailable or invalid.
-        /// </returns>
-        public string GenerateEndUserId()
+        /// <inheritdoc />
+        public string GetEndUserId()
         {
             if (UnityScheduler.IsOnMainThread) return GenerateEndUserIdDirect();
 
             return UnityScheduler.PostAsync(GenerateEndUserIdDirect).GetAwaiter().GetResult();
         }
+
+        /// <summary>
+        ///     Generates a stable end user identifier for this device.
+        /// </summary>
+        /// <returns>
+        ///     In the editor, a project-scoped persisted identifier. In player builds, the device's unique
+        ///     identifier from <see cref="IDeviceInfoProvider.GetDeviceUniqueIdentifier" />, or a persisted GUID
+        ///     if the device identifier is unavailable or invalid.
+        /// </returns>
+        public string GenerateEndUserId() => GetEndUserId();
 
         /// <summary>
         ///     Core logic — must run on the main thread because both
@@ -70,6 +77,9 @@ namespace Convai.Runtime.Identity
         /// </summary>
         private string GenerateEndUserIdDirect()
         {
+            if (UnityEngine.Application.isEditor)
+                return GetOrCreateFallbackId();
+
             string deviceIdentifier = _deviceInfoProvider.GetDeviceUniqueIdentifier();
             if (IsValid(deviceIdentifier)) return deviceIdentifier;
 

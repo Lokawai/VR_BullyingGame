@@ -1,10 +1,14 @@
+using System;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Convai.Domain.EventSystem;
 using Convai.Domain.Models.LipSync;
 using Convai.Modules.LipSync.Profiles;
+using Convai.Runtime.Components;
+using Convai.Runtime.Core;
+using Convai.Runtime.Core.Modules;
 using Convai.Runtime.Room;
-using Convai.Shared;
-using Convai.Shared.DependencyInjection;
 using Convai.Shared.Interfaces;
 using Convai.Shared.Types;
 using UnityEngine;
@@ -16,32 +20,38 @@ namespace Convai.Modules.LipSync
     ///     Thin MonoBehaviour shell that delegates runtime lip sync behavior to dedicated services.
     /// </summary>
     [AddComponentMenu("Convai/Lip Sync/Convai Lip Sync")]
-    public sealed class ConvaiLipSyncComponent : MonoBehaviour, IInjectableLipSyncComponent, ILipSyncCapabilitySource,
-        IInjectable
+    public sealed class ConvaiLipSyncComponent : MonoBehaviour, ILipSyncCapabilitySource,
+        IConvaiModule
     {
-        [Header("Core Setup")] [SerializeField]
+        // Section grouping lives in ConvaiLipSyncComponentEditor's Convai sections; [Header]
+        // attributes here would render the same titles a second time inside those sections.
+        [SerializeField]
         private string _lockedProfileId = LipSyncProfileId.ARKitValue;
 
         [SerializeField] private ConvaiLipSyncMapAsset _mapping;
         [SerializeField] private List<SkinnedMeshRenderer> _targetMeshes = new();
 
-        [Header("Playback & Behavior")] [SerializeField] [Range(0f, 0.9f)]
+        [SerializeField] [Range(0f, 0.9f)]
         private float _smoothingFactor = 0.5f;
 
         [SerializeField] [Range(0.05f, 2f)] private float _fadeOutDuration = 0.2f;
+
+        [Tooltip("Ramp from the current pose into the first played frames at playback start. 0 disables it.")]
+        [SerializeField] [Range(0f, 0.5f)] private float _fadeInDuration = 0.1f;
+
         [SerializeField] [Range(-0.5f, 0.5f)] private float _timeOffset;
 
-        [Header("Streaming & Latency")] [SerializeField]
+        [SerializeField]
         private LipSyncLatencyMode _latencyMode = LipSyncLatencyMode.Balanced;
 
         [SerializeField] [Range(1f, 10f)] private float _maxBufferedSeconds = 3f;
         [SerializeField] [Range(0.05f, 0.3f)] private float _minResumeHeadroomSeconds = 0.12f;
-        private ILipSyncLifecycleOrchestrator _lifecycleOrchestrator;
+        [SerializeField] private bool _deliverChunksAhead;
+        private LipSyncLifecycleOrchestrator _lifecycleOrchestrator;
         private IConvaiRoomAudioService _roomAudioService;
+        private bool _isRuntimePaused;
 
-        private ILipSyncRuntimeController _runtimeController;
-        private ILipSyncComponentServiceFactory _serviceFactory;
-
+        private LipSyncRuntimeController _runtimeController;
         /// <summary>Currently active profile id used by this component.</summary>
         public LipSyncProfileId ActiveProfile
         {
@@ -69,6 +79,9 @@ namespace Convai.Modules.LipSync
         /// <summary>Current playback engine state.</summary>
         public PlaybackState EngineState => _lifecycleOrchestrator?.EngineState ?? PlaybackState.Idle;
 
+        /// <summary>Whether runtime lifecycle has paused LipSync presentation ticks.</summary>
+        public bool IsPresentationPaused => _isRuntimePaused;
+
         /// <summary>Configured target meshes receiving blendshape output.</summary>
         public IReadOnlyList<SkinnedMeshRenderer> TargetMeshes => _targetMeshes;
 
@@ -80,55 +93,55 @@ namespace Convai.Modules.LipSync
         {
             get
             {
-                TryAssignRuntimeDefaultMappingIfMissing();
-                EnsureServices();
-                LipSyncComponentConfiguration configuration = BuildComponentConfiguration();
-                ConvaiLipSyncMapAsset effectiveMapping =
-                    _lifecycleOrchestrator.ResolveEffectiveMapping(ref configuration);
-                ApplyComponentConfiguration(configuration);
-                return effectiveMapping;
+                LipSyncRuntimeConfig config = BuildRuntimeConfig();
+                return LipSyncCapabilityResolver.ResolveEffectiveMapping(config);
             }
         }
 
         private void Awake()
         {
             EnsureServices();
-            LipSyncComponentConfiguration configuration = BuildComponentConfiguration();
-            _lifecycleOrchestrator.HandleAwake(this, ref configuration);
-            ApplyComponentConfiguration(configuration);
+            _lifecycleOrchestrator.HandleAwake(this, BuildRuntimeConfig());
+            ConvaiManager.ActiveManager?.RegisterModule(this);
         }
 
-        private void LateUpdate() => _lifecycleOrchestrator?.Tick(Time.deltaTime);
+        private void LateUpdate()
+        {
+            if (!_isRuntimePaused)
+                _lifecycleOrchestrator?.Tick(Time.deltaTime);
+        }
 
         private void OnEnable()
         {
-            TryAssignRuntimeDefaultMappingIfMissing();
             EnsureServices();
-            LipSyncComponentConfiguration configuration = BuildComponentConfiguration();
-            _lifecycleOrchestrator.HandleEnable(this, Application.isPlaying, ref configuration);
-            ApplyComponentConfiguration(configuration);
+            _lifecycleOrchestrator.HandleEnable(this, UnityEngine.Application.isPlaying, BuildRuntimeConfig());
         }
 
-        private void OnDisable() => _lifecycleOrchestrator?.HandleDisable();
+        private void OnDisable()
+        {
+            _lifecycleOrchestrator?.HandleDisable();
+        }
 
-        private void OnDestroy() => _lifecycleOrchestrator?.HandleDestroy();
+        private void OnDestroy()
+        {
+            ConvaiManager.ActiveManager?.UnregisterModule(this);
+            _lifecycleOrchestrator?.HandleDestroy();
+        }
 
         private void OnValidate()
         {
+            ApplyLatencyPreset();
             EnsureServices();
-            LipSyncComponentConfiguration configuration = BuildComponentConfiguration();
-            _lifecycleOrchestrator.ApplyLatencyPreset(_latencyMode, ref configuration);
-            _lifecycleOrchestrator.HandleValidate(this, Application.isPlaying, ref configuration);
-            ApplyComponentConfiguration(configuration);
+            _lifecycleOrchestrator.HandleValidate(this, UnityEngine.Application.isPlaying, BuildRuntimeConfig());
         }
 
-        /// <inheritdoc />
-        public void InjectServices(IServiceContainer container)
+        /// <summary>
+        ///     Builds transport options for room negotiation from the active profile and effective source schema.
+        /// </summary>
+        public bool TryGetLipSyncTransportOptions(out LipSyncTransportOptions options)
         {
             EnsureServices();
-            if (container != null) container.TryGet(out _roomAudioService);
-
-            _runtimeController.SetRoomAudioService(_roomAudioService);
+            return _lifecycleOrchestrator.TryGetTransportOptions(BuildRuntimeConfig(), out options);
         }
 
         /// <summary>
@@ -137,27 +150,12 @@ namespace Convai.Modules.LipSync
         public void Inject(IEventHub eventHub, ILogger logger = null)
         {
             EnsureServices();
-            LipSyncComponentConfiguration configuration = BuildComponentConfiguration();
             _lifecycleOrchestrator.HandleInject(
                 this,
-                ref configuration,
+                BuildRuntimeConfig(),
                 eventHub,
                 logger,
                 enabled && isActiveAndEnabled);
-            ApplyComponentConfiguration(configuration);
-        }
-
-        /// <summary>
-        ///     Builds transport options for room negotiation from the active profile and effective source schema.
-        /// </summary>
-        public bool TryGetLipSyncTransportOptions(out LipSyncTransportOptions options)
-        {
-            TryAssignRuntimeDefaultMappingIfMissing();
-            EnsureServices();
-            LipSyncComponentConfiguration configuration = BuildComponentConfiguration();
-            bool success = _lifecycleOrchestrator.TryGetTransportOptions(ref configuration, out options);
-            ApplyComponentConfiguration(configuration);
-            return success;
         }
 
         /// <summary>Returns estimated remaining talking time in seconds.</summary>
@@ -184,44 +182,109 @@ namespace Convai.Modules.LipSync
         {
             if (_lifecycleOrchestrator != null) return;
 
-            _serviceFactory ??= new LipSyncComponentServiceFactory();
-            LipSyncComponentServices services = _serviceFactory.Create();
-            _runtimeController = services.RuntimeController;
-            _lifecycleOrchestrator = services.LifecycleOrchestrator;
+            _runtimeController = new LipSyncRuntimeController();
+            _lifecycleOrchestrator = new LipSyncLifecycleOrchestrator(_runtimeController);
         }
 
-        private void TryAssignRuntimeDefaultMappingIfMissing()
+        private void ApplyLatencyPreset()
         {
-            if (!Application.isPlaying || _mapping != null) return;
-
-            _lockedProfileId = LipSyncProfileId.Normalize(_lockedProfileId);
-            LipSyncProfileId profileId = new(_lockedProfileId);
-            if (!profileId.IsValid || !LipSyncProfileCatalog.TryGetProfile(profileId, out _)) return;
-
-            ConvaiLipSyncMapAsset profileDefault = LipSyncDefaultMappingResolver.ResolveProfileDefault(profileId);
-            if (profileDefault != null) _mapping = profileDefault;
-        }
-
-        private LipSyncComponentConfiguration BuildComponentConfiguration()
-        {
-            return new LipSyncComponentConfiguration
+            switch (_latencyMode)
             {
-                LockedProfileId = _lockedProfileId,
-                Mapping = _mapping,
-                TargetMeshes = _targetMeshes,
-                SmoothingFactor = _smoothingFactor,
-                FadeOutDuration = _fadeOutDuration,
-                TimeOffsetSeconds = _timeOffset,
-                MaxBufferedSeconds = _maxBufferedSeconds,
-                MinResumeHeadroomSeconds = _minResumeHeadroomSeconds
-            };
+                case LipSyncLatencyMode.UltraLowLatency:
+                    _maxBufferedSeconds = 1f;
+                    _minResumeHeadroomSeconds = 0.05f;
+                    break;
+                case LipSyncLatencyMode.Balanced:
+                    _maxBufferedSeconds = 3f;
+                    _minResumeHeadroomSeconds = 0.12f;
+                    break;
+                case LipSyncLatencyMode.NetworkSafe:
+                    _maxBufferedSeconds = 6f;
+                    _minResumeHeadroomSeconds = 0.25f;
+                    break;
+            }
         }
 
-        private void ApplyComponentConfiguration(LipSyncComponentConfiguration configuration)
+        private LipSyncRuntimeConfig BuildRuntimeConfig() => LipSyncRuntimeConfig.CreateNormalized(
+            _lockedProfileId,
+            _mapping,
+            _targetMeshes,
+            _fadeOutDuration,
+            _smoothingFactor,
+            _timeOffset,
+            _maxBufferedSeconds,
+            _minResumeHeadroomSeconds,
+            _deliverChunksAhead,
+            _fadeInDuration);
+
+        #region IConvaiModule
+
+        /// <inheritdoc />
+        public string ModuleId => "convai.lipsync";
+
+        /// <inheritdoc />
+        public string DisplayName => "Lip Sync";
+
+        /// <inheritdoc />
+        public IReadOnlyList<string> RequiredModules => Array.Empty<string>();
+
+        /// <inheritdoc />
+        public IReadOnlyList<Type> RequiredServices => Array.Empty<Type>();
+
+        /// <inheritdoc />
+        public IReadOnlyList<Type> ProvidedServices => Array.Empty<Type>();
+
+        /// <inheritdoc />
+        public bool IsActive => enabled && isActiveAndEnabled;
+
+        /// <inheritdoc />
+        public ValueTask RegisterAsync(IModuleContext context, CancellationToken ct = default)
         {
-            _lockedProfileId = configuration.LockedProfileId;
-            _maxBufferedSeconds = configuration.MaxBufferedSeconds;
-            _minResumeHeadroomSeconds = configuration.MinResumeHeadroomSeconds;
+            // LipSync module does not register any services.
+            return default;
         }
+
+        /// <inheritdoc />
+        public ValueTask StartAsync(IModuleContext context, CancellationToken ct = default)
+        {
+            if (context == null) return default;
+
+            IEventHub eventHub = context.Events;
+            ILogger logger = context.Logger;
+            _roomAudioService = context.RoomAudio;
+
+            _runtimeController.SetRoomAudioService(_roomAudioService);
+
+            if (eventHub != null)
+            {
+                Inject(eventHub, logger);
+            }
+
+            return default;
+        }
+
+        /// <inheritdoc />
+        public ValueTask PauseAsync(RuntimePauseReason reason, CancellationToken ct = default)
+        {
+            _isRuntimePaused = true;
+            return default;
+        }
+
+        /// <inheritdoc />
+        public ValueTask ResumeAsync(CancellationToken ct = default)
+        {
+            _isRuntimePaused = false;
+            return default;
+        }
+
+        /// <inheritdoc />
+        public ValueTask StopAsync(CancellationToken ct = default)
+        {
+            _isRuntimePaused = false;
+            _lifecycleOrchestrator?.HandleDisable();
+            return default;
+        }
+
+        #endregion
     }
 }

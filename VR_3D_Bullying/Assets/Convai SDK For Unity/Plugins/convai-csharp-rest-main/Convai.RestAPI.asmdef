@@ -1,16 +1,17 @@
 {
-  "name": "Convai.RestAPI",
-  "rootNamespace": "Convai.RestAPI",
-  "references": [
-    "Newtonsoft.Json"
-  ],
-  "includePlatforms": [],
-  "excludePlatforms": [],
-  "allowUnsafeCode": false,
-  "overrideReferences": false,
-  "precompiledReferences": [],
-  "autoReferenced": true,
-  "defineConstraints": [],
-  "versionDefines": [],
-  "noEngineReferences": false
+    "name": "Convai.RestAPI",
+    "rootNamespace": "Convai.RestAPI",
+    "references": [
+        "Convai.Shared.Unity",
+        "Newtonsoft.Json"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
 }

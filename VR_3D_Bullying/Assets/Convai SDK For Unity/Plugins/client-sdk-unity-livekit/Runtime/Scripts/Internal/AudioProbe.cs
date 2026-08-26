@@ -3,12 +3,14 @@ using UnityEngine;
 
 namespace LiveKit
 {
+    // from https://github.com/Unity-Technologies/com.unity.webrtc
     /// <summary>
     /// Intercepts audio data and invokes the <see cref="AudioRead"/> event.
     /// </summary>
     internal class AudioProbe : MonoBehaviour
     {
         public delegate void OnAudioDelegate(float[] data, int channels, int sampleRate);
+        // Event is called from the Unity audio thread
         public event OnAudioDelegate AudioRead;
         private int _sampleRate;
 
@@ -41,6 +43,7 @@ namespace LiveKit
 
         void OnAudioFilterRead(float[] data, int channels)
         {
+            // Called by Unity on the Audio thread
             AudioRead?.Invoke(data, channels, _sampleRate);
             if (_clearAfterInvocation) data.AsSpan().Clear();
         }

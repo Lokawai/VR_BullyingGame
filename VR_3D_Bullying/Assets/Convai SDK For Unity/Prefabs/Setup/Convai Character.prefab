@@ -11,7 +11,6 @@ GameObject:
   - component: {fileID: 3279740587795391183}
   - component: {fileID: 7661180359120185506}
   - component: {fileID: 1975603975698442017}
-  - component: {fileID: 2393948194496848975}
   - component: {fileID: 3603252344565913700}
   - component: {fileID: 5240078883912987903}
   m_Layer: 0
@@ -33,8 +32,7 @@ Transform:
   m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
-  m_Children:
-  - {fileID: 2130994032885820792}
+  m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!114 &7661180359120185506
@@ -49,12 +47,18 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 46564be1db321415983500851021a6a8, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  _configurationSource: 0
+  _configurationSourceInitialized: 1
+  _characterConfigAsset: {fileID: 0}
   _characterId: 69090ea4-0c5e-11f1-9d63-42010a7be02c
   _characterName: Unity Convai Sample
   _nameTagColor: {r: 1, g: 0.31801656, b: 0.13679248, a: 1}
   _autoConnect: 1
   _enableRemoteAudio: 1
   _enableSessionResume: 1
+  _ownerId: 
+  _initialDynamicInfoText: 
+  _initialDynamicInfoKeepInContext: 0
   _characterReadyTimeoutSeconds: 30
 --- !u!114 &1975603975698442017
 MonoBehaviour:
@@ -68,20 +72,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: c73afbf54d5a64a8db568b12a38fa3df, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Convai.Runtime::Convai.Runtime.Components.CharacterBehaviorDispatcher
---- !u!114 &2393948194496848975
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 5082253803395238809}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 187885b35850f48018fc02361944509f, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Convai.Sample::Convai.Sample.Behaviors.SpeechAnimationBehavior
-  priority: 0
-  _animator: {fileID: 5436657412975048450}
 --- !u!82 &3603252344565913700
 AudioSource:
   m_ObjectHideFlags: 0
@@ -196,70 +186,3 @@ MonoBehaviour:
   _use3DAudio: 1
   _minDistance: 1
   _maxDistance: 50
---- !u!1001 &5212859417778984466
-PrefabInstance:
-  m_ObjectHideFlags: 0
-  serializedVersion: 2
-  m_Modification:
-    serializedVersion: 3
-    m_TransformParent: {fileID: 3279740587795391183}
-    m_Modifications:
-    - target: {fileID: 6180350246001245034, guid: 4a89e8678d0341d43908acca4f2c6a33, type: 3}
-      propertyPath: m_LocalPosition.x
-      value: 0
-      objectReference: {fileID: 0}
-    - target: {fileID: 6180350246001245034, guid: 4a89e8678d0341d43908acca4f2c6a33, type: 3}
-      propertyPath: m_LocalPosition.y
-      value: 0
-      objectReference: {fileID: 0}
-    - target: {fileID: 6180350246001245034, guid: 4a89e8678d0341d43908acca4f2c6a33, type: 3}
-      propertyPath: m_LocalPosition.z
-      value: 0
-      objectReference: {fileID: 0}
-    - target: {fileID: 6180350246001245034, guid: 4a89e8678d0341d43908acca4f2c6a33, type: 3}
-      propertyPath: m_LocalRotation.w
-      value: 1
-      objectReference: {fileID: 0}
-    - target: {fileID: 6180350246001245034, guid: 4a89e8678d0341d43908acca4f2c6a33, type: 3}
-      propertyPath: m_LocalRotation.x
-      value: -0
-      objectReference: {fileID: 0}
-    - target: {fileID: 6180350246001245034, guid: 4a89e8678d0341d43908acca4f2c6a33, type: 3}
-      propertyPath: m_LocalRotation.y
-      value: -0
-      objectReference: {fileID: 0}
-    - target: {fileID: 6180350246001245034, guid: 4a89e8678d0341d43908acca4f2c6a33, type: 3}
-      propertyPath: m_LocalRotation.z
-      value: -0
-      objectReference: {fileID: 0}
-    - target: {fileID: 6180350246001245034, guid: 4a89e8678d0341d43908acca4f2c6a33, type: 3}
-      propertyPath: m_LocalEulerAnglesHint.x
-      value: 0
-      objectReference: {fileID: 0}
-    - target: {fileID: 6180350246001245034, guid: 4a89e8678d0341d43908acca4f2c6a33, type: 3}
-      propertyPath: m_LocalEulerAnglesHint.y
-      value: 0
-      objectReference: {fileID: 0}
-    - target: {fileID: 6180350246001245034, guid: 4a89e8678d0341d43908acca4f2c6a33, type: 3}
-      propertyPath: m_LocalEulerAnglesHint.z
-      value: 0
-      objectReference: {fileID: 0}
-    - target: {fileID: 6813615701213225424, guid: 4a89e8678d0341d43908acca4f2c6a33, type: 3}
-      propertyPath: m_Name
-      value: Convai_Char_Robot
-      objectReference: {fileID: 0}
-    m_RemovedComponents: []
-    m_RemovedGameObjects: []
-    m_AddedGameObjects: []
-    m_AddedComponents: []
-  m_SourcePrefab: {fileID: 100100000, guid: 4a89e8678d0341d43908acca4f2c6a33, type: 3}
---- !u!4 &2130994032885820792 stripped
-Transform:
-  m_CorrespondingSourceObject: {fileID: 6180350246001245034, guid: 4a89e8678d0341d43908acca4f2c6a33, type: 3}
-  m_PrefabInstance: {fileID: 5212859417778984466}
-  m_PrefabAsset: {fileID: 0}
---- !u!95 &5436657412975048450 stripped
-Animator:
-  m_CorrespondingSourceObject: {fileID: 226639141966389520, guid: 4a89e8678d0341d43908acca4f2c6a33, type: 3}
-  m_PrefabInstance: {fileID: 5212859417778984466}
-  m_PrefabAsset: {fileID: 0}

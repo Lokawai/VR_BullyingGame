@@ -58,7 +58,10 @@ namespace Convai.Modules.Narrative
         ///     Fetches all narrative design sections for a character.
         /// </summary>
         /// <param name="characterId">The character ID to fetch sections for.</param>
-        /// <param name="apiKey">Optional API key. If null, uses ConvaiSettings.Instance.ApiKey.</param>
+        /// <param name="apiKey">
+        ///     Optional API key. Runtime callers should normally pass an explicit API key from the runtime
+        ///     credential provider. When omitted, the fetcher falls back to project settings for editor/default flows.
+        /// </param>
         /// <returns>Result containing list of sections or error message.</returns>
         public static async Task<FetchResult<List<SectionData>>> FetchSectionsAsync(string characterId,
             string apiKey = null)
@@ -75,7 +78,7 @@ namespace Convai.Modules.Narrative
 
             try
             {
-                var options = new ConvaiRestClientOptions(key);
+                var options = ConvaiRestOptionsFactory.Create(key);
                 using var client = new ConvaiRestClient(options);
                 IReadOnlyList<SectionData> sections = await client.Narrative.GetSectionsAsync(characterId);
 
@@ -86,7 +89,7 @@ namespace Convai.Modules.Narrative
             }
             catch (Exception ex)
             {
-                ConvaiLogger.Error($"[NarrativeDesignFetcher] Error fetching sections: {ex.Message}",
+                ConvaiLogger.Error($"Error fetching sections: {ex.Message}",
                     LogCategory.Narrative);
                 return FetchResult<List<SectionData>>.Failed($"Exception: {ex.Message}");
             }
@@ -96,7 +99,10 @@ namespace Convai.Modules.Narrative
         ///     Fetches all narrative design triggers for a character.
         /// </summary>
         /// <param name="characterId">The character ID to fetch triggers for.</param>
-        /// <param name="apiKey">Optional API key. If null, uses ConvaiSettings.Instance.ApiKey.</param>
+        /// <param name="apiKey">
+        ///     Optional API key. Runtime callers should normally pass an explicit API key from the runtime
+        ///     credential provider. When omitted, the fetcher falls back to project settings for editor/default flows.
+        /// </param>
         /// <returns>Result containing list of triggers or error message.</returns>
         public static async Task<FetchResult<List<TriggerData>>> FetchTriggersAsync(string characterId,
             string apiKey = null)
@@ -113,7 +119,7 @@ namespace Convai.Modules.Narrative
 
             try
             {
-                var options = new ConvaiRestClientOptions(key);
+                var options = ConvaiRestOptionsFactory.Create(key);
                 using var client = new ConvaiRestClient(options);
                 IReadOnlyList<TriggerData> triggers = await client.Narrative.GetTriggersAsync(characterId);
 
@@ -124,7 +130,7 @@ namespace Convai.Modules.Narrative
             }
             catch (Exception ex)
             {
-                ConvaiLogger.Error($"[NarrativeDesignFetcher] Error fetching triggers: {ex.Message}",
+                ConvaiLogger.Error($"Error fetching triggers: {ex.Message}",
                     LogCategory.Narrative);
                 return FetchResult<List<TriggerData>>.Failed($"Exception: {ex.Message}");
             }
@@ -134,7 +140,10 @@ namespace Convai.Modules.Narrative
         ///     Fetches both sections and triggers for a character.
         /// </summary>
         /// <param name="characterId">The character ID to fetch data for.</param>
-        /// <param name="apiKey">Optional API key. If null, uses ConvaiSettings.Instance.ApiKey.</param>
+        /// <param name="apiKey">
+        ///     Optional API key. Runtime callers should normally pass an explicit API key from the runtime
+        ///     credential provider. When omitted, the fetcher falls back to project settings for editor/default flows.
+        /// </param>
         /// <returns>Result containing sections, triggers, and optional error message.</returns>
         public static async Task<(FetchResult<List<SectionData>> sections, FetchResult<List<TriggerData>> triggers)>
             FetchAllAsync(string characterId, string apiKey = null)
@@ -148,7 +157,7 @@ namespace Convai.Modules.Narrative
         }
 
         /// <summary>
-        ///     Gets the API key from ConvaiSettings.
+        ///     Gets the API key from project settings for editor/default flows.
         /// </summary>
         private static string GetApiKey()
         {
@@ -160,7 +169,7 @@ namespace Convai.Modules.Narrative
 #endif
 
             ConvaiLogger.Warning(
-                "[NarrativeDesignFetcher] IConvaiSettingsProvider not registered. Ensure ConvaiManager has initialized.",
+                "API key is not available from project settings. Runtime callers should pass credentials from the runtime credential provider.",
                 LogCategory.Narrative);
             return null;
         }

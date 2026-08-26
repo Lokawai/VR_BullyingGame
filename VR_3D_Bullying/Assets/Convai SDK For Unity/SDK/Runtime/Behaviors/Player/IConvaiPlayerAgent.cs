@@ -14,9 +14,9 @@ namespace Convai.Runtime.Behaviors
         public string PlayerName { get; }
 
         /// <summary>
-        ///     Speaker identifier associated with the player.
+        ///     Local player identifier associated with the player.
         /// </summary>
-        public string SpeakerId { get; }
+        public string PlayerId { get; }
 
         /// <summary>
         ///     Gets the name tag color for transcript display.

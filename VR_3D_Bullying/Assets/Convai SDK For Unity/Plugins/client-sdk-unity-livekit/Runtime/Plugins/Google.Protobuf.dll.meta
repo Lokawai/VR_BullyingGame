@@ -8,7 +8,7 @@ PluginImporter:
   defineConstraints: []
   isPreloaded: 0
   isOverridable: 1
-  isExplicitlyReferenced: 0
+  isExplicitlyReferenced: 1
   validateReferences: 1
   platformData:
   - first:
@@ -35,6 +35,6 @@ AssetOrigin:
   serializedVersion: 1
   productId: 235621
   packageName: NPC AI Engine - Dialog, actions, voice and lipsync - Convai
-  packageVersion: 4.0.0
+  packageVersion: 4.5.0
   assetPath: Assets/Convai SDK For Unity/Plugins/client-sdk-unity-livekit/Runtime/Plugins/Google.Protobuf.dll
-  uploadId: 884332
+  uploadId: 974114

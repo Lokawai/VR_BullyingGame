@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Convai.Domain.Logging;
+using Convai.Runtime.Behaviors;
+using Convai.Runtime.Components;
 using Convai.Runtime.Logging;
 
 namespace Convai.Runtime.SceneMetadata
@@ -44,19 +46,23 @@ namespace Convai.Runtime.SceneMetadata
         {
             if (metadata == null)
             {
-                ConvaiLogger.Warning("[ConvaiMetadataRegistry] Attempted to register null metadata", LogCategory.SDK);
+                ConvaiLogger.Warning("Attempted to register null metadata", LogCategory.SDK);
                 return;
             }
 
+            bool registered = false;
             lock (_lock)
             {
-                if (_registeredMetadata.Add(metadata))
-                {
-                    ConvaiLogger.Debug(
-                        $"[ConvaiMetadataRegistry] Registered metadata for '{metadata.ObjectName}' on {metadata.gameObject.name}",
-                        LogCategory.SDK);
-                    OnMetadataRegistered?.Invoke(metadata);
-                }
+                registered = _registeredMetadata.Add(metadata);
+            }
+
+            if (registered)
+            {
+                ConvaiLogger.Debug(
+                    $"Registered metadata for '{metadata.ObjectName}' on {metadata.gameObject.name}",
+                    LogCategory.SDK);
+                OnMetadataRegistered?.Invoke(metadata);
+                NotifySceneMetadataDirty();
             }
         }
 
@@ -68,15 +74,19 @@ namespace Convai.Runtime.SceneMetadata
         {
             if (metadata == null) return;
 
+            bool unregistered = false;
             lock (_lock)
             {
-                if (_registeredMetadata.Remove(metadata))
-                {
-                    ConvaiLogger.Debug(
-                        $"[ConvaiMetadataRegistry] Unregistered metadata for '{metadata.ObjectName}' on {metadata.gameObject.name}",
-                        LogCategory.SDK);
-                    OnMetadataUnregistered?.Invoke(metadata);
-                }
+                unregistered = _registeredMetadata.Remove(metadata);
+            }
+
+            if (unregistered)
+            {
+                ConvaiLogger.Debug(
+                    $"Unregistered metadata for '{metadata.ObjectName}' on {metadata.gameObject.name}",
+                    LogCategory.SDK);
+                OnMetadataUnregistered?.Invoke(metadata);
+                NotifySceneMetadataDirty();
             }
         }
 
@@ -121,7 +131,7 @@ namespace Convai.Runtime.SceneMetadata
                 catch (Exception ex)
                 {
                     ConvaiLogger.Error(
-                        $"[ConvaiMetadataRegistry] Failed to convert metadata for '{metadata.ObjectName}': {ex.Message}",
+                        $"Failed to convert metadata for '{metadata.ObjectName}': {ex.Message}",
                         LogCategory.SDK);
                 }
             }
@@ -138,7 +148,7 @@ namespace Convai.Runtime.SceneMetadata
             {
                 int count = _registeredMetadata.Count;
                 _registeredMetadata.Clear();
-                ConvaiLogger.Debug($"[ConvaiMetadataRegistry] Cleared {count} registered metadata components",
+                ConvaiLogger.Debug($"Cleared {count} registered metadata components",
                     LogCategory.SDK);
             }
         }
@@ -183,12 +193,23 @@ namespace Convai.Runtime.SceneMetadata
 
                 if (nullRefs.Length > 0)
                 {
-                    ConvaiLogger.Debug($"[ConvaiMetadataRegistry] Cleaned up {nullRefs.Length} null references",
+                    ConvaiLogger.Debug($"Cleaned up {nullRefs.Length} null references",
                         LogCategory.SDK);
+                    NotifySceneMetadataDirty();
                 }
 
                 return nullRefs.Length;
             }
+        }
+
+        internal static void MarkSceneMetadataDirty() => NotifySceneMetadataDirty();
+
+        private static void NotifySceneMetadataDirty()
+        {
+            ConvaiManager manager = ConvaiManager.ActiveManager;
+            if (manager == null || !manager.TryGetAgentRegistry(out IAgentRegistry registry)) return;
+
+            ConvaiCharacter.NotifyAllCharactersSceneMetadataDirty(registry);
         }
     }
 }

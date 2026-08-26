@@ -1,12 +1,9 @@
 #nullable enable
 using System.Collections.Generic;
-using Convai.Application.Services;
 using Convai.Runtime.Behaviors;
 using Convai.Runtime.Components;
-using Convai.Shared.DependencyInjection;
 using NUnit.Framework;
 using UnityEngine;
-using TranscriptionPhase = Convai.Domain.Models.TranscriptionPhase;
 
 namespace Convai.Tests.EditMode
 {
@@ -24,9 +21,6 @@ namespace Convai.Tests.EditMode
                 if (go != null)
                     Object.DestroyImmediate(go);
 
-            _createdObjects.Clear();
-
-            ConvaiServiceLocator.Shutdown();
         }
 
         [Test]
@@ -128,27 +122,6 @@ namespace Convai.Tests.EditMode
                 "ConvaiCharacter should implement IConvaiCharacterAgent interface");
         }
 
-        private sealed class TestTranscriptService : IConvaiTranscriptService
-        {
-            public int CharacterMessageCount { get; private set; }
-            public string LastCharacterMessage { get; private set; } = string.Empty;
-
-            public int PlayerMessageCount { get; private set; }
-            public string LastPlayerMessage { get; private set; } = string.Empty;
-
-            public void BroadcastCharacterMessage(string charID, string charName, string message, bool isLastMessage)
-            {
-                CharacterMessageCount++;
-                LastCharacterMessage = message;
-            }
-
-            public void BroadcastPlayerMessage(string speakerID, string playerName, string transcript,
-                bool finalTranscript, TranscriptionPhase? phase = null)
-            {
-                PlayerMessageCount++;
-                LastPlayerMessage = transcript;
-            }
-        }
     }
 
     public sealed class RecordingCharacterBehavior : ConvaiCharacterBehaviorBase

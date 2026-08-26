@@ -2,10 +2,13 @@ using System.Collections.Generic;
 using Convai.Domain.Logging;
 using Convai.Editor.Utilities;
 using Convai.Runtime;
+using Convai.Runtime.Adapters.Networking;
 using Convai.Runtime.Components;
 using Convai.Runtime.Logging;
+using Convai.Shared.Compatibility;
 using UnityEditor;
 using UnityEngine;
+using Glyphs = Convai.Editor.UI.ConvaiEditorGlyphs;
 
 namespace Convai.Editor
 {
@@ -23,21 +26,8 @@ namespace Convai.Editor
         [MenuItem(MenuPath + "Setup Required Components", false, 10)]
         public static void SetupRequiredComponents()
         {
-            Undo.SetCurrentGroupName("Setup Convai Components");
-            int undoGroup = Undo.GetCurrentGroup();
-
-            bool addedAny = false;
-
-            if (Object.FindFirstObjectByType<ConvaiManager>() == null)
-            {
-                var managerGo = new GameObject("[Convai Manager]");
-                Undo.RegisterCreatedObjectUndo(managerGo, "Create ConvaiManager");
-                Undo.AddComponent<ConvaiManager>(managerGo);
-                ConvaiLogger.Debug("[Convai Setup] Added ConvaiManager to scene.", LogCategory.Editor);
-                addedAny = true;
-            }
-
-            Undo.CollapseUndoOperations(undoGroup);
+            ConvaiSceneSetupApi.BootstrapResult bootstrap = ConvaiSceneSetupApi.BootstrapScene();
+            bool addedAny = bootstrap.AddedManager || bootstrap.AddedRoomManager;
 
             if (addedAny)
             {
@@ -59,7 +49,8 @@ namespace Convai.Editor
                     "Convai Setup",
                     "All required components are already in the scene!\n\n" +
                     "Your scene has:\n" +
-                    "✓ ConvaiManager",
+                    $"{Glyphs.Status.Ok} ConvaiManager\n" +
+                    $"{Glyphs.Status.Ok} ConvaiRoomManager",
                     "OK");
             }
         }
@@ -70,34 +61,18 @@ namespace Convai.Editor
         [MenuItem(MenuPath + "Validate Scene Setup", false, 11)]
         public static void ValidateSceneSetup()
         {
-            var issues = new List<string>();
-            var warnings = new List<string>();
+            // Offered before the report, and as a button rather than a sentence: this one is fixable
+            // in place, and the alternative is a NullReferenceException on scene open that names
+            // TextMeshPro and never mentions the missing import.
+            if (!ConvaiTextMeshProEssentials.AreImported) OfferTextMeshProEssentialsImport();
 
-            if (Object.FindFirstObjectByType<ConvaiManager>() == null) issues.Add("Missing ConvaiManager");
+            ConvaiSceneSetupApi.ValidationReport report = ConvaiSceneSetupApi.ValidateCurrentScene();
+            ConvaiCharacter[] characters = ConvaiObjectFind.All<ConvaiCharacter>(FindObjectsInactive.Exclude);
 
-            var settings = ConvaiSettings.Instance;
-            if (settings == null || !settings.HasApiKey)
-                warnings.Add("API key not configured (Edit > Project Settings > Convai SDK)");
-
-            ConvaiCharacter[] characters = Object.FindObjectsByType<ConvaiCharacter>(FindObjectsSortMode.None);
-            if (characters.Length == 0)
-                issues.Add("No ConvaiCharacter components found in scene");
-            else
-            {
-                foreach (ConvaiCharacter character in characters)
-                {
-                    if (string.IsNullOrWhiteSpace(character.CharacterId))
-                        issues.Add($"ConvaiCharacter on '{character.gameObject.name}' has no Character ID");
-                }
-            }
-
-            ConvaiPlayer[] players = Object.FindObjectsByType<ConvaiPlayer>(FindObjectsSortMode.None);
-            if (players.Length == 0) issues.Add("No ConvaiPlayer component found in scene");
-
-            if (issues.Count == 0 && warnings.Count == 0)
+            if (report.IsSuccess && report.Warnings.Count == 0)
             {
                 EditorUtility.DisplayDialog(
-                    "Validation Passed ✓",
+                    $"Validation Passed {Glyphs.Status.Ok}",
                     "Scene setup is correct!\n\n" +
                     $"Found {characters.Length} ConvaiCharacter(s) in scene.",
                     "OK");
@@ -107,43 +82,21 @@ namespace Convai.Editor
             {
                 string message = "";
 
-                if (issues.Count > 0) message += "❌ ERRORS (must fix):\n• " + string.Join("\n• ", issues) + "\n\n";
+                if (report.Errors.Count > 0)
+                    message += $"{Glyphs.Status.Fail} ERRORS (must fix):\n• " + string.Join("\n• ", report.Errors) + "\n\n";
 
-                if (warnings.Count > 0) message += "⚠️ WARNINGS:\n• " + string.Join("\n• ", warnings) + "\n\n";
+                if (report.Warnings.Count > 0)
+                    message += $"{Glyphs.Status.Warn} WARNINGS:\n• " + string.Join("\n• ", report.Warnings) + "\n\n";
 
-                if (issues.Count > 0)
-                {
-                    bool hasManagerIssue = false;
-                    bool hasCharacterIssue = false;
-                    bool hasPlayerIssue = false;
-
-                    foreach (string issue in issues)
-                    {
-                        if (issue.Contains("ConvaiManager")) hasManagerIssue = true;
-
-                        if (issue.Contains("ConvaiCharacter")) hasCharacterIssue = true;
-
-                        if (issue.Contains("ConvaiPlayer")) hasPlayerIssue = true;
-                    }
-
-                    var fixes = new List<string>();
-                    if (hasManagerIssue)
-                        fixes.Add("Add ConvaiManager: GameObject > Convai > Setup Required Components");
-
-                    if (hasCharacterIssue)
-                        fixes.Add("Add ConvaiCharacter to your character object and set Character ID");
-
-                    if (hasPlayerIssue) fixes.Add("Add ConvaiPlayer to your player object");
-
-                    if (fixes.Count > 0) message += "How to fix:\n• " + string.Join("\n• ", fixes);
-                }
+                if (report.NextSteps.Count > 0)
+                    message += "How to fix:\n• " + string.Join("\n• ", report.NextSteps);
 
                 EditorUtility.DisplayDialog(
-                    issues.Count > 0 ? "Validation Failed" : "Validation Warnings",
+                    report.Errors.Count > 0 ? "Validation Failed" : "Validation Warnings",
                     message,
                     "OK");
 
-                if (issues.Count > 0)
+                if (report.Errors.Count > 0)
                     ConvaiLogger.Error("[Convai Validation] " + message, LogCategory.Editor);
                 else
                     ConvaiLogger.Warning("[Convai Validation] " + message, LogCategory.Editor);
@@ -151,16 +104,54 @@ namespace Convai.Editor
         }
 
         /// <summary>
+        ///     Prompts to import TextMesh Pro's Essential Resources, which Convai's shipped UI
+        ///     prefabs and font assets depend on and which Unity only unpacks on request.
+        /// </summary>
+        private static void OfferTextMeshProEssentialsImport()
+        {
+            bool importNow = EditorUtility.DisplayDialog(
+                "TextMesh Pro Resources Missing",
+                "Convai's UI prefabs and fonts use TextMesh Pro, whose runtime shaders and default " +
+                "font are imported per project rather than shipped in a package.\n\n" +
+                "Without them, opening a scene that contains Convai UI throws a " +
+                "NullReferenceException inside TextMeshPro.\n\n" +
+                "Import them now?",
+                "Import",
+                "Not Now");
+
+            if (!importNow) return;
+
+            if (ConvaiTextMeshProEssentials.TryImport()) return;
+
+            // The importer is a Unity menu item, so it can move. Say what to do rather than
+            // reporting a success that did not happen.
+            ConvaiLogger.Warning(
+                "[Convai Setup] Could not start TextMesh Pro's importer automatically. " +
+                ConvaiTextMeshProEssentials.ImportInstruction,
+                LogCategory.Editor);
+        }
+
+        /// <summary>
         ///     Opens the Convai SDK documentation in a browser.
         /// </summary>
-        [MenuItem(MenuPath + "Open Documentation", false, 100)]
+        /// <remarks>
+        ///     Lives on the <c>Convai</c> menu rather than under <c>GameObject</c>: the GameObject
+        ///     menu creates and configures objects in the open scene, and a documentation link is
+        ///     neither. The two entries that remain under <c>GameObject/Convai</c> do act on the
+        ///     scene, which is why they stayed.
+        /// </remarks>
+        [MenuItem("Convai/Documentation", false, Convai.Editor.UI.ConvaiEditorMenu.Configuration + 2)]
         public static void OpenDocumentation() =>
             UnityEngine.Application.OpenURL(ConvaiEditorLinks.DocsUnityQuickstartUrl);
 
         /// <summary>
         ///     Opens the Convai SDK settings in Project Settings.
         /// </summary>
-        [MenuItem(MenuPath + "Open SDK Settings", false, 101)]
+        /// <remarks>
+        ///     No menu entry of its own: <c>Convai &gt; Settings</c> already opens the settings
+        ///     surface, and two menu paths onto one destination is the duplication this menu was
+        ///     cleaned up to remove. Kept public because it is a useful entry point for tooling.
+        /// </remarks>
         public static void OpenSDKSettings() => SettingsService.OpenProjectSettings("Project/Convai SDK");
     }
 }

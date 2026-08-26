@@ -136,6 +136,14 @@ namespace Convai.RestAPI.Transport
             }
 
             /// <summary>
+            /// Sets the short-lived Convai auth-token header.
+            /// </summary>
+            public Builder WithAuthToken(string authToken)
+            {
+                return WithHeader("API-AUTH-TOKEN", authToken);
+            }
+
+            /// <summary>
             /// Sets a custom timeout for this request.
             /// </summary>
             public Builder WithTimeout(TimeSpan timeout)

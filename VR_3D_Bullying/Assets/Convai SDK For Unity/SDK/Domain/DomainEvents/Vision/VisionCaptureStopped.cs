@@ -9,24 +9,7 @@ namespace Convai.Domain.DomainEvents.Vision
     /// <remarks>
     ///     This event is published via EventHub whenever vision capture is stopped.
     ///     Consumers can subscribe to track when visual context becomes unavailable.
-    ///     Integration Example:
-    ///     <code>
-    /// 
-    /// private readonly IEventHub _eventHub;
-    /// 
-    /// private void OnCaptureStopped(long totalFrames, StopReason reason)
-    /// {
-    ///     _eventHub.Publish(VisionCaptureStopped.Create(totalFrames, reason));
-    /// }
-    /// 
-    /// 
-    /// _eventHub.Subscribe&lt;VisionCaptureStopped&gt;(this, e =>
-    /// {
-    ///     Debug.Log($"Vision capture stopped: {e.TotalFramesCaptured} frames, reason: {e.Reason}");
-    /// });
-    /// </code>
-    ///     Delivery Policy:
-    ///     - Use EventDeliveryPolicy.MainThread for UI updates
+    ///     Use EventDeliveryPolicy.MainThread for UI updates.
     /// </remarks>
     public readonly struct VisionCaptureStopped
     {

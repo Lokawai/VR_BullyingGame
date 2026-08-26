@@ -30,13 +30,29 @@ namespace Convai.Modules.LipSync
             return Math.Max(0d, reference - _startTime - _totalPausedDuration);
         }
 
-        public void Start(double now)
+        public void Start(double now) => Start(now, 0d);
+
+        /// <summary>Starts with the elapsed value already at <paramref name="initialElapsed" />.</summary>
+        public void Start(double now, double initialElapsed)
         {
-            _startTime = now;
+            _startTime = now - Math.Max(0d, initialElapsed);
             _totalPausedDuration = 0d;
             _pauseStartTime = 0d;
             IsStarted = true;
             IsPaused = false;
+        }
+
+        /// <summary>
+        ///     Re-bases a running clock so GetElapsed(now) returns <paramref name="elapsed" />,
+        ///     preserving pause state. No-op when not started.
+        /// </summary>
+        public void Rebase(double now, double elapsed)
+        {
+            if (!IsStarted) return;
+
+            double reference = IsPaused ? _pauseStartTime : now;
+            _startTime = reference - Math.Max(0d, elapsed);
+            _totalPausedDuration = 0d;
         }
 
         public void Pause(double now)

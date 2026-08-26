@@ -67,10 +67,6 @@ namespace Convai.Runtime.Presentation.Views.Notifications
         /// </summary>
         private bool _isNotificationAnimationInProgress;
 
-        /// <summary>
-        ///     Awake is called when the script instance is being loaded.
-        ///     It is used to initialize any variables or game state before the game starts.
-        /// </summary>
         private void Awake()
         {
             _canvasGroup = GetComponent<CanvasGroup>();

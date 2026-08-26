@@ -1,12 +1,12 @@
 using System;
 using System.Collections.Generic;
-using UnityEngine;
+using LiveKit.Internal;
 
 namespace LiveKit
 {
     /// <summary>
     /// Parameters for <see cref="LocalParticipant.PerformRpc"/>.
-    /// 
+    ///
     /// </summary>
     public class PerformRpcParams
     {
@@ -60,13 +60,14 @@ namespace LiveKit
         public float ResponseTimeout { get; set; }
     }
 
+
     /// <summary>
     /// Errors thrown by RPC method handlers or generated due to a failure in the RPC call.
-    /// 
-    /// Built-in error codes are listed in <see cref="RpcError.ErrorCode"/>. 
-    /// 
-    /// You may also throw custom errors with your own code and data.  
-    /// Errors of this type thrown in your handler will be transmitted as-is without modification. 
+    ///
+    /// Built-in error codes are listed in <see cref="RpcError.ErrorCode"/>.
+    ///
+    /// You may also throw custom errors with your own code and data.
+    /// Errors of this type thrown in your handler will be transmitted as-is without modification.
     /// All other errors will be converted to a generic APPLICATION_ERROR (1500).
     /// </summary>
     public class RpcError : Exception
@@ -89,7 +90,7 @@ namespace LiveKit
 
         internal static RpcError FromProto(Proto.RpcError proto)
         {
-            Debug.LogWarning($"RPC error received: {proto.Code} {proto.Message} {proto.Data}");
+            Utils.Debug($"RPC error received: {proto.Code} {proto.Message} {proto.Data}");
             return new RpcError(proto.Code, proto.Message, proto.Data);
         }
 
@@ -104,7 +105,7 @@ namespace LiveKit
         }
 
         /// <summary>
-        /// Built-in error codes. See https:
+        /// Built-in error codes. See https://docs.livekit.io/home/client/data/rpc/#errors for more information.
         /// </summary>
         public enum ErrorCode : uint
         {

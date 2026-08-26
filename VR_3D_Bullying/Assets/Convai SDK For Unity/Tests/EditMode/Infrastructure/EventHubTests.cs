@@ -43,7 +43,7 @@ namespace Convai.Tests.EditMode.Infrastructure
         [Test]
         public void TryPeriodicCleanup_ReturnsTrue_WhenIntervalElapsed()
         {
-            bool result = _eventHub.TryPeriodicCleanup(0f, 60f);
+            bool result = _eventHub.TryPeriodicCleanup(0f);
 
             Assert.IsTrue(result, "First cleanup should trigger when interval has elapsed");
         }
@@ -51,9 +51,9 @@ namespace Convai.Tests.EditMode.Infrastructure
         [Test]
         public void TryPeriodicCleanup_ReturnsFalse_WhenIntervalNotElapsed()
         {
-            _eventHub.TryPeriodicCleanup(0f, 60f);
+            _eventHub.TryPeriodicCleanup(0f);
 
-            bool result = _eventHub.TryPeriodicCleanup(30f, 60f);
+            bool result = _eventHub.TryPeriodicCleanup(30f);
 
             Assert.IsFalse(result, "Cleanup should not trigger before interval elapsed");
         }
@@ -61,9 +61,9 @@ namespace Convai.Tests.EditMode.Infrastructure
         [Test]
         public void TryPeriodicCleanup_ReturnsTrue_AfterIntervalElapsed()
         {
-            _eventHub.TryPeriodicCleanup(0f, 60f);
+            _eventHub.TryPeriodicCleanup(0f);
 
-            bool result = _eventHub.TryPeriodicCleanup(61f, 60f);
+            bool result = _eventHub.TryPeriodicCleanup(61f);
 
             Assert.IsTrue(result, "Cleanup should trigger after interval elapsed");
         }
@@ -71,7 +71,7 @@ namespace Convai.Tests.EditMode.Infrastructure
         [Test]
         public void TryPeriodicCleanup_UpdatesLastCleanupTime()
         {
-            _eventHub.TryPeriodicCleanup(100f, 60f);
+            _eventHub.TryPeriodicCleanup(100f);
 
             Assert.AreEqual(100f, _eventHub.LastPeriodicCleanupTime,
                 "LastPeriodicCleanupTime should be updated after cleanup");
@@ -80,7 +80,7 @@ namespace Convai.Tests.EditMode.Infrastructure
         [Test]
         public void ResetPeriodicCleanupTimer_ResetsToZero()
         {
-            _eventHub.TryPeriodicCleanup(100f, 60f);
+            _eventHub.TryPeriodicCleanup(100f);
             _eventHub.ResetPeriodicCleanupTimer();
 
             Assert.AreEqual(0f, _eventHub.LastPeriodicCleanupTime,

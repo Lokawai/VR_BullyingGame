@@ -1,7 +1,7 @@
 using System.Threading;
 using System.Threading.Tasks;
 using Convai.Domain.Abstractions;
-using Convai.Runtime.Vision;
+using Convai.Runtime.Vision.Transport;
 
 namespace Convai.Runtime.Adapters.Vision
 {
@@ -10,18 +10,12 @@ namespace Convai.Runtime.Adapters.Vision
     ///     to the Unity-specific <see cref="IVideoTrackManager" /> implementation.
     /// </summary>
     /// <remarks>
-    ///     This adapter is part of the Ports and Adapters pattern. It allows the Application layer
-    ///     (specifically VisionService) to use a Unity-free interface while the actual implementation
-    ///     lives in the Infrastructure layer with Unity dependencies.
+    ///     Bridges <see cref="IVideoTrackUnpublisher" /> to <see cref="IVideoTrackManager" />.
     /// </remarks>
     internal class VideoTrackUnpublisherAdapter : IVideoTrackUnpublisher
     {
         private readonly IVideoTrackManager _videoTrackManager;
 
-        /// <summary>
-        ///     Initializes a new instance of the <see cref="VideoTrackUnpublisherAdapter" /> class.
-        /// </summary>
-        /// <param name="videoTrackManager">The Unity-specific video track manager to wrap.</param>
         public VideoTrackUnpublisherAdapter(IVideoTrackManager videoTrackManager)
         {
             _videoTrackManager = videoTrackManager;
@@ -35,7 +29,7 @@ namespace Convai.Runtime.Adapters.Vision
         {
             if (_videoTrackManager == null) return Task.CompletedTask;
 
-            return _videoTrackManager.UnpublishVideoAsync(ct);
+            return _videoTrackManager.UnpublishVideoAsync(ct).AsTask();
         }
     }
 }

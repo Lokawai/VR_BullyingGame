@@ -1,5 +1,6 @@
 using System.Text;
 using Convai.Domain.Logging;
+using Convai.Runtime.Actions;
 using Convai.Runtime.Components;
 using Convai.Runtime.Logging;
 using TMPro;
@@ -8,8 +9,7 @@ using UnityEngine;
 namespace Convai.Runtime.Presentation.Views
 {
     /// <summary>
-    ///     Optional companion component for TTS transcript display. Auto-discovers ConvaiCharacter.
-    ///     Binds character TTS transcript events to a TextMeshPro text component.
+    ///     Optional companion component for character-local TTS transcript display.
     /// </summary>
     /// <remarks>
     ///     This component follows the composition pattern:
@@ -17,9 +17,9 @@ namespace Convai.Runtime.Presentation.Views
     ///     - Auto-discovers and subscribes to ConvaiCharacter.OnTranscriptReceived (fed by CharacterTtsTextChunk)
     ///     - Displays TTS text in a TMP_Text component
     ///     - Supports both partial and final transcript display modes
-    ///     Note: This is separate from the unified conversation transcript pipeline
-    ///     (TranscriptMessage → TranscriptPresenter → TranscriptUIController). Use
-    ///     ITranscriptListener or ITranscriptUI for chat/subtitle history UIs.
+    ///     Note: This is a character-local convenience surface, not the canonical room transcript pipeline.
+    ///     Use ConvaiManager.Transcripts.SubscribeCaptions for room-wide live captions and
+    ///     ConvaiManager.Transcripts.Subscribe for chat/history turns.
     /// </remarks>
     [AddComponentMenu("Convai/Convai Transcript Display")]
     [RequireComponent(typeof(ConvaiCharacter))]
@@ -38,16 +38,28 @@ namespace Convai.Runtime.Presentation.Views
 
         #region Serialized Fields
 
-        [Header("UI Reference")] [SerializeField]
+        [Tooltip("The text component that displays the character's spoken transcript.")]
+        [SerializeField]
+        [ConvaiInspectorSection("UI Reference")]
         private TMP_Text _transcriptText;
 
-        [Header("Display Settings")] [SerializeField]
+        [Tooltip("Whether to show partial (still-being-spoken) transcripts as they arrive, not just finished lines.")]
+        [SerializeField]
+        [ConvaiInspectorSection("Display Settings")]
         private bool _showPartialTranscripts = true;
 
-        [SerializeField] private bool _appendMode;
-        [SerializeField] private bool _clearOnNewFinal = true;
+        [Tooltip("If enabled, new transcript lines are added below previous ones instead of replacing the text.")]
+        [SerializeField]
+        [ConvaiInspectorSection("Display Settings")]
+        private bool _appendMode;
+
+        [Tooltip("If enabled, the displayed text is cleared each time a new final transcript starts.")]
+        [SerializeField]
+        [ConvaiInspectorSection("Display Settings")]
+        private bool _clearOnNewFinal = true;
 
         [SerializeField] [Tooltip("Max characters to keep in append mode (0 = unlimited)")]
+        [ConvaiInspectorSection("Display Settings")]
         private int _maxCharacters = 1000;
 
         #endregion
@@ -100,7 +112,7 @@ namespace Convai.Runtime.Presentation.Views
             if (_character == null)
             {
                 ConvaiLogger.Error(
-                    $"[ConvaiTranscriptDisplay] ConvaiCharacter component not found on {gameObject.name}",
+                    $"ConvaiCharacter component not found on {gameObject.name}",
                     LogCategory.UI);
                 enabled = false;
                 return;
@@ -108,7 +120,7 @@ namespace Convai.Runtime.Presentation.Views
 
             if (_transcriptText == null)
             {
-                ConvaiLogger.Warning($"[ConvaiTranscriptDisplay] No TMP_Text assigned on {gameObject.name}. " +
+                ConvaiLogger.Warning($"No TMP_Text assigned on {gameObject.name}. " +
                                      "Assign a TextMeshPro component in the Inspector.", LogCategory.UI);
             }
 

@@ -1,8 +1,8 @@
 using System.Collections.Generic;
 using System.Linq;
 using Convai.Editor.ConfigurationWindow.Components.Sections;
-using Convai.Editor.ConfigurationWindow.Components.Sections.LoggerSettings;
 using Convai.Editor.ConfigurationWindow.Components.Sections.LongTermMemory;
+using UnityEditor;
 #if CONVAI_ENABLE_SERVER_ANIMATION
 using Convai.Editor.ConfigurationWindow.Components.Sections.ServerAnimation;
 #endif
@@ -14,18 +14,16 @@ namespace Convai.Editor.ConfigurationWindow.Components
     /// </summary>
     public static class ConfigurationSectionRegistry
     {
-        private static readonly List<ConfigurationSectionDescriptor> _sections = BuildSectionDescriptors();
-
         /// <summary>
         ///     Gets all descriptors (enabled and disabled).
         /// </summary>
-        public static IReadOnlyList<ConfigurationSectionDescriptor> AllSections => _sections;
+        public static IReadOnlyList<ConfigurationSectionDescriptor> AllSections => BuildSectionDescriptors();
 
         /// <summary>
         ///     Gets enabled descriptors in navigation order.
         /// </summary>
         public static IReadOnlyList<ConfigurationSectionDescriptor> GetEnabledSections() =>
-            _sections.Where(section => section.IsEnabled).ToArray();
+            BuildSectionDescriptors().Where(section => section.IsEnabled).ToArray();
 
         private static List<ConfigurationSectionDescriptor> BuildSectionDescriptors()
         {
@@ -40,9 +38,24 @@ namespace Convai.Editor.ConfigurationWindow.Components
                     "Account",
                     context => new ConvaiAccountSection(context)),
                 new ConfigurationSectionDescriptor(
-                    ConvaiLoggerSettingSection.SECTION_NAME,
-                    "Logger Settings",
-                    context => new ConvaiLoggerSettingSection()),
+                    ConvaiSettingsSection.SECTION_NAME,
+                    "Settings",
+                    context => new ConvaiSettingsSection(context)),
+                new ConfigurationSectionDescriptor(
+                    ConvaiAICodingSection.SECTION_NAME,
+                    "AI Coding",
+                    _ => new ConvaiAICodingSection()),
+                new ConfigurationSectionDescriptor(
+                    ConvaiProfilesSection.SECTION_NAME,
+                    "Config Assets",
+                    context => new ConvaiProfilesSection(context)),
+                new ConfigurationSectionDescriptor(
+                    ConvaiRuntimeGraphSection.SECTION_NAME,
+                    "Live Diagnostics",
+                    context => new ConvaiRuntimeGraphSection(context),
+                    isEnabled: EditorPrefs.GetBool(
+                        ConvaiInspectorDeveloperSettings.InspectorDeveloperVisibilityPrefKey,
+                        false)),
                 new ConfigurationSectionDescriptor(
                     ConvaiLongTermMemorySection.SECTION_NAME,
                     "Long Term Memory",

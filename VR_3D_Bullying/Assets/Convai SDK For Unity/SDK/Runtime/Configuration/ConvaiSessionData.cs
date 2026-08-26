@@ -81,7 +81,7 @@ namespace Convai.Runtime
         {
             if (string.IsNullOrEmpty(characterId))
             {
-                ConvaiLogger.Warning("[ConvaiSessionData] Cannot store session ID: characterId is null or empty.",
+                ConvaiLogger.Warning("Cannot store session ID: characterId is null or empty.",
                     LogCategory.SDK);
                 return;
             }
@@ -131,7 +131,7 @@ namespace Convai.Runtime
             }
             catch (Exception ex)
             {
-                ConvaiLogger.Error($"[ConvaiSessionData] Failed to load session data: {ex.Message}", LogCategory.SDK);
+                ConvaiLogger.Error($"Failed to load session data: {ex.Message}", LogCategory.SDK);
                 _data = new SessionDataContainer();
             }
         }
@@ -146,7 +146,7 @@ namespace Convai.Runtime
             }
             catch (Exception ex)
             {
-                ConvaiLogger.Error($"[ConvaiSessionData] Failed to save session data: {ex.Message}", LogCategory.SDK);
+                ConvaiLogger.Error($"Failed to save session data: {ex.Message}", LogCategory.SDK);
             }
         }
 

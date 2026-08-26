@@ -43,6 +43,7 @@ namespace Convai.Modules.LipSync
                 bool ignoreGlobalModifiers,
                 float multiplier,
                 float offset,
+                float curveExponent,
                 float clampMinValue,
                 float clampMaxValue,
                 TargetBinding[] targets)
@@ -54,6 +55,7 @@ namespace Convai.Modules.LipSync
                 IgnoreGlobalModifiers = ignoreGlobalModifiers;
                 Multiplier = multiplier;
                 Offset = offset;
+                CurveExponent = curveExponent;
                 ClampMinValue = clampMinValue;
                 ClampMaxValue = clampMaxValue;
                 Targets = targets;
@@ -66,6 +68,7 @@ namespace Convai.Modules.LipSync
             public bool IgnoreGlobalModifiers { get; }
             public float Multiplier { get; }
             public float Offset { get; }
+            public float CurveExponent { get; }
             public float ClampMinValue { get; }
             public float ClampMaxValue { get; }
             public TargetBinding[] Targets { get; }

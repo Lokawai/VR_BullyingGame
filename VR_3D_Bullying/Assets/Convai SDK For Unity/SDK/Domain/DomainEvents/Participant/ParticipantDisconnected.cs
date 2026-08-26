@@ -4,20 +4,7 @@ namespace Convai.Domain.DomainEvents.Participant
 {
     /// <summary>
     ///     Domain event raised when a participant leaves the Convai session.
-    ///     Replaces reflection-based RaiseParticipantLeft calls with strongly-typed EventHub publishing.
     /// </summary>
-    /// <remarks>
-    ///     This event is published via EventHub when a remote participant (character or player)
-    ///     disconnects from the LiveKit room. Subscribe to this event instead of using the legacy
-    ///     ConvaiRoomSession.ParticipantLeft event.
-    ///     Usage:
-    ///     <code>
-    /// _eventHub.Subscribe&lt;ParticipantDisconnected&gt;(e =>
-    /// {
-    ///     Debug.Log($"Participant left: {e.Participant.DisplayName}");
-    /// });
-    /// </code>
-    /// </remarks>
     public readonly struct ParticipantDisconnected
     {
         /// <summary>
