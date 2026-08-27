@@ -3,7 +3,9 @@
 --- !u!78 &1
 TagManager:
   serializedVersion: 3
-  tags: []
+  tags:
+  - VR Player
+  - Enemy Tom
   layers:
   - Default
   - TransparentFX
@@ -13,7 +15,7 @@ TagManager:
   - UI
   - Navsmash
   - Player
-  - 
+  - PlayerVR
   - 
   - 
   - 

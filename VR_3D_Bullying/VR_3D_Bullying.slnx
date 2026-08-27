@@ -17,8 +17,8 @@
   <Project Path="Convai.Sample.Camera.csproj" />
   <Project Path="Convai.Domain.Embodiment.csproj" />
   <Project Path="Convai.Modules.Gaze.csproj" />
-  <Project Path="Convai.Transport.WebGL.csproj" />
   <Project Path="Convai.Tests.PlayMode.csproj" />
+  <Project Path="Convai.Transport.WebGL.csproj" />
   <Project Path="Assembly-CSharp.csproj" />
   <Project Path="Convai.Modules.Embodiment.csproj" />
   <Project Path="LiveKitBridge.csproj" />
