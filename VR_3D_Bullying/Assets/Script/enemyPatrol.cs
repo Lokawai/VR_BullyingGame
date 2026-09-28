@@ -11,7 +11,10 @@ public class enemyPatrol : MonoBehaviour
 
     [SerializeField] LayerMask playerLayer, groundLayer;
 
-    private  int enemyHealth = 100;
+    [Header("Health")]
+    public int maxHealth = 100;
+    private int enemyHealth;
+
 
     Vector3 walkPoint;
     bool walkPointSet;
@@ -24,6 +27,8 @@ public class enemyPatrol : MonoBehaviour
     {
         agent = GetComponent<NavMeshAgent>();
         player = GameObject.Find("Player");
+
+         enemyHealth = maxHealth;
     }
 
     // Update is called once per frame
@@ -50,5 +55,30 @@ public class enemyPatrol : MonoBehaviour
         {
             walkPointSet = true;
         }
+    }
+
+    public void TakeDamage(int damage)
+    {
+        enemyHealth -= damage;
+        if (enemyHealth < 0) enemyHealth = 0;
+
+        Debug.Log("Enemy hit! HP: " + enemyHealth);
+
+        if (enemyHealth <= 0)
+        {
+            Die();
+        }
+    }
+
+    void Die()
+    {
+        Debug.Log("Enemy died");
+        // 這裡可以：
+        // - 播放死亡動畫
+        // - 禁用 collider / renderer
+        // - 延遲後重置位置或銷毀
+        // 例如：
+        // gameObject.SetActive(false);
+        // 或 Destroy(gameObject);
     }
 }

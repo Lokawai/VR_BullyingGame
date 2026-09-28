@@ -2140,6 +2140,17 @@
                 },
                 {
                     "name": "",
+                    "id": "093d7208-ad51-41c7-892e-5e5bf4806eb0",
+                    "path": "<XRInputV1::Oculus::OculusTouchControllerOpenXR>/triggerpressed",
+                    "interactions": "",
+                    "processors": "",
+                    "groups": "",
+                    "action": "Select",
+                    "isComposite": false,
+                    "isPartOfComposite": false
+                },
+                {
+                    "name": "",
                     "id": "dd433817-216c-46b9-8dd3-f3a4ea1767b9",
                     "path": "<XRController>{RightHand}/{Grip}",
                     "interactions": "",

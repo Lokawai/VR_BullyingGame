@@ -6,6 +6,7 @@ TagManager:
   tags:
   - VR Player
   - Enemy Tom
+  - Floor
   layers:
   - Default
   - TransparentFX

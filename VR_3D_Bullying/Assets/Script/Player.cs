@@ -11,14 +11,25 @@ public class Player : MonoBehaviour
     [Header("VR 受傷紅色遮罩")]
     public Image damageOverlay;
 
+    [Header("Game Over UI")]
+    public GameObject gameOverPanel;
+
     [Header("Settings")]
     public float hitCooldown = 0.3f; // 兩次受傷之間的最小間隔
     private float lastHitTime = -999f;
+
+        private bool gameEnded = false;
 
     void Start()
     {
         currentHealth = maxHealth;
 
+        if (damageOverlay != null)
+        {
+            Color c = damageOverlay.color;
+            c.a = 0f;
+            damageOverlay.color = c;
+        }
         if (damageOverlay != null)
         {
             Color c = damageOverlay.color;
@@ -38,17 +49,21 @@ public class Player : MonoBehaviour
         lastHitTime = Time.time;
 
         currentHealth -= damage;
-        if (currentHealth < 0) currentHealth = 0;
+        currentHealth = Mathf.Max(currentHealth, 0);
 
-        if (damageOverlay != null)
+          if (damageOverlay != null && currentHealth > 0)
         {
-            // 每次受傷都閃一次紅
             StartCoroutine(FlashRed());
         }
 
         if (currentHealth <= 0)
         {
             Die();
+        }
+
+         if (gameEnded)
+        {
+            return;
         }
     }
 
@@ -78,10 +93,41 @@ public class Player : MonoBehaviour
 
     void Die()
     {
-        // 這裡可以：
-        // - 播放死亡動畫
-        // - 延遲後重置場景
-        // - 顯示死亡 UI
+       // 防止重複呼叫死亡
+        if (gameEnded)
+        {
+            return;
+        }
+
+        gameEnded = true;
+
+        Debug.Log("Player died");
+
+        // 停止進行中的紅色受傷效果
+        StopAllCoroutines();
+
+        // 關閉紅色遮罩，讓 Game Over UI 清楚顯示
+        if (damageOverlay != null)
+        {
+            Color c = damageOverlay.color;
+            c.a = 0f;
+            damageOverlay.color = c;
+        }
+
+        // 顯示你圖片中的反暴力／死亡提示畫面
+        if (gameOverPanel != null)
+        {
+            gameOverPanel.SetActive(true);
+        }
+        else
+        {
+            Debug.LogWarning("尚未設定 Game Over Panel！");
+        }
+
+     
+
+        // 暫停遊戲
+        Time.timeScale = 0f;
         Debug.Log("Player died");
     }
 

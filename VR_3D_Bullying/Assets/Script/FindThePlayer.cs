@@ -3,49 +3,57 @@ using UnityEngine.AI;
 
 public class FindThePlayer : MonoBehaviour
 {
-
-  [Header("Targeting")]
+    [Header("Targeting")]
     public Transform player;
 
     [Header("Distances")]
     public float chaseRange = 10f;
-    public float attackRange = 2f;
+    public float attackRange = 2.5f;
+    public float stopBuffer = 0.2f;
 
     [Header("Combat")]
-    public float attackCooldown = 1.5f;
-    private float lastAttackTime;
+    public int damage = 10;
+    public float attackCooldown = 2f;
 
+    private float lastAttackTime;
     private NavMeshAgent agent;
-    private Animator animator; // Optional: For handling animations
+    private Animator animator;
+    private Player playerScript;
 
     void Start()
     {
-        // Get the NavMeshAgent component attached to this enemy
         agent = GetComponent<NavMeshAgent>();
-        animator = GetComponent<Animator>(); // Optional: For handling animations
+        animator = GetComponent<Animator>();
 
-        // Automatically find the player if not assigned in the inspector
         if (player == null)
         {
-            GameObject playerObject = GameObject.FindGameObjectWithTag("Player");
+            GameObject playerObject = GameObject.FindGameObjectWithTag("VR Player");
+
             if (playerObject != null)
             {
                 player = playerObject.transform;
             }
-            else
+        }
+
+        if (player != null)
+        {
+            playerScript = player.GetComponent<Player>();
+
+            if (playerScript == null)
             {
-                Debug.LogWarning("Player not found! Make sure your player has the 'Player' tag.");
+                playerScript = player.GetComponentInParent<Player>();
             }
         }
     }
 
     void Update()
     {
-        // Do nothing if there is no player to target
         if (player == null) return;
 
-        // Calculate the distance between the enemy and the player
-        float distanceToPlayer = Vector3.Distance(transform.position, player.position);
+        float distanceToPlayer = Vector3.Distance(
+            transform.position,
+            player.position
+        );
 
         if (distanceToPlayer <= attackRange)
         {
@@ -63,45 +71,75 @@ public class FindThePlayer : MonoBehaviour
 
     void ChasePlayer()
     {
-        // Tell the NavMeshAgent to move to the player's current position
+        Vector3 directionToPlayer =
+            (player.position - transform.position).normalized;
+
+        Vector3 targetPosition =
+            player.position - directionToPlayer * (attackRange - stopBuffer);
+
         agent.isStopped = false;
-        agent.SetDestination(player.position);
-        animator.SetFloat("Blend", 1); 
+        agent.SetDestination(targetPosition);
+
+        if (animator != null)
+        {
+            animator.SetFloat("Blend", 1f);
+        }
     }
 
     void AttackPlayer()
     {
-        // Stop moving while attacking
         agent.isStopped = true;
-        animator.SetFloat("Blend", 0); // Optional: Set animation speed to 0 when idle
-        
-        // Face the player
-        Vector3 direction = (player.position - transform.position).normalized;
-        Quaternion lookRotation = Quaternion.LookRotation(new Vector3(direction.x, 0, direction.z));
-        transform.rotation = Quaternion.Slerp(transform.rotation, lookRotation, Time.deltaTime * 5f);
+        agent.ResetPath();
 
-        // Check if enough time has passed to attack again
+        Vector3 direction =
+            player.position - transform.position;
+
+        direction.y = 0f;
+
+        if (direction != Vector3.zero)
+        {
+            Quaternion targetRotation =
+                Quaternion.LookRotation(direction);
+
+            transform.rotation = Quaternion.Slerp(
+                transform.rotation,
+                targetRotation,
+                Time.deltaTime * 5f
+            );
+        }
+
+        if (animator != null)
+        {
+            animator.SetFloat("Blend", 0f);
+        }
+
         if (Time.time >= lastAttackTime + attackCooldown)
         {
-            Debug.Log("Enemy attacks the player!");
-            
-            // TODO: Add your actual damage logic here (e.g., player.GetComponent<Health>().TakeDamage(10);)
-            // TODO: Trigger attack animation here (e.g., animator.SetTrigger("Attack");)
-            animator.SetTrigger("Attack"); // Optional: Set animation speed to 0 when idle
+            if (playerScript != null)
+            {
+                playerScript.TakeDamage(damage);
+            }
 
-            // Reset the cooldown timer
+            if (animator != null)
+            {
+                animator.SetTrigger("Attack");
+            }
+
             lastAttackTime = Time.time;
         }
     }
 
     void StopChasing()
     {
-        // Stop the agent from moving
         agent.isStopped = true;
-        animator.SetFloat("Blend", 0); // Optional: Set animation speed to 0 when idle
+        agent.ResetPath();
+
+        if (animator != null)
+        {
+            animator.SetFloat("Blend", 0f);
+        }
     }
 
-    // This draws visual circles in the Unity Editor so you can easily see the ranges
     void OnDrawGizmosSelected()
     {
         Gizmos.color = Color.yellow;
@@ -110,6 +148,4 @@ public class FindThePlayer : MonoBehaviour
         Gizmos.color = Color.red;
         Gizmos.DrawWireSphere(transform.position, attackRange);
     }
-
-
 }

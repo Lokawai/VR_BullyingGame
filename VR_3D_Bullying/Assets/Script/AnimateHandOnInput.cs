@@ -5,27 +5,55 @@ public class AnimateHandOnInput : MonoBehaviour
 {
     public InputActionProperty triggerValue;
     public InputActionProperty gripValue;
-
     public Animator handAnimator;
 
-
-
-
-    // Start is called once before the first execution of Update after the MonoBehaviour is created
-    void Start()
+    void OnEnable()
     {
-        
+        if (triggerValue.action != null)
+        {
+            triggerValue.action.Enable();
+        }
+
+        if (gripValue.action != null)
+        {
+            gripValue.action.Enable();
+        }
     }
 
-    // Update is called once per frame
+    void OnDisable()
+    {
+        if (triggerValue.action != null)
+        {
+            triggerValue.action.Disable();
+        }
+
+        if (gripValue.action != null)
+        {
+            gripValue.action.Disable();
+        }
+    }
+
     void Update()
     {
-        float trigger = triggerValue.action.ReadValue<float>();
-        float grip = gripValue.action.ReadValue<float>();
+        if (handAnimator == null)
+        {
+            return;
+        }
+
+        float trigger = 0f;
+        float grip = 0f;
+
+        if (triggerValue.action != null)
+        {
+            trigger = triggerValue.action.ReadValue<float>();
+        }
+
+        if (gripValue.action != null)
+        {
+            grip = gripValue.action.ReadValue<float>();
+        }
 
         handAnimator.SetFloat("Trigger", trigger);
         handAnimator.SetFloat("Grip", grip);
-       
-        
     }
 }

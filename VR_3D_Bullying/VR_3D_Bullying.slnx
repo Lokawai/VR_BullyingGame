@@ -16,6 +16,7 @@
   <Project Path="Convai.Editor.Embodiment.csproj" />
   <Project Path="Convai.Sample.Camera.csproj" />
   <Project Path="Convai.Domain.Embodiment.csproj" />
+  <Project Path="Unity.XR.Interaction.Toolkit.Samples.Hands.csproj" />
   <Project Path="Convai.Modules.Gaze.csproj" />
   <Project Path="Convai.Tests.PlayMode.csproj" />
   <Project Path="Convai.Transport.WebGL.csproj" />
@@ -33,6 +34,9 @@
   <Project Path="Editor.csproj" />
   <Project Path="Convai.Modules.BodyLanguage.Editor.csproj" />
   <Project Path="Convai.Modules.Vision.csproj" />
+  <Project Path="Unity.XR.Interaction.Toolkit.Samples.DeviceSimulator.csproj" />
   <Project Path="Reallusion.CCiC.Editor.csproj" />
+  <Project Path="Unity.XR.Hands.Samples.VisualizerSample.csproj" />
+  <Project Path="Unity.XR.Interaction.Toolkit.Samples.Hands.Editor.csproj" />
   <Project Path="Reallusion.CCiC.Runtime.csproj" />
 </Solution>
